@@ -1,0 +1,37 @@
+{
+  "providers": [
+    {
+      "name": "gemini",
+      "displayName": "Google Gemini (Primary)",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "models": ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+      "defaultModel": "gemini-2.5-flash",
+      "baseUrl": "https://generativelanguage.googleapis.com"
+    },
+    {
+      "name": "groq",
+      "displayName": "Groq Cloud (Failover)",
+      "apiKeyEnv": "GROQ_API_KEY",
+      "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+      "defaultModel": "llama-3.3-70b-versatile",
+      "baseUrl": "https://api.groq.com/openai/v1"
+    },
+    {
+      "name": "nvidia",
+      "displayName": "NVIDIA NIM (Failover)",
+      "apiKeyEnv": "NVIDIA_API_KEY",
+      "models": ["meta/llama-3-70b-instruct", "meta/llama-3.1-8b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
+      "defaultModel": "meta/llama-3-70b-instruct",
+      "baseUrl": "https://integrate.api.nvidia.com/v1"
+    },
+    {
+      "name": "openrouter",
+      "displayName": "OpenRouter (Failover)",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "models": ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.5-flash:free", "mistralai/mistral-7b-instruct:free"],
+      "defaultModel": "meta-llama/llama-3.3-70b-instruct:free",
+      "baseUrl": "https://openrouter.ai/api/v1"
+    }
+  ],
+  "priority": ["gemini", "groq", "nvidia", "openrouter"]
+}
