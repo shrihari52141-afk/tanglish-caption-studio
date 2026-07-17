@@ -4,9 +4,9 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+.env
+.env.local
+.env.*
 !.env.example
-uploads/
-*.mp4
-*.mp3
-*.wav
+uploads/*
+!uploads/.gitkeep

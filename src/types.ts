@@ -10,7 +10,7 @@ export type CaptionStyle = string;
 export interface SubtitleStyleSettings {
   preset: string;
   fontFamily: string;
-  fontSize: number;
+  fontSize: number; // scaling factor, default 1.0 (equivalent to text-4xl/5xl)
   textColor: string;
   highlightColor: string;
   capitalization: 'all' | 'lower' | 'sentence' | 'none';
@@ -19,10 +19,10 @@ export interface SubtitleStyleSettings {
   showBacklight: boolean;
   showShadow: boolean;
   alignment: 'left' | 'center' | 'right';
-  positionX: number;
-  positionY: number;
-  rotation: number;
-  maxWordsPerScreen: number;
+  positionX: number; // pixel offset X from center
+  positionY: number; // pixel offset Y from bottom
+  rotation: number; // angle in degrees
+  maxWordsPerScreen: number; // number of words to show together
   showEmojis: boolean;
   showPunctuation: boolean;
   emojiStyle: 'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom' | 'auto';
