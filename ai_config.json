@@ -1,62 +1,25 @@
 {
   "providers": [
     {
-      "name": "groq",
-      "displayName": "Groq Cloud (Primary)",
-      "apiKeyEnv": "GROQ_API_KEY",
-      "models": [
-        "whisper-large-v3",
-        "openai/gpt-oss-120b",
-        "llama-3.3-70b-versatile"
-      ],
-      "defaultModel": "openai/gpt-oss-120b",
-      "transcriptionModel": "whisper-large-v3",
-      "transcriptionEndpoint": "https://api.groq.com/openai/v1/audio/transcriptions",
-      "captionLlmModel": "openai/gpt-oss-120b",
-      "captionLlmEndpoint": "https://api.groq.com/openai/v1/chat/completions",
-      "baseUrl": "https://api.groq.com/openai/v1"
-    },
-    {
       "name": "gemini",
-      "displayName": "Google Gemini (Failover)",
+      "displayName": "Google Gemini 3.5 Flash",
       "apiKeyEnv": "GEMINI_API_KEY",
       "models": [
+        "gemini-3.5-flash",
         "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro"
+        "gemini-3.1-flash-lite"
       ],
-      "defaultModel": "gemini-2.5-flash",
+      "defaultModel": "gemini-3.5-flash",
+      "transcriptionModel": "gemini-3.5-flash",
+      "captionModel": "gemini-3.5-flash",
+      "fallbackModels": [
+        "gemini-2.5-flash",
+        "gemini-3.1-flash-lite"
+      ],
       "baseUrl": "https://generativelanguage.googleapis.com"
-    },
-    {
-      "name": "nvidia",
-      "displayName": "NVIDIA NIM (Failover)",
-      "apiKeyEnv": "NVIDIA_API_KEY",
-      "models": [
-        "meta/llama-3-70b-instruct",
-        "meta/llama-3.1-8b-instruct",
-        "nvidia/llama-3.1-nemotron-70b-instruct"
-      ],
-      "defaultModel": "meta/llama-3-70b-instruct",
-      "baseUrl": "https://integrate.api.nvidia.com/v1"
-    },
-    {
-      "name": "openrouter",
-      "displayName": "OpenRouter (Failover)",
-      "apiKeyEnv": "OPENROUTER_API_KEY",
-      "models": [
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "google/gemini-2.5-flash:free",
-        "mistralai/mistral-7b-instruct:free"
-      ],
-      "defaultModel": "meta-llama/llama-3.3-70b-instruct:free",
-      "baseUrl": "https://openrouter.ai/api/v1"
     }
   ],
   "priority": [
-    "groq",
-    "gemini",
-    "nvidia",
-    "openrouter"
+    "gemini"
   ]
 }

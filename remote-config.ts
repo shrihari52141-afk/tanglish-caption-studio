@@ -3,9 +3,6 @@ import path from "path";
 
 export type RemoteConfig = {
   GEMINI_API_KEY: string;
-  GROQ_API_KEY: string;
-  NVIDIA_API_KEY: string;
-  OPENROUTER_API_KEY: string;
   trackerEmail: string;
   appAnnouncement: string;
   maintenanceMode: boolean;
@@ -17,9 +14,6 @@ const CONFIG_PATH = path.join(process.cwd(), "remote-config.json");
 
 const DEFAULT_CONFIG: RemoteConfig = {
   GEMINI_API_KEY: "",
-  GROQ_API_KEY: "",
-  NVIDIA_API_KEY: "",
-  OPENROUTER_API_KEY: "",
   trackerEmail: "shrihari52141@gmail.com",
   appAnnouncement: "",
   maintenanceMode: false,

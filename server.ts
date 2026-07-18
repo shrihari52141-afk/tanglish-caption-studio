@@ -145,27 +145,44 @@ async function startServer() {
   let geminiKeys: string[] = [];
   let nextKeyIndex = 0;
 
+  // Model priority: try the newest Gemini 3.5 Flash first, silently fall back to
+  // Gemini 2.5 Flash on any failure. No user interaction required.
+  const GEMINI_PRIMARY_MODEL = "gemini-3.5-flash";
+  const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-3.1-flash-lite"];
+  function geminiModelList(): string[] {
+    return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
+  }
+
   function loadGeminiKeys() {
     const keysSet = new Set<string>();
 
+    const addKeysFromValue = (val: string | undefined) => {
+      if (!val) return;
+      val
+        .split(/[\s,]+/)
+        .map(k => k.trim())
+        .filter(Boolean)
+        .forEach(k => keysSet.add(k));
+    };
+
     // 0. Remote config (live-synced for all users) then env
-    const mainKey = getSecret("GEMINI_API_KEY") || process.env.GEMINI_API_KEY || "";
-    if (mainKey) {
-      const parts = mainKey.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
-      parts.forEach(k => keysSet.add(k));
-    }
-    
-    // 1. Scan for any other environment variables starting with GEMINI_API_KEY or GEMINI_KEY
+    addKeysFromValue(getSecret("GEMINI_API_KEY") || process.env.GEMINI_API_KEY);
+
+    // 1. Dedicated multi-key env var: GEMINI_API_KEYS (comma/space/newline separated)
+    addKeysFromValue(process.env.GEMINI_API_KEYS);
+
+    // 2. Scan for numbered/aliased env vars: GEMINI_API_KEY_1 ... N, GEMINI_KEY_*, GEMINI_KEYS_*
     for (const envVar in process.env) {
-      if (envVar.startsWith("GEMINI_API_KEY") || envVar.startsWith("GEMINI_KEY")) {
-        const val = process.env[envVar];
-        if (val) {
-          const parts = val.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
-          parts.forEach(k => keysSet.add(k));
-        }
+      if (
+        envVar === "GEMINI_API_KEY" ||
+        envVar === "GEMINI_API_KEYS" ||
+        envVar.startsWith("GEMINI_API_KEY_") ||
+        envVar.startsWith("GEMINI_KEY")
+      ) {
+        addKeysFromValue(process.env[envVar]);
       }
     }
-    
+
     geminiKeys = Array.from(keysSet);
     nextKeyIndex = 0;
     console.log(`[Gemini Rotation] Loaded ${geminiKeys.length} active API key(s) for rotation.`);
@@ -176,307 +193,122 @@ async function startServer() {
     loadGeminiKeys();
   });
 
-  function getProviderApiKey(envName: string): string {
-    return getSecret(envName as any) || process.env[envName] || "";
-  }
-
-  /** Map app language ids → Whisper ISO-639-1 (optional; improves accuracy) */
-  function mapLanguageToWhisperCode(language: string): string | undefined {
-    const map: Record<string, string> = {
-      tamil: "ta",
-      hindi: "hi",
-      telugu: "te",
-      kannada: "kn",
-      malayalam: "ml",
-      english: "en",
-      spanish: "es",
-      italian: "it",
-      auto: "",
-    };
-    const code = map[String(language || "").toLowerCase()];
-    return code || undefined;
-  }
-
-  /** Always force Whisper language when user picks one — maximizes original-language accuracy */
-  function whisperLanguageHint(language: string): string | undefined {
-    return mapLanguageToWhisperCode(language);
-  }
-
   type WhisperWordsResult = {
     words: { word: string; start_time: number; end_time: number }[];
     model: string;
     rawText: string;
   };
 
-  /** Parse Groq Whisper verbose_json (transcriptions or translations) into timed words */
-  function parseWhisperVerboseJson(data: any): {
-    words: { word: string; start_time: number; end_time: number }[];
-    rawText: string;
-  } {
-    let words: { word: string; start_time: number; end_time: number }[] = [];
-
-    if (Array.isArray(data.words) && data.words.length > 0) {
-      words = data.words
-        .map((w: any) => ({
-          word: String(w.word ?? w.text ?? "").trim(),
-          start_time: Number(w.start ?? w.start_time ?? 0),
-          end_time: Number(w.end ?? w.end_time ?? w.start ?? 0),
-        }))
-        .filter((w: any) => w.word.length > 0);
-    } else if (Array.isArray(data.segments) && data.segments.length > 0) {
-      for (const seg of data.segments) {
-        const segText = String(seg.text || "").trim();
-        if (!segText) continue;
-        const parts = segText.split(/\s+/).filter(Boolean);
-        const start = Number(seg.start || 0);
-        const end = Number(seg.end || start + 1);
-        const span = Math.max(end - start, 0.05);
-        parts.forEach((p: string, i: number) => {
-          const t0 = start + (span * i) / parts.length;
-          const t1 = start + (span * (i + 1)) / parts.length;
-          words.push({ word: p, start_time: t0, end_time: t1 });
-        });
-      }
-    } else if (typeof data.text === "string" && data.text.trim()) {
-      const parts = data.text.trim().split(/\s+/).filter(Boolean);
-      parts.forEach((p: string, i: number) => {
-        words.push({ word: p, start_time: i * 0.4, end_time: i * 0.4 + 0.35 });
-      });
-    }
-
-    return {
-      words,
-      rawText: String(data.text || words.map((w) => w.word).join(" ")),
-    };
-  }
-
-  function buildGroqAudioForm(
-    audioFilePath: string,
-    mimeType: string,
-    opts: { forTranslation?: boolean; language?: string }
-  ): FormData {
-    const fileBuffer = fs.readFileSync(audioFilePath);
-    const ext = path.extname(audioFilePath).toLowerCase() || ".mp3";
-    const filename = `audio${ext}`;
-    const blob = new Blob([fileBuffer], { type: mimeType || "audio/mpeg" });
-
-    const form = new FormData();
-    form.append("file", blob, filename);
-    // whisper-large-v3 supports both transcription + translation (turbo does NOT support translation)
-    form.append("model", "whisper-large-v3");
-    form.append("response_format", "verbose_json");
-    form.append("timestamp_granularities[]", "word");
-    form.append("temperature", "0");
-
-    if (opts.forTranslation) {
-      // Translations endpoint always outputs English; language param only allows 'en'
-      form.append("language", "en");
-      form.append(
-        "prompt",
-        "Natural conversational English subtitles. Accurate translation of the spoken audio."
-      );
-    } else {
-      const lang = String(opts.language || "auto").toLowerCase();
-      if (lang === "tamil") {
-        form.append(
-          "prompt",
-          "Tamil and English mixed conversation (Tanglish). Transcribe every spoken word accurately."
-        );
-        form.append("language", "ta");
-      } else if (lang === "hindi") {
-        form.append(
-          "prompt",
-          "Hindi and English mixed conversation (Hinglish). Transcribe accurately."
-        );
-        form.append("language", "hi");
-      } else if (lang === "english") {
-        form.append("language", "en");
-      } else if (lang === "kannada") {
-        form.append(
-          "prompt",
-          "Kannada speech. Transcribe the exact spoken Kannada accurately in Kannada script when possible."
-        );
-        form.append("language", "kn");
-      } else if (lang === "telugu") {
-        form.append("language", "te");
-      } else if (lang === "malayalam") {
-        form.append("language", "ml");
-      } else if (lang !== "auto") {
-        const code = mapLanguageToWhisperCode(lang);
-        if (code) form.append("language", code);
-      }
-      // Never use /audio/translations here — English is done by gpt-oss-120b only
-    }
-    return form;
-  }
-
   /**
-   * PRIMARY transcription: Groq Whisper Large V3
-   * POST https://api.groq.com/openai/v1/audio/transcriptions
+   * PRIMARY transcription: Gemini (audio understanding)
+   * Transcribes spoken audio in the original language with phrase/word-level timing.
+   * Tries gemini-3.5-flash first, then silently falls back to 2.5-flash / 3.1-flash-lite.
    */
-  async function transcribeWithGroqWhisper(
+  async function transcribeWithGeminiFlash(
     audioFilePath: string,
     mimeType: string,
     jobId?: string,
     language?: string,
     maxAttempts = 3
   ): Promise<WhisperWordsResult> {
-    const apiKey = getProviderApiKey("GROQ_API_KEY");
-    if (!apiKey) {
-      throw new Error("GROQ_API_KEY is not configured. Set it in .env or remote-config.json");
+    if (geminiKeys.length === 0) {
+      loadGeminiKeys();
+    }
+    if (geminiKeys.length === 0) {
+      throw new Error("No Gemini API key is configured. Set GEMINI_API_KEY(S) in .env or remote-config.json");
     }
 
-    let lastError: any = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        sendLog(
-          jobId,
-          `🎤 Groq Whisper transcriptions (priority-1) — attempt ${attempt}/${maxAttempts}...`
-        );
+    const langLabel =
+      !language || language === "auto"
+        ? "the spoken language (auto-detect; likely a regional Indian language)"
+        : String(language);
 
-        const form = buildGroqAudioForm(audioFilePath, mimeType, {
-          forTranslation: false,
-          language,
+    const prompt = `You are a professional, meticulous audio transcriber specializing in Indian languages (Tamil, Telugu, Hindi, Kannada, Malayalam, etc.) and mixed Indian-English speech.
+
+CRITICAL ACCURACY RULES:
+1. Transcribe the audio VERBATIM — capture EVERY single word and phrase spoken, from the very first second to the absolute last second. NEVER skip, merge, or drop any spoken content, especially near the END of the clip. If speech continues until the final moment, keep transcribing until it ends.
+2. Do NOT summarize, paraphrase, or omit "filler" words. Transcribe everything you hear.
+3. Use the EXACT ORIGINAL spoken language (do NOT translate to English here). Preserve native script where the speaker uses it.
+4. Provide accurate phrase-level timestamps in seconds aligned to the audio. Each entry's end_time must connect to the next entry's start_time with no large silent gaps unless the audio is actually silent.
+5. Keep each token short (a few words) so captions stay readable on screen.
+
+Spoken language hint: ${langLabel}.
+
+Return ONLY a JSON object (no markdown, no code fences) with a 'words' array of objects: { "word": string, "start_time": number, "end_time": number }.`;
+
+    sendLog(
+      jobId,
+      `🎤 Gemini transcription (${GEMINI_PRIMARY_MODEL} → fallback chain) — ${geminiKeys.length} key(s) in rotation...`
+    );
+
+    const { result, model } = await callGeminiWithModelFallback<WhisperWordsResult>(
+      async (ai, modelName) => {
+        const fileBuffer = fs.readFileSync(audioFilePath);
+        const geminiRes = await ai.models.generateContent({
+          model: modelName,
+          contents: [
+            {
+              inlineData: {
+                data: fileBuffer.toString("base64"),
+                mimeType: mimeType,
+              },
+            },
+            { text: prompt },
+          ],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                words: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      word: { type: Type.STRING },
+                      start_time: { type: Type.NUMBER },
+                      end_time: { type: Type.NUMBER },
+                    },
+                    required: ["word", "start_time", "end_time"],
+                  },
+                },
+              },
+              required: ["words"],
+            },
+          },
         });
 
-        const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}` },
-          body: form,
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Groq transcriptions HTTP ${res.status}: ${errText.slice(0, 500)}`);
+        const text = geminiRes.text;
+        if (!text) {
+          throw new Error("Gemini returned empty transcription text.");
         }
-
-        const data: any = await res.json();
-        const parsed = parseWhisperVerboseJson(data);
-        if (parsed.words.length === 0) {
-          throw new Error("Groq Whisper transcription returned empty words.");
+        const parsed = extractJsonFromResponse(text);
+        const words =
+          parsed.words && Array.isArray(parsed.words)
+            ? parsed.words.map((w: any) => ({
+                word: String(w.word || w.text || "").trim(),
+                start_time: Number(w.start_time || w.start || 0),
+                end_time: Number(w.end_time || w.end || Number(w.start_time || 0) + 0.4),
+              }))
+            : [];
+        const cleaned = normalizeWhisperWords(words as TimedWord[]);
+        if (cleaned.length === 0) {
+          throw new Error("Gemini transcription returned empty words.");
         }
-
-        sendLog(
-          jobId,
-          `✅ Groq transcriptions OK — ${parsed.words.length} words (attempt ${attempt}).`
-        );
         return {
-          words: parsed.words,
-          model: "whisper-large-v3",
-          rawText: parsed.rawText,
-        };
-      } catch (err: any) {
-        lastError = err;
-        sendLog(
-          jobId,
-          `⚠️ Groq transcriptions attempt ${attempt}/${maxAttempts} failed: ${err.message || err}. ${
-            attempt < maxAttempts ? "Retrying..." : "All transcription retries exhausted."
-          }`
-        );
-        if (attempt < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 600 * attempt));
-        }
-      }
-    }
-    throw lastError || new Error("Groq Whisper transcription failed after retries.");
-  }
+          words: cleaned,
+          model: modelName,
+          rawText: cleaned.map((w) => w.word).join(" "),
+        } as WhisperWordsResult;
+      },
+      jobId
+    );
 
-  /**
-   * English translation from audio (after transcription when user wants English)
-   * POST https://api.groq.com/openai/v1/audio/translations
-   * Model: whisper-large-v3 only (turbo has no translation support)
-   */
-  async function translateAudioToEnglishWithGroq(
-    audioFilePath: string,
-    mimeType: string,
-    timingSource: { word: string; start_time: number; end_time: number }[],
-    jobId?: string,
-    maxAttempts = 3
-  ): Promise<WhisperWordsResult> {
-    const apiKey = getProviderApiKey("GROQ_API_KEY");
-    if (!apiKey) {
-      throw new Error("GROQ_API_KEY is not configured for translations.");
-    }
-
-    let lastError: any = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        sendLog(
-          jobId,
-          `🌍 Groq audio/translations → English (whisper-large-v3) — attempt ${attempt}/${maxAttempts}...`
-        );
-
-        const form = buildGroqAudioForm(audioFilePath, mimeType, { forTranslation: true });
-
-        const res = await fetch("https://api.groq.com/openai/v1/audio/translations", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}` },
-          body: form,
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Groq translations HTTP ${res.status}: ${errText.slice(0, 500)}`);
-        }
-
-        const data: any = await res.json();
-        const parsed = parseWhisperVerboseJson(data);
-
-        // Prefer native word timestamps from translations when available
-        let words = parsed.words;
-        if (words.length === 0 && parsed.rawText.trim()) {
-          // Align English text onto original transcription timings
-          const start = timingSource[0]?.start_time ?? 0;
-          const end =
-            timingSource[timingSource.length - 1]?.end_time ?? start + 1;
-          words = distributePhraseText(parsed.rawText, start, end, timingSource);
-        } else if (
-          words.length > 0 &&
-          timingSource.length > 0 &&
-          // If translations returned untimed/weird spans, re-anchor to transcription timeline
-          (words[words.length - 1].end_time <= 0 ||
-            Math.abs(
-              (words[words.length - 1].end_time || 0) -
-                (timingSource[timingSource.length - 1].end_time || 0)
-            ) > 30)
-        ) {
-          const start = timingSource[0].start_time;
-          const end = timingSource[timingSource.length - 1].end_time;
-          words = distributePhraseText(
-            words.map((w) => w.word).join(" "),
-            start,
-            end,
-            timingSource
-          );
-        }
-
-        if (words.length === 0) {
-          throw new Error("Groq translations returned empty English text.");
-        }
-
-        sendLog(
-          jobId,
-          `✅ Groq translations → English OK — ${words.length} words (attempt ${attempt}).`
-        );
-        return {
-          words,
-          model: "whisper-large-v3-translations",
-          rawText: parsed.rawText || words.map((w) => w.word).join(" "),
-        };
-      } catch (err: any) {
-        lastError = err;
-        sendLog(
-          jobId,
-          `⚠️ Groq translations attempt ${attempt}/${maxAttempts} failed: ${err.message || err}. ${
-            attempt < maxAttempts ? "Retrying..." : "Translation retries exhausted."
-          }`
-        );
-        if (attempt < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 600 * attempt));
-        }
-      }
-    }
-    throw lastError || new Error("Groq audio translation to English failed after retries.");
+    sendLog(
+      jobId,
+      `✅ Gemini transcription OK — ${result.words.length} phrases via ${model}.`
+    );
+    return result;
   }
 
   function getNextGeminiKey(): string | null {
@@ -537,6 +369,56 @@ async function startServer() {
     throw lastError || new Error("All Gemini API keys failed.");
   }
 
+  /**
+   * Same as callGeminiWithRotation but the callback receives the model name to use.
+   * Automatically falls back through geminiModelList() (3.5 Flash → 2.5 Flash → 3.1 Flash-Lite)
+   * on ANY failure, rotating keys too. No user interaction required.
+   */
+  async function callGeminiWithModelFallback<T>(
+    fn: (ai: GoogleGenAI, model: string) => Promise<T>,
+    jobId?: string
+  ): Promise<{ result: T; model: string }> {
+    if (geminiKeys.length === 0) {
+      loadGeminiKeys();
+    }
+    if (geminiKeys.length === 0) {
+      throw new Error("No Google Gemini API key is configured.");
+    }
+
+    const models = geminiModelList();
+    let lastError: any = null;
+
+    for (const model of models) {
+      const attempts = Math.min(3, geminiKeys.length) || 1;
+      for (let i = 0; i < attempts; i++) {
+        const currentKey = getNextGeminiKey();
+        if (!currentKey) break;
+        const obfuscatedKey =
+          currentKey.length > 8
+            ? `${currentKey.substring(0, 4)}...${currentKey.substring(currentKey.length - 4)}`
+            : "invalid-key";
+        try {
+          const ai = new GoogleGenAI({
+            apiKey: currentKey,
+            httpOptions: { headers: { "User-Agent": "aistudio-build" } },
+          });
+          const result = await fn(ai, model);
+          return { result, model };
+        } catch (err: any) {
+          lastError = err;
+          if (jobId) {
+            sendLog(
+              jobId,
+              `Gemini [${model}] failed on key [${obfuscatedKey}]: ${err.message || err}. Falling back...`
+            );
+          }
+          console.error(`[Gemini Model Fallback Error] model=${model}:`, err);
+        }
+      }
+    }
+    throw lastError || new Error("All Gemini models and keys failed.");
+  }
+
   // --- MULTI-PROVIDER AI SWITCHER WITH INSTANT FAILOVER ---
   function extractJsonFromResponse(text: string): any {
     const trimmed = text.trim();
@@ -559,108 +441,6 @@ async function startServer() {
     }
 
     throw new Error("Unable to parse JSON from AI model response content.");
-  }
-
-  async function tryGemini(initialWords: any[], systemPrompt: string, jobId?: string): Promise<any[]> {
-    let finalWords: any[] = [];
-    await callGeminiWithRotation(async (ai) => {
-      const geminiResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `Here is the input JSON array of words to process:\n${JSON.stringify(initialWords, null, 2)}`,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              words: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    word: { type: Type.STRING },
-                    start_time: { type: Type.NUMBER },
-                    end_time: { type: Type.NUMBER }
-                  },
-                  required: ["word", "start_time", "end_time"]
-                }
-              }
-            },
-            required: ["words"]
-          }
-        }
-      });
-
-      const resultText = geminiResponse.text;
-      if (resultText) {
-        const parsed = extractJsonFromResponse(resultText);
-        if (parsed.words && Array.isArray(parsed.words)) {
-          finalWords = parsed.words;
-        } else if (Array.isArray(parsed)) {
-          finalWords = parsed;
-        }
-      }
-    }, jobId);
-
-    if (finalWords.length === 0) {
-      throw new Error("Gemini returned empty or invalid formatted subtitles.");
-    }
-    return finalWords;
-  }
-
-  async function tryOpenAICompatible(
-    providerName: string,
-    displayName: string,
-    apiKey: string,
-    baseUrl: string,
-    defaultModel: string,
-    initialWords: any[],
-    systemPrompt: string,
-    jobId?: string
-  ): Promise<any[]> {
-    const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-    const payload = {
-      model: defaultModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Here is the input JSON array of words to process:\n${JSON.stringify(initialWords, null, 2)}` }
-      ],
-      response_format: { type: "json_object" }
-    };
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${text}`);
-    }
-
-    const data = (await response.json()) as any;
-    const resultText = data.choices?.[0]?.message?.content;
-    if (!resultText) {
-      throw new Error("Empty response choice content");
-    }
-
-    const parsed = extractJsonFromResponse(resultText);
-    let wordsList: any[] = [];
-    if (parsed.words && Array.isArray(parsed.words)) {
-      wordsList = parsed.words;
-    } else if (Array.isArray(parsed)) {
-      wordsList = parsed;
-    }
-
-    if (wordsList.length === 0) {
-      throw new Error("Provider returned empty or invalid formatted subtitles.");
-    }
-
-    return wordsList;
   }
 
   type TimedWord = { word: string; start_time: number; end_time: number };
@@ -733,8 +513,22 @@ async function startServer() {
     });
   }
 
-  const REACTION_EMOJIS = ["😮", "😅", "😤", "😱", "🤔", "😌", "🙄", "😳", "😭", "😂", "🤩", "😎"];
-  const HEART_EMOJIS = ["❤️", "💕", "💖", "💗", "😍", "🥰", "💘", "💝"];
+  // Context-aware emoji pools (used as a fallback when the model doesn't supply one)
+  const EMOJI_BY_MOOD: { test: RegExp; emojis: string[] }[] = [
+    { test: /\b(love|heart|crush|miss you|darling|baby|cutie|beautiful|pretty|gorgeous|❤|affection|cute)\b/i, emojis: ["❤️", "😍", "🥰", "💕", "💖"] },
+    { test: /\b(lol|haha|funny|joke|lmao|😂|hilarious|comedy|laugh)\b/i, emojis: ["😂", "🤣", "😆"] },
+    { test: /\b(wow|omg|shock|amazing|incredible|unbelievable|surprise|shocked|😮|crazy)\b/i, emojis: ["😮", "🤯", "😱"] },
+    { test: /\b(sad|cry|tears|depress|😢|😭|miss|lonely|heartbreak|pain|sorry)\b/i, emojis: ["😢", "😭", "💔"] },
+    { test: /\b(angry|mad|furious|annoyed|😡|hate|stupid|idiot|wtf)\b/i, emojis: ["😤", "😡", "🙄"] },
+    { test: /\b(thinking|idea|think|maybe|wonder|hmm|🤔|plan|consider)\b/i, emojis: ["🤔", "💡", "🧠"] },
+    { test: /\b(fire|lit|hyped|cool|awesome|epic|🔥|super|blow|mind)\b/i, emojis: ["🔥", "😎", "🤩"] },
+    { test: /\b(clap|congrats|proud|win|success|👏|well done|respect|great job)\b/i, emojis: ["👏", "🎉", "💪"] },
+    { test: /\b(food|eat|yummy|tasty|delicious|recipe|😋|hungry|biryani|meal)\b/i, emojis: ["😋", "🍜", "🤤"] },
+    { test: /\b(dance|song|music|sing|🎵|party|vibe|mood)\b/i, emojis: ["🎶", "💃", "🕺"] },
+    { test: /\b(money|cash|rich|price|cost|save|discount|💰|profit|salary)\b/i, emojis: ["💰", "💸", "🤑"] },
+    { test: /\b(travel|trip|journey|ride|drive|🚗|flight|vacation|road)\b/i, emojis: ["✈️", "🚗", "🛣️"] },
+  ];
+  const FALLBACK_EMOJIS = ["✨", "💫", "😊", "👌", "🌟", "💯"];
 
   function stripAllEmojis(text: string): string {
     return text
@@ -743,12 +537,23 @@ async function startServer() {
       .trim();
   }
 
-  /** Exactly one emoji at end of each caption line; alternate reaction ↔ heart */
+  /** Pick a contextually relevant emoji for the line; fallback to a rotating neutral set. */
+  function pickEmojiForLine(text: string, lineIndex: number): string {
+    for (const mood of EMOJI_BY_MOOD) {
+      if (mood.test.test(text)) {
+        return mood.emojis[lineIndex % mood.emojis.length];
+      }
+    }
+    return FALLBACK_EMOJIS[lineIndex % FALLBACK_EMOJIS.length];
+  }
+
+  /** Exactly one emoji at end of each caption line. If a model-supplied emoji already
+   *  exists, keep it; otherwise pick a contextually relevant one. */
   function ensureOneLineEmoji(text: string, lineIndex: number, enabled: boolean): string {
+    const existing = text.match(/\p{Extended_Pictographic}/u);
     const base = stripAllEmojis(text);
     if (!enabled || !base) return base;
-    const pool = lineIndex % 2 === 0 ? REACTION_EMOJIS : HEART_EMOJIS;
-    const emoji = pool[lineIndex % pool.length];
+    const emoji = existing ? existing[0] : pickEmojiForLine(base, lineIndex);
     return `${base} ${emoji}`;
   }
 
@@ -798,17 +603,18 @@ CRITICAL: Whisper was used ONLY to transcribe the EXACT spoken original language
 Your task is to completely rewrite/translate into English to achieve absolute perfection for video dubbing/lip-syncing. You must strictly adhere to the following constraints:
 
 1. ORIGINAL LANGUAGE ANALYSIS: Look at the original spoken language provided (${sourceLang}). Analyze its unique rhythm, cadence, and sentence structure so you can map the English translation precisely to how the original language sounds when spoken.
-2. SYLLABLE & PACING MATCH: The English text must perfectly match the exact duration, speech pacing, and syllable count of the original spoken language for each timestamp window. Write so a voice actor reading English naturally matches the original audio's rhythm, speed, and pauses. Each phrase includes target_syllables_min / target_syllables_max — stay inside that range whenever possible.
-3. 100% PERFECT GRAMMAR: Unlike standard literal translations which can sound broken or unnatural, the English phrasing must be completely natural, idiomatic, and 100% grammatically correct while maintaining the syllable sync.
-4. CONTEXT & LOGIC CORRECTION: Fix any logical errors made by the speech-to-text model (e.g., ensure business ads make logical sense, correct flipped phrases like "with hidden charges" to "no hidden charges", and naturally translate any untranslated regional words). Fix brand names from context (Anikabs → Ani Cabs Tours and Travels BLR).
-5. FORMATTING: Retain the timestamp breakdown structure (same phrase ids). Give ONLY the final corrected English version—do not include explanations, the original language text, or the old text.
-6. EMOJIS: ${
+2. SYLLABLE & PACING MATCH: The English text must perfectly match the exact duration, speech pacing, and syllable count of the original spoken language for each timestamp window. Write so a voice actor reading English naturally matches the original audio's rhythm, speed, and pauses. Each phrase includes target_syllables_min / target_syllables_max — stay INSIDE that range. If the original phrase is long, your English may be slightly longer but must still feel natural and in-sync.
+3. 100% PERFECT GRAMMAR & NATURAL FLOW: The English phrasing must be completely natural, idiomatic, conversational, and 100% grammatically correct. Avoid broken or robotic literal translations. It should read like a native English speaker captioning the moment.
+4. CONTEXT & LOGIC CORRECTION: Fix any logical errors made by the speech-to-text model (e.g., correct flipped phrases like "with hidden charges" to "no hidden charges", fix negations, and naturally translate untranslated regional words). Fix brand names and place names from context.
+5. COMPLETENESS: Do NOT drop or skip any phrase. Every input phrase id must have a corresponding corrected output phrase. The total number of phrases and their order MUST match the input exactly, and the captions must cover the FULL audio duration (no missing ending).
+6. FORMATTING: Retain the timestamp breakdown structure (same phrase ids). Give ONLY the final corrected English version—do not include explanations, the original language text, or the old text.
+7. EMOJIS: ${
       useEmojis
-        ? "Add exactly ONE single emoji at the end of each timestamp line. Alternate only between expressive reaction emojis (😮😅😤😱🤔😌🙄😳😭😂🤩😎) on even ids and love heart emojis (❤️💕💖💗😍🥰💘💝) on odd ids. Never use more than one emoji per line."
+        ? "Add exactly ONE single, contextually relevant emoji at the end of each timestamp line. Choose an emoji that matches the emotion/meaning of THAT specific line (e.g. 😂 for funny, 😍 for love/beauty, 😮 for surprise, 😢 for sad, 🔥 for hype, 👏 for applause, 💡 for tips, ❤️ for affection). Do NOT use a fixed alternating list — pick the best fit per line. Never use more than one emoji per line."
         : "Do NOT add any emojis."
     }
-7. EXTRA: ${languageInstruction.trim()}
-8. PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
+8. EXTRA: ${languageInstruction.trim()}
+9. PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
 
 EXAMPLES OF HOW TO CORRECT THE TEXT (Based on Original Kannada Spoken Audio):
 
@@ -848,101 +654,106 @@ OUTPUT JSON ONLY (same number of phrases and same ids):
       }),
     };
 
-    const groqKey = getProviderApiKey("GROQ_API_KEY");
-    if (groqKey) {
-      try {
-        sendLog(
-          jobId,
-          `GPT-OSS-120B English rewrite from original ${sourceLang} Whisper transcript...`
-        );
-        const url = "https://api.groq.com/openai/v1/chat/completions";
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${groqKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "openai/gpt-oss-120b",
-            temperature: 0.3,
-            response_format: { type: "json_object" },
-            messages: [
-              { role: "system", content: systemPrompt },
-              {
-                role: "user",
-                content: `Original Spoken Language: ${sourceLang}
+    // PRIMARY polish path: Gemini (3.5 Flash → 2.5 Flash fallback), key rotation built-in
+    try {
+      sendLog(
+        jobId,
+        `Gemini English rewrite from original ${sourceLang} transcript (${GEMINI_PRIMARY_MODEL} → fallback)...`
+      );
 
-Whisper ONLY transcribed the original spoken language (NOT English). Your job is English captions for lip-sync.
+      const { result: geminiResult, model: polishModel } = await callGeminiWithModelFallback<any[]>(
+        async (ai, modelName) => {
+          const res = await ai.models.generateContent({
+            model: modelName,
+            contents: `Original Spoken Language: ${sourceLang}
 
-Here is the original-language transcript + timestamps to translate and synchronize.
-Return ONLY the final corrected ENGLISH phrases for each id — JSON only.
+Below is the original-language transcript + timestamps. Your job is to produce final ENGLISH captions for lip-sync.
 
 ${JSON.stringify(userPayload, null, 2)}`,
+            config: {
+              systemInstruction: systemPrompt,
+              temperature: 0.3,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  phrases: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        id: { type: Type.NUMBER },
+                        text: { type: Type.STRING },
+                      },
+                    required: ["id", "text"],
+                  },
+                },
               },
-            ],
-          }),
+              required: ["phrases"],
+            },
+          },
         });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-        }
-        const data: any = await response.json();
-        const content = data.choices?.[0]?.message?.content || "";
-        const parsed = extractJsonFromResponse(content);
+        const parsed = extractJsonFromResponse(res.text || "");
         const outPhrases: any[] = Array.isArray(parsed.phrases) ? parsed.phrases : [];
-        const byId = new Map<number, string>();
-        for (const op of outPhrases) {
-          if (op && (op.id === 0 || op.id) && typeof op.text === "string") {
-            byId.set(Number(op.id), op.text);
+        if (outPhrases.length === 0) {
+          throw new Error("Gemini returned no phrases.");
+        }
+        return outPhrases;
+      }, jobId);
+
+      const outPhrases = geminiResult as any[];
+      const byId = new Map<number, string>();
+      for (const op of outPhrases) {
+        if (op && (op.id === 0 || op.id) && typeof op.text === "string") {
+          byId.set(Number(op.id), op.text);
+        }
+      }
+
+      const result: TimedWord[] = [];
+      phrases.forEach((p, id) => {
+        let text = byId.has(id) ? String(byId.get(id)) : p.text;
+        text = ensureOneLineEmoji(text, id, useEmojis);
+
+        // Soft syllable clamp: if model overshot badly, keep text but still place on timeline
+        const duration = Math.max(p.end - p.start, 0.15);
+        const maxSyl = Math.max(3, Math.round(duration * 5.2));
+        let body = stripAllEmojis(text);
+        let syl = estimateSyllables(body);
+        if (syl > maxSyl + 3) {
+          const fillers = new Set([
+            "just", "really", "actually", "basically", "very", "quite", "please", "like",
+          ]);
+          const toks = body.split(/\s+/).filter(Boolean);
+          const trimmed = toks.filter((t, i) => i === 0 || i === toks.length - 1 || !fillers.has(t.toLowerCase()));
+          if (trimmed.length > 0 && estimateSyllables(trimmed.join(" ")) < syl) {
+            body = trimmed.join(" ");
+            text = ensureOneLineEmoji(body, id, useEmojis);
           }
         }
 
-        const result: TimedWord[] = [];
-        phrases.forEach((p, id) => {
-          let text = byId.has(id) ? String(byId.get(id)) : p.text;
-          text = ensureOneLineEmoji(text, id, useEmojis);
-
-          // Soft syllable clamp: if model overshot badly, keep text but still place on timeline
-          const duration = Math.max(p.end - p.start, 0.15);
-          const maxSyl = Math.max(3, Math.round(duration * 5.2));
-          let body = stripAllEmojis(text);
-          let syl = estimateSyllables(body);
-          if (syl > maxSyl + 3) {
-            // Prefer shorter re-split by dropping filler words if model overwrote length
-            const fillers = new Set([
-              "just", "really", "actually", "basically", "very", "quite", "please", "like",
-            ]);
-            const toks = body.split(/\s+/).filter(Boolean);
-            const trimmed = toks.filter((t, i) => i === 0 || i === toks.length - 1 || !fillers.has(t.toLowerCase()));
-            if (trimmed.length > 0 && estimateSyllables(trimmed.join(" ")) < syl) {
-              body = trimmed.join(" ");
-              text = ensureOneLineEmoji(body, id, useEmojis);
-            }
-          }
-
-          const parts = stripAllEmojis(text).split(/\s+/).filter(Boolean);
-          const emojiMatch = text.match(/\p{Extended_Pictographic}/u);
-          const emoji = useEmojis && emojiMatch ? emojiMatch[0] : "";
-          if (parts.length === 0) {
-            result.push(...p.words);
-            return;
-          }
-          const timed = distributePhraseText(parts.join(" "), p.start, p.end, p.words);
-          if (emoji && timed.length > 0) {
-            timed[timed.length - 1] = {
-              ...timed[timed.length - 1],
-              word: `${timed[timed.length - 1].word} ${emoji}`,
-            };
-          }
-          result.push(...timed);
-        });
-        sendLog(
-          jobId,
-          `✨ GPT-OSS-120B English captions OK — ${result.length} words / ${phrases.length} lines (from ${sourceLang}).`
-        );
-        return { words: result, providerUsed: `openai/gpt-oss-120b (${sourceLang}→EN)` };
-      } catch (err: any) {
-        sendLog(jobId, `GPT-OSS-120B polish failed: ${err.message}. Trying fallback...`);
-      }
+        const parts = stripAllEmojis(text).split(/\s+/).filter(Boolean);
+        const emojiMatch = text.match(/\p{Extended_Pictographic}/u);
+        const emoji = useEmojis && emojiMatch ? emojiMatch[0] : "";
+        if (parts.length === 0) {
+          result.push(...p.words);
+          return;
+        }
+        const timed = distributePhraseText(parts.join(" "), p.start, p.end, p.words);
+        if (emoji && timed.length > 0) {
+          timed[timed.length - 1] = {
+            ...timed[timed.length - 1],
+            word: `${timed[timed.length - 1].word} ${emoji}`,
+          };
+        }
+        result.push(...timed);
+      });
+      sendLog(
+        jobId,
+        `✨ Gemini English captions OK — ${result.length} words / ${phrases.length} lines (from ${sourceLang}) via ${polishModel}.`
+      );
+      return { words: result, providerUsed: `${polishModel} (${sourceLang}→EN)` };
+    } catch (err: any) {
+      sendLog(jobId, `Gemini polish failed: ${err.message}. Trying fallback...`);
     }
 
     // Fallback: classic enrich path
@@ -1030,78 +841,57 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
     systemPrompt: string,
     jobId?: string
   ): Promise<{ words: any[]; providerUsed: string }> {
-    let config = {
-      providers: [] as any[],
-      priority: [] as string[]
-    };
-    try {
-      const configPath = path.join(process.cwd(), "ai_config.json");
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-      }
-    } catch (err) {
-      console.error("Failed to load ai_config.json, using fallback config", err);
-    }
+    sendLog(jobId, `Polishing subtitles via Gemini (${GEMINI_PRIMARY_MODEL} → fallback)... 🤖`);
+    const { result, model } = await callGeminiWithModelFallback<any[]>(
+      async (ai, modelName) => {
+        const geminiResponse = await ai.models.generateContent({
+          model: modelName,
+          contents: `Here is the input JSON array of words to process:\n${JSON.stringify(initialWords, null, 2)}}`,
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                words: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      word: { type: Type.STRING },
+                      start_time: { type: Type.NUMBER },
+                      end_time: { type: Type.NUMBER },
+                    },
+                    required: ["word", "start_time", "end_time"],
+                  },
+                },
+              },
+              required: ["words"],
+            },
+          },
+        });
 
-    if (!config.providers || config.providers.length === 0) {
-      config = {
-        providers: [
-          { name: "gemini", displayName: "Google Gemini", apiKeyEnv: "GEMINI_API_KEY", defaultModel: "gemini-2.5-flash", baseUrl: "" },
-          { name: "groq", displayName: "Groq Cloud", apiKeyEnv: "GROQ_API_KEY", defaultModel: "openai/gpt-oss-120b", baseUrl: "https://api.groq.com/openai/v1" },
-          { name: "nvidia", displayName: "NVIDIA NIM", apiKeyEnv: "NVIDIA_API_KEY", defaultModel: "meta/llama-3-70b-instruct", baseUrl: "https://integrate.api.nvidia.com/v1" },
-          { name: "openrouter", displayName: "OpenRouter", apiKeyEnv: "OPENROUTER_API_KEY", defaultModel: "meta-llama/llama-3.3-70b-instruct:free", baseUrl: "https://openrouter.ai/api/v1" }
-        ],
-        priority: ["gemini", "groq", "nvidia", "openrouter"]
-      };
-    }
-
-    let errors: string[] = [];
-
-    for (const providerName of config.priority) {
-      const provider = config.providers.find((p: any) => p.name === providerName);
-      if (!provider) continue;
-
-      const apiKey = getProviderApiKey(provider.apiKeyEnv);
-      if (!apiKey && providerName !== "gemini") {
-        continue; // Provider API key not configured
-      }
-
-      if (providerName === "gemini") {
-        if (geminiKeys.length === 0) {
-          loadGeminiKeys();
+        const resultText = geminiResponse.text;
+        if (!resultText) {
+          throw new Error("Gemini returned empty subtitles.");
         }
-        if (geminiKeys.length === 0) {
-          continue; // Gemini keys not configured
+        const parsed = extractJsonFromResponse(resultText);
+        let wordsList: any[] = [];
+        if (parsed.words && Array.isArray(parsed.words)) {
+          wordsList = parsed.words;
+        } else if (Array.isArray(parsed)) {
+          wordsList = parsed;
         }
-      }
-
-      try {
-        sendLog(jobId, `Polishing subtitles via ${provider.displayName}... 🤖`);
-        let result: any[] = [];
-        if (providerName === "gemini") {
-          result = await tryGemini(initialWords, systemPrompt, jobId);
-        } else {
-          result = await tryOpenAICompatible(
-            provider.name,
-            provider.displayName,
-            apiKey!,
-            provider.baseUrl,
-            provider.defaultModel,
-            initialWords,
-            systemPrompt,
-            jobId
-          );
+        if (wordsList.length === 0) {
+          throw new Error("Gemini returned empty or invalid formatted subtitles.");
         }
-        sendLog(jobId, `✨ Success! Subtitles generated/formatted using ${provider.displayName}.`);
-        return { words: result, providerUsed: provider.displayName };
-      } catch (err: any) {
-        const errMsg = `${provider.displayName} failover fallback trigger: ${err.message || err}`;
-        errors.push(errMsg);
-        sendLog(jobId, `⚠️ ${errMsg}. Switching to next available AI instantly...`);
-      }
-    }
+        return wordsList;
+      },
+      jobId
+    );
 
-    throw new Error(`All AI services failed to process subtitles. Details:\n- ${errors.join("\n- ")}`);
+    sendLog(jobId, `✨ Success! Subtitles generated/formatted using ${model}.`);
+    return { words: result, providerUsed: model };
   }
 
   // --- GOOGLE SHEETS LOGGER ON BEHALF OF USER ---
@@ -1284,105 +1074,44 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
 
       const mimeType = audioPath.endsWith(".mp3") ? "audio/mpeg" : req.file.mimetype;
 
-      // ---- PRIORITY-1: Groq Whisper Large V3 (retries built-in) ----
-      // Endpoint: https://api.groq.com/openai/v1/audio/transcriptions
-      // Model: whisper-large-v3
+      // ---- PRIMARY: Gemini 2.5 Flash audio transcription (native, with key rotation) ----
       let initialWords: { word: string; start_time: number; end_time: number }[] = [];
-      let transcriptionEngine = "groq-whisper-large-v3";
+      let transcriptionEngine = "gemini-2.5-flash";
 
       try {
         sendLog(
           jobId,
-          "Step 1/2: Groq Whisper Large V3 — ORIGINAL language transcription ONLY (no English translation)..."
+          "Step 1/2: Gemini 2.5 Flash — ORIGINAL language transcription (audio understanding)..."
         );
-        const groqResult = await transcribeWithGroqWhisper(
+        const geminiResult = await transcribeWithGeminiFlash(
           audioPath,
           mimeType,
           jobId,
           language,
-          3 // always retry up to 3 times on Groq before any fallback
+          3 // rotate across keys / retry up to 3 rounds
         );
-        initialWords = groqResult.words;
-        transcriptionEngine = groqResult.model;
+        initialWords = geminiResult.words;
+        transcriptionEngine = geminiResult.model;
         sendLog(
           jobId,
-          `Whisper original-language transcript ready: ${initialWords.length} timed words.`
+          `Gemini 2.5 Flash original-language transcript ready: ${initialWords.length} timed phrases.`
         );
-      } catch (groqErr: any) {
-        // Optional emergency fallback to Gemini only if Groq is completely unavailable
+      } catch (geminiErr: any) {
         sendLog(
           jobId,
-          `Groq Whisper failed after retries (${groqErr.message || groqErr}). Falling back to Gemini STT...`
+          `Gemini 2.5 Flash transcription failed after all retries (${geminiErr.message || geminiErr}).`
         );
-        const fileBuffer = fs.readFileSync(audioPath);
-        await callGeminiWithRotation(async (ai) => {
-          const geminiRes = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: [
-              {
-                inlineData: {
-                  data: fileBuffer.toString("base64"),
-                  mimeType: mimeType,
-                },
-              },
-              {
-                text: "You are a professional audio transcriber. Transcribe the spoken audio with extremely accurate word-level or phrase-level timestamps in seconds. Align each transcribed word with its exact start_time and end_time. Return every single word spoken in order. Format as a JSON object with a 'words' list containing objects of: { word: string, start_time: number, end_time: number }.",
-              },
-            ],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  words: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        word: { type: Type.STRING },
-                        start_time: { type: Type.NUMBER },
-                        end_time: { type: Type.NUMBER },
-                      },
-                      required: ["word", "start_time", "end_time"],
-                    },
-                  },
-                },
-                required: ["words"],
-              },
-            },
-          });
-
-          const text = geminiRes.text;
-          if (!text) {
-            throw new Error("Received empty text back from Gemini transcriber.");
-          }
-
-          const parsed = JSON.parse(text.trim());
-          if (parsed.words && Array.isArray(parsed.words)) {
-            initialWords = parsed.words.map((w: any) => ({
-              word: String(w.word),
-              start_time: Number(w.start_time || w.start || 0),
-              end_time: Number(w.end_time || w.end || 0),
-            }));
-          } else {
-            throw new Error("No words array found in Gemini parsed result.");
-          }
-        }, jobId);
-        transcriptionEngine = "gemini-2.5-flash-fallback";
-        sendLog(
-          jobId,
-          `Successfully generated ${initialWords.length} initial timed words via Gemini fallback.`
-        );
+        throw geminiErr;
       }
 
       // Attach engine name for tracker later
       (req as any)._transcriptionEngine = transcriptionEngine;
 
-      // STEP 2 is NOT Whisper translation. Whisper stays original-language only.
-      // English comes from openai/gpt-oss-120b using original transcript + timestamps.
+      // STEP 2: English caption polish / transliteration done by Gemini 2.5 Flash
+      // using the original-language transcript + timestamps.
       sendLog(
         jobId,
-        "Step 2/2: Skip Whisper /audio/translations — English will be done by openai/gpt-oss-120b from original-language transcript."
+        "Step 2/2: Gemini 2.5 Flash English captions / transliteration from original-language transcript..."
       );
 
       let languageInstruction = "";
@@ -1504,14 +1233,14 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         }
       }
 
-      // Whisper (original language) → openai/gpt-oss-120b (English lip-sync captions)
+      // Gemini 2.5 Flash (original language) → Gemini 2.5 Flash (English lip-sync captions)
       let finalWords: any[] = [];
       let providerUsed = "Raw Fallback";
 
       try {
         sendLog(
           jobId,
-          `Step 2/2: openai/gpt-oss-120b English captions from original ${language} Whisper transcript...`
+          `Step 2/2: Gemini 2.5 Flash English captions from original ${language} transcript...`
         );
         const polished = await polishWhisperPhrases(
           initialWords,
@@ -1595,8 +1324,8 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
           timezone: clientTimezone,
           clientIp,
           location,
-          aiProvider: `${(req as any)._transcriptionEngine || "whisper-large-v3"} + polish:${providerUsed}`,
-          aiModel: (req as any)._transcriptionEngine || "whisper-large-v3",
+          aiProvider: `${(req as any)._transcriptionEngine || "gemini-2.5-flash"} + polish:${providerUsed}`,
+          aiModel: (req as any)._transcriptionEngine || "gemini-2.5-flash",
           processingMs,
           sessionFailCount: parseInt(String(sessionFailCount), 10) || 0,
           wordCount: cleanedWords.length,
@@ -1694,24 +1423,29 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
 
       let transcript = "";
 
-      await callGeminiWithRotation(async (ai) => {
-        const geminiRes = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: [
-            {
-              inlineData: {
-                data: fileBuffer.toString("base64"),
-                mimeType: mimeType
+      const { result } = await callGeminiWithModelFallback<string>(
+        async (ai, modelName) => {
+          const geminiRes = await ai.models.generateContent({
+            model: modelName,
+            contents: [
+              {
+                inlineData: {
+                  data: fileBuffer.toString("base64"),
+                  mimeType: mimeType
+                }
+              },
+              {
+                text: "You are an expert audio transcriber. Transcribe the spoken speech from this microphone recording verbatim, in high quality. Please preserve punctuation and standard formatting. If the language is a regional Indian language (like Tamil, Hindi, Telugu, Kannada, Malayalam, etc.), provide both the Romanised transliteration (e.g. Tanglish/Hinglish) and the English translation so it is incredibly helpful."
               }
-            },
-            {
-              text: "You are an expert audio transcriber. Transcribe the spoken speech from this microphone recording verbatim, in high quality. Please preserve punctuation and standard formatting. If the language is a regional Indian language (like Tamil, Hindi, Telugu, Kannada, Malayalam, etc.), provide both the Romanised transliteration (e.g. Tanglish/Hinglish) and the English translation so it is incredibly helpful."
-            }
-          ]
-        });
+            ]
+          });
 
-        transcript = geminiRes.text || "Empty transcription received.";
-      });
+          return geminiRes.text || "Empty transcription received.";
+        },
+        undefined
+      );
+
+      transcript = result;
 
       // Cleanup
       try { fs.unlinkSync(req.file.path); } catch (e) {}
@@ -1859,11 +1593,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           const formattedWord = formatText(ww.word);
           if (!formattedWord) return "";
 
-          if (originalIndex === k) {
-            return `{\\c${highlightOverride}\\b1}${formattedWord}`;
+          // Split emoji from the text so the emoji is NOT tinted by the word's color
+          // override. Emoji is rendered with a style reset ({\r}) so libass draws the
+          // native color glyph instead of a solid white/monochrome version.
+          const emojiMatch = formattedWord.match(/\p{Extended_Pictographic}/u);
+          let textOnly = formattedWord;
+          let emojiOnly = "";
+          if (emojiMatch) {
+            emojiOnly = emojiMatch[0];
+            textOnly = stripAllEmojis(formattedWord);
           }
-          const inactiveColor = styleSettings.showSpotlight ? spotlightDimOverride : primaryOverride;
-          return `{\\c${inactiveColor}\\b0}${formattedWord}`;
+          if (!textOnly) {
+            // Word is ONLY an emoji — render it with no color tint
+            return emojiOnly ? `{\\r}${emojiOnly}` : "";
+          }
+
+          const weight = originalIndex === k ? "\\b1" : "\\b0";
+          const color =
+            originalIndex === k
+              ? highlightOverride
+              : styleSettings.showSpotlight
+              ? spotlightDimOverride
+              : primaryOverride;
+
+          let run = `{\\c${color}${weight}}${textOnly}`;
+          if (emojiOnly) {
+            run += `{\\r}${emojiOnly}`;
+          }
+          return run;
         }).filter(Boolean);
 
         // Layout override first (position only), then styled words — never leak raw tags to screen
@@ -1978,10 +1735,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     res.json({
       ...cfg,
       GEMINI_API_KEY: mask(cfg.GEMINI_API_KEY),
-      GROQ_API_KEY: mask(cfg.GROQ_API_KEY),
-      NVIDIA_API_KEY: mask(cfg.NVIDIA_API_KEY),
-      OPENROUTER_API_KEY: mask(cfg.OPENROUTER_API_KEY),
-      note: "Values are masked. POST full keys to update. Empty string keeps existing key.",
+      note: "Values are masked. POST full keys (comma/space separated for rotation) to update. Empty string keeps existing key.",
     });
   });
 
@@ -1994,18 +1748,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         body.GEMINI_API_KEY === undefined || body.GEMINI_API_KEY === ""
           ? current.GEMINI_API_KEY
           : String(body.GEMINI_API_KEY),
-      GROQ_API_KEY:
-        body.GROQ_API_KEY === undefined || body.GROQ_API_KEY === ""
-          ? current.GROQ_API_KEY
-          : String(body.GROQ_API_KEY),
-      NVIDIA_API_KEY:
-        body.NVIDIA_API_KEY === undefined || body.NVIDIA_API_KEY === ""
-          ? current.NVIDIA_API_KEY
-          : String(body.NVIDIA_API_KEY),
-      OPENROUTER_API_KEY:
-        body.OPENROUTER_API_KEY === undefined || body.OPENROUTER_API_KEY === ""
-          ? current.OPENROUTER_API_KEY
-          : String(body.OPENROUTER_API_KEY),
       trackerEmail:
         body.trackerEmail !== undefined ? String(body.trackerEmail) : current.trackerEmail,
       appAnnouncement:

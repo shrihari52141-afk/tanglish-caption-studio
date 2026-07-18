@@ -1204,10 +1204,13 @@ export default function App() {
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
                               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
                             </span>
-                            AI Caption Studio
-                          </h3>
-                          <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
-                        </div>
+                             AI Caption Studio
+                           </h3>
+                           <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1">
+                             Gemini 3.5 Flash
+                           </span>
+                           <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
+                         </div>
                         
                         {/* Progress Bar Container */}
                         <div className="space-y-3">
