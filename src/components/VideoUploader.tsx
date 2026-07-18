@@ -17,7 +17,6 @@ interface VideoUploaderProps {
 }
 
 const LANGUAGES = [
-  { id: 'auto', name: 'Auto-Detect', desc: 'Detects audio automatically with English script', script: 'Translates non-English to English alphabets' },
   { id: 'tamil', name: 'Tamil', desc: 'Select options after selecting this language', script: 'e.g. Tamil to Tanglish or Tamil to English' },
   { id: 'hindi', name: 'Hindi', desc: 'Select options after selecting this language', script: 'e.g. Hinglish or Hindi to English' },
   { id: 'telugu', name: 'Telugu', desc: 'Select options after selecting this language', script: 'e.g. Telugish or Telugu to English' },
@@ -26,6 +25,7 @@ const LANGUAGES = [
   { id: 'english', name: 'English', desc: 'Standard English subtitles', script: 'e.g. Awesome!' },
   { id: 'spanish', name: 'Spanish', desc: 'Select options after selecting this language', script: 'e.g. Spanish or Spanish to English' },
   { id: 'italian', name: 'Italian', desc: 'Select options after selecting this language', script: 'e.g. Italian or Italian to English' },
+  { id: 'auto', name: 'Auto-Detect', desc: 'Detects audio automatically with English script', script: 'Translates non-English to English alphabets' },
 ];
 
 export default function VideoUploader({ onUpload, isProcessing, initialFile }: VideoUploaderProps) {
@@ -38,7 +38,7 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
     }
   }, [initialFile]);
   const [selectedLanguage, setSelectedLanguage] = useState<string>(() => {
-    return localStorage.getItem('saved_selectedLanguage') || 'auto';
+    return localStorage.getItem('saved_selectedLanguage') || 'tamil';
   });
   const [translationMode, setTranslationMode] = useState<string>(() => {
     return localStorage.getItem('saved_translationMode') || 'translate_english';

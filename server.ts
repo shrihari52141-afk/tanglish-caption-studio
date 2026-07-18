@@ -197,7 +197,51 @@ async function startServer() {
     words: { word: string; start_time: number; end_time: number }[];
     model: string;
     rawText: string;
+    audioDuration?: number;
   };
+
+  /**
+   * Normalize transcription timestamps so captions span the FULL audio and stay
+   * perfectly in sync with the speaker's rhythm. Gemini often compresses timestamps
+   * toward the start or under-reports total duration. This:
+   *  - keeps relative spacing (silence between phrases is preserved),
+   *  - linearly stretches the timeline so the last word reaches `targetDuration`,
+   *  - clamps everything into [0, targetDuration].
+   */
+  function normalizeTranscriptionTiming(
+    words: TimedWord[],
+    targetDuration: number
+  ): TimedWord[] {
+    if (words.length === 0 || !(targetDuration > 0)) return words;
+
+    // Work on a copy sorted by start
+    const sorted = [...words].sort((a, b) => a.start_time - b.start_time);
+    const rawStart = sorted[0].start_time;
+    const rawEnd = Math.max(...sorted.map((w) => w.end_time), rawStart + 0.1);
+    const rawSpan = rawEnd - rawStart;
+
+    if (rawSpan <= 0.01) {
+      // Degenerate: distribute evenly across the duration
+      const step = targetDuration / sorted.length;
+      return sorted.map((w, i) => ({
+        ...w,
+        start_time: +(i * step).toFixed(3),
+        end_time: +((i + 1) * step).toFixed(3),
+      }));
+    }
+
+    // If the reported span is shorter than the true audio, stretch to fill it
+    // (preserving relative gaps = preserving silence/pacing). Anchor the first
+    // word to time 0 so captions begin exactly when speech begins.
+    const scale = targetDuration / rawSpan;
+    const offset = -rawStart;
+
+    return sorted.map((w) => ({
+      ...w,
+      start_time: +Math.max(0, rawStart + (w.start_time - rawStart) * scale + offset).toFixed(3),
+      end_time: +Math.min(targetDuration, rawStart + (w.end_time - rawStart) * scale + offset).toFixed(3),
+    }));
+  }
 
   /**
    * PRIMARY transcription: Gemini (audio understanding)
@@ -209,7 +253,8 @@ async function startServer() {
     mimeType: string,
     jobId?: string,
     language?: string,
-    maxAttempts = 3
+    maxAttempts = 3,
+    targetDuration = 0
   ): Promise<WhisperWordsResult> {
     if (geminiKeys.length === 0) {
       loadGeminiKeys();
@@ -223,18 +268,25 @@ async function startServer() {
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
 
-    const prompt = `You are a professional, meticulous audio transcriber specializing in Indian languages (Tamil, Telugu, Hindi, Kannada, Malayalam, etc.) and mixed Indian-English speech.
+    const prompt = `You are a professional, frame-accurate audio transcriber specializing in Indian languages (Tamil, Telugu, Hindi, Kannada, Malayalam, etc.) and mixed Indian-English speech. Your ONLY job is to transcribe the ORIGINAL spoken language with exact word-level timing. Do NOT translate.
 
-CRITICAL ACCURACY RULES:
-1. Transcribe the audio VERBATIM — capture EVERY single word and phrase spoken, from the very first second to the absolute last second. NEVER skip, merge, or drop any spoken content, especially near the END of the clip. If speech continues until the final moment, keep transcribing until it ends.
-2. Do NOT summarize, paraphrase, or omit "filler" words. Transcribe everything you hear.
-3. Use the EXACT ORIGINAL spoken language (do NOT translate to English here). Preserve native script where the speaker uses it.
-4. Provide accurate phrase-level timestamps in seconds aligned to the audio. Each entry's end_time must connect to the next entry's start_time with no large silent gaps unless the audio is actually silent.
-5. Keep each token short (a few words) so captions stay readable on screen.
+TIMING IS THE MOST IMPORTANT PART. Follow these rules exactly:
+1. Transcribe VERBATIM — every word from the first spoken sound to the very last, with NO skipping, merging, or summarizing. Capture filler words too.
+2. Each entry must have a precise "start_time" and "end_time" in SECONDS, measured against the audio timeline.
+3. PRESERVE SILENCE: if there is a pause between two phrases, the first phrase's end_time and the next phrase's start_time must reflect that gap (do not snap them together). Real silence must be kept as silence in the timestamps.
+4. The FIRST entry's start_time should be when the first word actually begins (often near 0.0 but only when speech starts).
+5. The LAST entry's end_time must be when the final word ends — it must reach close to the actual end of the speech. NEVER stop early.
+6. The words array must span (almost) the ENTIRE audio duration. Report the total "audio_duration" in seconds as a top-level number.
+7. Use the EXACT ORIGINAL spoken language (do not translate). Preserve native script where used.
+8. Keep each token short (a few words) for readability.
 
 Spoken language hint: ${langLabel}.
 
-Return ONLY a JSON object (no markdown, no code fences) with a 'words' array of objects: { "word": string, "start_time": number, "end_time": number }.`;
+Return ONLY a JSON object (no markdown, no code fences):
+{
+  "audio_duration": number,
+  "words": [ { "word": string, "start_time": number, "end_time": number } ]
+}`;
 
     sendLog(
       jobId,
@@ -260,6 +312,7 @@ Return ONLY a JSON object (no markdown, no code fences) with a 'words' array of 
             responseSchema: {
               type: Type.OBJECT,
               properties: {
+                audio_duration: { type: Type.NUMBER },
                 words: {
                   type: Type.ARRAY,
                   items: {
@@ -295,10 +348,18 @@ Return ONLY a JSON object (no markdown, no code fences) with a 'words' array of 
         if (cleaned.length === 0) {
           throw new Error("Gemini transcription returned empty words.");
         }
+        // Stretch timestamps so captions cover the full audio duration and stay
+        // in sync with the speaker's actual pacing (silence preserved).
+        // Prefer the REAL measured audio duration; fall back to the model's report.
+        const stretchTarget = targetDuration > 0
+          ? targetDuration
+          : (Number(parsed.audio_duration) || Math.max(...cleaned.map((w) => w.end_time), 1));
+        const normalized = normalizeTranscriptionTiming(cleaned, stretchTarget);
         return {
-          words: cleaned,
+          words: normalized,
           model: modelName,
-          rawText: cleaned.map((w) => w.word).join(" "),
+          rawText: normalized.map((w) => w.word).join(" "),
+          audioDuration: targetDuration > 0 ? targetDuration : (Number(parsed.audio_duration) || undefined),
         } as WhisperWordsResult;
       },
       jobId
@@ -1074,9 +1135,24 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
 
       const mimeType = audioPath.endsWith(".mp3") ? "audio/mpeg" : req.file.mimetype;
 
-      // ---- PRIMARY: Gemini 2.5 Flash audio transcription (native, with key rotation) ----
+      // Measure the REAL audio duration so captions can be stretched to cover 100%
+      // of the video (model-reported durations are often under-reported).
+      let realAudioDuration = 0;
+      try {
+        const probe = await execAsync(
+          `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`
+        );
+        realAudioDuration = parseFloat((probe.stdout || "").trim()) || 0;
+        if (realAudioDuration > 0) {
+          sendLog(jobId, `Measured audio duration: ${realAudioDuration.toFixed(2)}s`);
+        }
+      } catch (e) {
+        sendLog(jobId, "Could not measure audio duration; will rely on model report.");
+      }
+
+      // ---- PRIMARY: Gemini 3.5 Flash audio transcription (native, with key rotation) ----
       let initialWords: { word: string; start_time: number; end_time: number }[] = [];
-      let transcriptionEngine = "gemini-2.5-flash";
+      let transcriptionEngine = "gemini-3.5-flash";
 
       try {
         sendLog(
@@ -1088,7 +1164,8 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
           mimeType,
           jobId,
           language,
-          3 // rotate across keys / retry up to 3 rounds
+          3, // rotate across keys / retry up to 3 rounds
+          realAudioDuration
         );
         initialWords = geminiResult.words;
         transcriptionEngine = geminiResult.model;
