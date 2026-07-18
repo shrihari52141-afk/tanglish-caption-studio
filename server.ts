@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import multer from "multer";
@@ -7,8 +8,28 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { exec } from "child_process";
 import { promisify } from "util";
+import {
+  startRemoteConfigWatcher,
+  loadRemoteConfig,
+  getRemoteConfig,
+  saveRemoteConfig,
+  getPublicConfig,
+  getSecret,
+  onRemoteConfigChange,
+} from "./remote-config";
+import {
+  trackEvent,
+  getClientIp,
+  lookupIpGeo,
+  wordsToTranscript,
+  type TrackerEvent,
+} from "./tracker";
 
 const execAsync = promisify(exec);
+
+// Live remote config (API keys + tracker email) — changes apply for all users without restart
+startRemoteConfigWatcher();
+loadRemoteConfig();
 
 // Robust resolution for __filename and __dirname supporting both ESM (development) and CJS (production bundling)
 const currentFilename = typeof import.meta !== "undefined" && import.meta && import.meta.url
@@ -51,6 +72,7 @@ function formatASSTime(seconds: number): string {
   return `${hStr}:${mStr}:${sStr}.${cStr}`;
 }
 
+/** Style-line ASS colour: &HAABBGGRR (no trailing &) */
 function hexToASSColor(hex: string): string {
   let clean = hex.replace("#", "");
   if (clean.length === 3) {
@@ -63,6 +85,33 @@ function hexToASSColor(hex: string): string {
   const g = clean.substring(2, 4);
   const b = clean.substring(4, 6);
   return `&H00${b}${g}${r}`;
+}
+
+/** Override-tag ASS colour: &HAABBGGRR& (trailing & required by libass) */
+function hexToASSOverrideColor(hex: string): string {
+  return `${hexToASSColor(hex)}&`;
+}
+
+/** Escape ASS special characters so they never render as tags or break parsing */
+function escapeASSText(text: string): string {
+  return String(text ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
+    .replace(/\r?\n/g, "\\N");
+}
+
+/** Strip any ASS override tags that may have leaked into word text */
+function stripASSOverrides(text: string): string {
+  let s = String(text ?? "");
+  while (s.includes("\\\\")) s = s.replace(/\\\\/g, "\\");
+  s = s.replace(/\{[^{}]*\}/g, "");
+  s = s.replace(/\\[a-zA-Z]+\d*\([^)]*\)/g, "");
+  s = s.replace(/\\[a-zA-Z]+-?\d+/g, "");
+  s = s.replace(/\\[a-zA-Z]+/g, "");
+  s = s.replace(/&H[0-9A-Fa-f]{1,8}&?/gi, "");
+  s = s.replace(/\\/g, "");
+  return s.replace(/\s+/g, " ").trim();
 }
 
 async function startServer() {
@@ -98,15 +147,15 @@ async function startServer() {
 
   function loadGeminiKeys() {
     const keysSet = new Set<string>();
-    
-    // 1. Parse standard GEMINI_API_KEY (support comma or space separation)
-    const mainKey = process.env.GEMINI_API_KEY;
+
+    // 0. Remote config (live-synced for all users) then env
+    const mainKey = getSecret("GEMINI_API_KEY") || process.env.GEMINI_API_KEY || "";
     if (mainKey) {
       const parts = mainKey.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
       parts.forEach(k => keysSet.add(k));
     }
     
-    // 2. Scan for any other environment variables starting with GEMINI_API_KEY or GEMINI_KEY
+    // 1. Scan for any other environment variables starting with GEMINI_API_KEY or GEMINI_KEY
     for (const envVar in process.env) {
       if (envVar.startsWith("GEMINI_API_KEY") || envVar.startsWith("GEMINI_KEY")) {
         const val = process.env[envVar];
@@ -118,7 +167,316 @@ async function startServer() {
     }
     
     geminiKeys = Array.from(keysSet);
+    nextKeyIndex = 0;
     console.log(`[Gemini Rotation] Loaded ${geminiKeys.length} active API key(s) for rotation.`);
+  }
+
+  // Hot-reload keys when remote-config.json changes
+  onRemoteConfigChange(() => {
+    loadGeminiKeys();
+  });
+
+  function getProviderApiKey(envName: string): string {
+    return getSecret(envName as any) || process.env[envName] || "";
+  }
+
+  /** Map app language ids → Whisper ISO-639-1 (optional; improves accuracy) */
+  function mapLanguageToWhisperCode(language: string): string | undefined {
+    const map: Record<string, string> = {
+      tamil: "ta",
+      hindi: "hi",
+      telugu: "te",
+      kannada: "kn",
+      malayalam: "ml",
+      english: "en",
+      spanish: "es",
+      italian: "it",
+      auto: "",
+    };
+    const code = map[String(language || "").toLowerCase()];
+    return code || undefined;
+  }
+
+  /** Always force Whisper language when user picks one — maximizes original-language accuracy */
+  function whisperLanguageHint(language: string): string | undefined {
+    return mapLanguageToWhisperCode(language);
+  }
+
+  type WhisperWordsResult = {
+    words: { word: string; start_time: number; end_time: number }[];
+    model: string;
+    rawText: string;
+  };
+
+  /** Parse Groq Whisper verbose_json (transcriptions or translations) into timed words */
+  function parseWhisperVerboseJson(data: any): {
+    words: { word: string; start_time: number; end_time: number }[];
+    rawText: string;
+  } {
+    let words: { word: string; start_time: number; end_time: number }[] = [];
+
+    if (Array.isArray(data.words) && data.words.length > 0) {
+      words = data.words
+        .map((w: any) => ({
+          word: String(w.word ?? w.text ?? "").trim(),
+          start_time: Number(w.start ?? w.start_time ?? 0),
+          end_time: Number(w.end ?? w.end_time ?? w.start ?? 0),
+        }))
+        .filter((w: any) => w.word.length > 0);
+    } else if (Array.isArray(data.segments) && data.segments.length > 0) {
+      for (const seg of data.segments) {
+        const segText = String(seg.text || "").trim();
+        if (!segText) continue;
+        const parts = segText.split(/\s+/).filter(Boolean);
+        const start = Number(seg.start || 0);
+        const end = Number(seg.end || start + 1);
+        const span = Math.max(end - start, 0.05);
+        parts.forEach((p: string, i: number) => {
+          const t0 = start + (span * i) / parts.length;
+          const t1 = start + (span * (i + 1)) / parts.length;
+          words.push({ word: p, start_time: t0, end_time: t1 });
+        });
+      }
+    } else if (typeof data.text === "string" && data.text.trim()) {
+      const parts = data.text.trim().split(/\s+/).filter(Boolean);
+      parts.forEach((p: string, i: number) => {
+        words.push({ word: p, start_time: i * 0.4, end_time: i * 0.4 + 0.35 });
+      });
+    }
+
+    return {
+      words,
+      rawText: String(data.text || words.map((w) => w.word).join(" ")),
+    };
+  }
+
+  function buildGroqAudioForm(
+    audioFilePath: string,
+    mimeType: string,
+    opts: { forTranslation?: boolean; language?: string }
+  ): FormData {
+    const fileBuffer = fs.readFileSync(audioFilePath);
+    const ext = path.extname(audioFilePath).toLowerCase() || ".mp3";
+    const filename = `audio${ext}`;
+    const blob = new Blob([fileBuffer], { type: mimeType || "audio/mpeg" });
+
+    const form = new FormData();
+    form.append("file", blob, filename);
+    // whisper-large-v3 supports both transcription + translation (turbo does NOT support translation)
+    form.append("model", "whisper-large-v3");
+    form.append("response_format", "verbose_json");
+    form.append("timestamp_granularities[]", "word");
+    form.append("temperature", "0");
+
+    if (opts.forTranslation) {
+      // Translations endpoint always outputs English; language param only allows 'en'
+      form.append("language", "en");
+      form.append(
+        "prompt",
+        "Natural conversational English subtitles. Accurate translation of the spoken audio."
+      );
+    } else {
+      const lang = String(opts.language || "auto").toLowerCase();
+      if (lang === "tamil") {
+        form.append(
+          "prompt",
+          "Tamil and English mixed conversation (Tanglish). Transcribe every spoken word accurately."
+        );
+        form.append("language", "ta");
+      } else if (lang === "hindi") {
+        form.append(
+          "prompt",
+          "Hindi and English mixed conversation (Hinglish). Transcribe accurately."
+        );
+        form.append("language", "hi");
+      } else if (lang === "english") {
+        form.append("language", "en");
+      } else if (lang === "kannada") {
+        form.append(
+          "prompt",
+          "Kannada speech. Transcribe the exact spoken Kannada accurately in Kannada script when possible."
+        );
+        form.append("language", "kn");
+      } else if (lang === "telugu") {
+        form.append("language", "te");
+      } else if (lang === "malayalam") {
+        form.append("language", "ml");
+      } else if (lang !== "auto") {
+        const code = mapLanguageToWhisperCode(lang);
+        if (code) form.append("language", code);
+      }
+      // Never use /audio/translations here — English is done by gpt-oss-120b only
+    }
+    return form;
+  }
+
+  /**
+   * PRIMARY transcription: Groq Whisper Large V3
+   * POST https://api.groq.com/openai/v1/audio/transcriptions
+   */
+  async function transcribeWithGroqWhisper(
+    audioFilePath: string,
+    mimeType: string,
+    jobId?: string,
+    language?: string,
+    maxAttempts = 3
+  ): Promise<WhisperWordsResult> {
+    const apiKey = getProviderApiKey("GROQ_API_KEY");
+    if (!apiKey) {
+      throw new Error("GROQ_API_KEY is not configured. Set it in .env or remote-config.json");
+    }
+
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        sendLog(
+          jobId,
+          `🎤 Groq Whisper transcriptions (priority-1) — attempt ${attempt}/${maxAttempts}...`
+        );
+
+        const form = buildGroqAudioForm(audioFilePath, mimeType, {
+          forTranslation: false,
+          language,
+        });
+
+        const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form,
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Groq transcriptions HTTP ${res.status}: ${errText.slice(0, 500)}`);
+        }
+
+        const data: any = await res.json();
+        const parsed = parseWhisperVerboseJson(data);
+        if (parsed.words.length === 0) {
+          throw new Error("Groq Whisper transcription returned empty words.");
+        }
+
+        sendLog(
+          jobId,
+          `✅ Groq transcriptions OK — ${parsed.words.length} words (attempt ${attempt}).`
+        );
+        return {
+          words: parsed.words,
+          model: "whisper-large-v3",
+          rawText: parsed.rawText,
+        };
+      } catch (err: any) {
+        lastError = err;
+        sendLog(
+          jobId,
+          `⚠️ Groq transcriptions attempt ${attempt}/${maxAttempts} failed: ${err.message || err}. ${
+            attempt < maxAttempts ? "Retrying..." : "All transcription retries exhausted."
+          }`
+        );
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 600 * attempt));
+        }
+      }
+    }
+    throw lastError || new Error("Groq Whisper transcription failed after retries.");
+  }
+
+  /**
+   * English translation from audio (after transcription when user wants English)
+   * POST https://api.groq.com/openai/v1/audio/translations
+   * Model: whisper-large-v3 only (turbo has no translation support)
+   */
+  async function translateAudioToEnglishWithGroq(
+    audioFilePath: string,
+    mimeType: string,
+    timingSource: { word: string; start_time: number; end_time: number }[],
+    jobId?: string,
+    maxAttempts = 3
+  ): Promise<WhisperWordsResult> {
+    const apiKey = getProviderApiKey("GROQ_API_KEY");
+    if (!apiKey) {
+      throw new Error("GROQ_API_KEY is not configured for translations.");
+    }
+
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        sendLog(
+          jobId,
+          `🌍 Groq audio/translations → English (whisper-large-v3) — attempt ${attempt}/${maxAttempts}...`
+        );
+
+        const form = buildGroqAudioForm(audioFilePath, mimeType, { forTranslation: true });
+
+        const res = await fetch("https://api.groq.com/openai/v1/audio/translations", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form,
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Groq translations HTTP ${res.status}: ${errText.slice(0, 500)}`);
+        }
+
+        const data: any = await res.json();
+        const parsed = parseWhisperVerboseJson(data);
+
+        // Prefer native word timestamps from translations when available
+        let words = parsed.words;
+        if (words.length === 0 && parsed.rawText.trim()) {
+          // Align English text onto original transcription timings
+          const start = timingSource[0]?.start_time ?? 0;
+          const end =
+            timingSource[timingSource.length - 1]?.end_time ?? start + 1;
+          words = distributePhraseText(parsed.rawText, start, end, timingSource);
+        } else if (
+          words.length > 0 &&
+          timingSource.length > 0 &&
+          // If translations returned untimed/weird spans, re-anchor to transcription timeline
+          (words[words.length - 1].end_time <= 0 ||
+            Math.abs(
+              (words[words.length - 1].end_time || 0) -
+                (timingSource[timingSource.length - 1].end_time || 0)
+            ) > 30)
+        ) {
+          const start = timingSource[0].start_time;
+          const end = timingSource[timingSource.length - 1].end_time;
+          words = distributePhraseText(
+            words.map((w) => w.word).join(" "),
+            start,
+            end,
+            timingSource
+          );
+        }
+
+        if (words.length === 0) {
+          throw new Error("Groq translations returned empty English text.");
+        }
+
+        sendLog(
+          jobId,
+          `✅ Groq translations → English OK — ${words.length} words (attempt ${attempt}).`
+        );
+        return {
+          words,
+          model: "whisper-large-v3-translations",
+          rawText: parsed.rawText || words.map((w) => w.word).join(" "),
+        };
+      } catch (err: any) {
+        lastError = err;
+        sendLog(
+          jobId,
+          `⚠️ Groq translations attempt ${attempt}/${maxAttempts} failed: ${err.message || err}. ${
+            attempt < maxAttempts ? "Retrying..." : "Translation retries exhausted."
+          }`
+        );
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 600 * attempt));
+        }
+      }
+    }
+    throw lastError || new Error("Groq audio translation to English failed after retries.");
   }
 
   function getNextGeminiKey(): string | null {
@@ -305,6 +663,368 @@ async function startServer() {
     return wordsList;
   }
 
+  type TimedWord = { word: string; start_time: number; end_time: number };
+
+  /** Clean Whisper tokens (strip stray punctuation-only tokens, normalize) */
+  function normalizeWhisperWords(words: TimedWord[]): TimedWord[] {
+    return words
+      .map((w) => ({
+        ...w,
+        word: String(w.word || "")
+          .replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, "")
+          .trim(),
+        start_time: Number(w.start_time) || 0,
+        end_time: Math.max(Number(w.end_time) || 0, Number(w.start_time) || 0),
+      }))
+      .filter((w) => w.word.length > 0);
+  }
+
+  /** Group words into natural phrases (pause or size) for accurate LLM rewrite */
+  function groupWordsIntoPhrases(words: TimedWord[], maxWords = 8, maxGap = 0.55) {
+    if (words.length === 0) return [] as { words: TimedWord[]; text: string; start: number; end: number }[];
+    const phrases: { words: TimedWord[]; text: string; start: number; end: number }[] = [];
+    let cur: TimedWord[] = [words[0]];
+    for (let i = 1; i < words.length; i++) {
+      const prev = words[i - 1];
+      const w = words[i];
+      const gap = w.start_time - prev.end_time;
+      if (gap > maxGap || cur.length >= maxWords) {
+        phrases.push({
+          words: cur,
+          text: cur.map((x) => x.word).join(" "),
+          start: cur[0].start_time,
+          end: cur[cur.length - 1].end_time,
+        });
+        cur = [w];
+      } else {
+        cur.push(w);
+      }
+    }
+    if (cur.length) {
+      phrases.push({
+        words: cur,
+        text: cur.map((x) => x.word).join(" "),
+        start: cur[0].start_time,
+        end: cur[cur.length - 1].end_time,
+      });
+    }
+    return phrases;
+  }
+
+  /** Spread a phrase string across an original time span as timed words */
+  function distributePhraseText(
+    text: string,
+    start: number,
+    end: number,
+    fallbackWords: TimedWord[]
+  ): TimedWord[] {
+    const parts = text
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(" ")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length === 0) return fallbackWords;
+    const span = Math.max(end - start, 0.08 * parts.length);
+    return parts.map((p, i) => {
+      const t0 = start + (span * i) / parts.length;
+      const t1 = start + (span * (i + 1)) / parts.length;
+      return { word: p, start_time: t0, end_time: Math.max(t1, t0 + 0.04) };
+    });
+  }
+
+  const REACTION_EMOJIS = ["😮", "😅", "😤", "😱", "🤔", "😌", "🙄", "😳", "😭", "😂", "🤩", "😎"];
+  const HEART_EMOJIS = ["❤️", "💕", "💖", "💗", "😍", "🥰", "💘", "💝"];
+
+  function stripAllEmojis(text: string): string {
+    return text
+      .replace(/\p{Extended_Pictographic}/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /** Exactly one emoji at end of each caption line; alternate reaction ↔ heart */
+  function ensureOneLineEmoji(text: string, lineIndex: number, enabled: boolean): string {
+    const base = stripAllEmojis(text);
+    if (!enabled || !base) return base;
+    const pool = lineIndex % 2 === 0 ? REACTION_EMOJIS : HEART_EMOJIS;
+    const emoji = pool[lineIndex % pool.length];
+    return `${base} ${emoji}`;
+  }
+
+  /** Rough syllable estimate for Latin-script text (lip-sync targeting) */
+  function estimateSyllables(text: string): number {
+    const clean = stripAllEmojis(text).toLowerCase().replace(/[^a-z\s']/g, " ");
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length === 0) return 1;
+    let total = 0;
+    for (const w of words) {
+      const m = w.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, "").match(/[aeiouy]{1,2}/g);
+      total += Math.max(1, m ? m.length : 1);
+    }
+    return total;
+  }
+
+  /**
+   * Perfect Lip-Sync & Grammar Master polish for Whisper output.
+   * Analyzes original spoken language rhythm and rewrites English for dubbing/sync.
+   */
+  async function polishWhisperPhrases(
+    initialWords: TimedWord[],
+    languageInstruction: string,
+    usePunctuation: boolean,
+    jobId?: string,
+    useEmojis = true,
+    originalSpokenLanguage = "auto"
+  ): Promise<{ words: TimedWord[]; providerUsed: string }> {
+    const normalized = normalizeWhisperWords(initialWords);
+    if (normalized.length === 0) {
+      return { words: [], providerUsed: "empty" };
+    }
+
+    // Phrase windows from ORIGINAL-language Whisper ASR — each becomes one English caption line
+    const phrases = groupWordsIntoPhrases(normalized, 8, 0.55);
+    const fullWhisperText = phrases.map((p) => p.text).join(" ");
+    const sourceLang =
+      !originalSpokenLanguage || originalSpokenLanguage === "auto"
+        ? "Unknown (detect from the original-language Whisper transcript; treat as regional Indian speech if unclear)"
+        : originalSpokenLanguage.charAt(0).toUpperCase() + originalSpokenLanguage.slice(1);
+
+    // User's Perfect Lip-Sync & Grammar Master Prompt — Whisper = original language only; this model = English
+    const systemPrompt = `Act as an expert translation editor, linguist, and audio localization scriptwriter. I am going to provide you with a raw transcript of a video or audio file generated by a speech-to-text model (Whisper), along with the source text or context of the original spoken language. It contains timing data and timestamps.
+
+CRITICAL: Whisper was used ONLY to transcribe the EXACT spoken original language. It did NOT translate. You receive original-language text + timestamps. You produce FINAL ENGLISH CAPTIONS.
+
+Your task is to completely rewrite/translate into English to achieve absolute perfection for video dubbing/lip-syncing. You must strictly adhere to the following constraints:
+
+1. ORIGINAL LANGUAGE ANALYSIS: Look at the original spoken language provided (${sourceLang}). Analyze its unique rhythm, cadence, and sentence structure so you can map the English translation precisely to how the original language sounds when spoken.
+2. SYLLABLE & PACING MATCH: The English text must perfectly match the exact duration, speech pacing, and syllable count of the original spoken language for each timestamp window. Write so a voice actor reading English naturally matches the original audio's rhythm, speed, and pauses. Each phrase includes target_syllables_min / target_syllables_max — stay inside that range whenever possible.
+3. 100% PERFECT GRAMMAR: Unlike standard literal translations which can sound broken or unnatural, the English phrasing must be completely natural, idiomatic, and 100% grammatically correct while maintaining the syllable sync.
+4. CONTEXT & LOGIC CORRECTION: Fix any logical errors made by the speech-to-text model (e.g., ensure business ads make logical sense, correct flipped phrases like "with hidden charges" to "no hidden charges", and naturally translate any untranslated regional words). Fix brand names from context (Anikabs → Ani Cabs Tours and Travels BLR).
+5. FORMATTING: Retain the timestamp breakdown structure (same phrase ids). Give ONLY the final corrected English version—do not include explanations, the original language text, or the old text.
+6. EMOJIS: ${
+      useEmojis
+        ? "Add exactly ONE single emoji at the end of each timestamp line. Alternate only between expressive reaction emojis (😮😅😤😱🤔😌🙄😳😭😂🤩😎) on even ids and love heart emojis (❤️💕💖💗😍🥰💘💝) on odd ids. Never use more than one emoji per line."
+        : "Do NOT add any emojis."
+    }
+7. EXTRA: ${languageInstruction.trim()}
+8. PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
+
+EXAMPLES OF HOW TO CORRECT THE TEXT (Based on Original Kannada Spoken Audio):
+
+Example 1 (Fixing Logic & Bad Grammar):
+- Original Language Spoken: ಹಾಸನಕ್ಕೆ ಒಂದೇ ಕ್ಯಾಬ್ ಬುಕ್ ಮಾಡಬೇಕಾ? ಕೊನೆಯ ಕ್ಷಣದಲ್ಲಿ ಬುಕ್ಕಿಂಗ್ ಕ್ಯಾನ್ಸಲ್ ಆಗುತ್ತೋ ಅನ್ನೋ ಟೆನ್ಷನ್?
+- Perfect Fix:
+  0:00-0:02 | To Hassan, do you need to book a cab?
+  0:02-0:05 | Last-minute canceling of your booking causing you tension?
+
+Example 2 (Fixing Inverted Meanings & Missing Local Words):
+- Original Language Spoken: ಅನಿ ಕ್ಯಾಬ್ಸ್ ಟೂರ್ಸ್ ಅಂಡ್ ಟ್ರಾವೆಲ್ಸ್ ಬಿ.ಎಲ್.ಆರ್ ಇದೆ ಅಲ್ವಾ? ಹಿಡನ್ ಚಾರ್ಜಸ್ ಇಲ್ಲ.
+- Perfect Fix:
+  0:11-0:14 | Ani Cabs Tours and Travels BLR is here, right?
+  0:15-0:18 | Right on time, premium service, professional drivers,
+  0:18-0:20 | No hidden charges here.
+
+OUTPUT JSON ONLY (same number of phrases and same ids):
+{"phrases":[{"id":0,"text":"Perfect English line 😮"},{"id":1,"text":"Next perfect line ❤️"}]}`;
+
+    const userPayload = {
+      original_spoken_language: sourceLang,
+      note: "Whisper output is ORIGINAL-LANGUAGE transcription only — not English.",
+      full_original_language_transcript: fullWhisperText,
+      phrases: phrases.map((p, id) => {
+        const duration = Math.max(p.end - p.start, 0.15);
+        const targetMin = Math.max(2, Math.round(duration * 2.8));
+        const targetMax = Math.max(targetMin + 1, Math.round(duration * 4.6));
+        return {
+          id,
+          original_language_text: p.text,
+          start_time: Number(p.start.toFixed(3)),
+          end_time: Number(p.end.toFixed(3)),
+          duration_sec: Number(duration.toFixed(3)),
+          target_syllables_min: targetMin,
+          target_syllables_max: targetMax,
+        };
+      }),
+    };
+
+    const groqKey = getProviderApiKey("GROQ_API_KEY");
+    if (groqKey) {
+      try {
+        sendLog(
+          jobId,
+          `GPT-OSS-120B English rewrite from original ${sourceLang} Whisper transcript...`
+        );
+        const url = "https://api.groq.com/openai/v1/chat/completions";
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${groqKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "openai/gpt-oss-120b",
+            temperature: 0.3,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt },
+              {
+                role: "user",
+                content: `Original Spoken Language: ${sourceLang}
+
+Whisper ONLY transcribed the original spoken language (NOT English). Your job is English captions for lip-sync.
+
+Here is the original-language transcript + timestamps to translate and synchronize.
+Return ONLY the final corrected ENGLISH phrases for each id — JSON only.
+
+${JSON.stringify(userPayload, null, 2)}`,
+              },
+            ],
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+        }
+        const data: any = await response.json();
+        const content = data.choices?.[0]?.message?.content || "";
+        const parsed = extractJsonFromResponse(content);
+        const outPhrases: any[] = Array.isArray(parsed.phrases) ? parsed.phrases : [];
+        const byId = new Map<number, string>();
+        for (const op of outPhrases) {
+          if (op && (op.id === 0 || op.id) && typeof op.text === "string") {
+            byId.set(Number(op.id), op.text);
+          }
+        }
+
+        const result: TimedWord[] = [];
+        phrases.forEach((p, id) => {
+          let text = byId.has(id) ? String(byId.get(id)) : p.text;
+          text = ensureOneLineEmoji(text, id, useEmojis);
+
+          // Soft syllable clamp: if model overshot badly, keep text but still place on timeline
+          const duration = Math.max(p.end - p.start, 0.15);
+          const maxSyl = Math.max(3, Math.round(duration * 5.2));
+          let body = stripAllEmojis(text);
+          let syl = estimateSyllables(body);
+          if (syl > maxSyl + 3) {
+            // Prefer shorter re-split by dropping filler words if model overwrote length
+            const fillers = new Set([
+              "just", "really", "actually", "basically", "very", "quite", "please", "like",
+            ]);
+            const toks = body.split(/\s+/).filter(Boolean);
+            const trimmed = toks.filter((t, i) => i === 0 || i === toks.length - 1 || !fillers.has(t.toLowerCase()));
+            if (trimmed.length > 0 && estimateSyllables(trimmed.join(" ")) < syl) {
+              body = trimmed.join(" ");
+              text = ensureOneLineEmoji(body, id, useEmojis);
+            }
+          }
+
+          const parts = stripAllEmojis(text).split(/\s+/).filter(Boolean);
+          const emojiMatch = text.match(/\p{Extended_Pictographic}/u);
+          const emoji = useEmojis && emojiMatch ? emojiMatch[0] : "";
+          if (parts.length === 0) {
+            result.push(...p.words);
+            return;
+          }
+          const timed = distributePhraseText(parts.join(" "), p.start, p.end, p.words);
+          if (emoji && timed.length > 0) {
+            timed[timed.length - 1] = {
+              ...timed[timed.length - 1],
+              word: `${timed[timed.length - 1].word} ${emoji}`,
+            };
+          }
+          result.push(...timed);
+        });
+        sendLog(
+          jobId,
+          `✨ GPT-OSS-120B English captions OK — ${result.length} words / ${phrases.length} lines (from ${sourceLang}).`
+        );
+        return { words: result, providerUsed: `openai/gpt-oss-120b (${sourceLang}→EN)` };
+      } catch (err: any) {
+        sendLog(jobId, `GPT-OSS-120B polish failed: ${err.message}. Trying fallback...`);
+      }
+    }
+
+    // Fallback: classic enrich path
+    try {
+      const legacyPrompt = `You are an expert subtitle editor + lip-sync scriptwriter.
+Original spoken language: ${sourceLang}.
+${languageInstruction}
+Fix flipped logic (e.g. with hidden charges → no hidden charges), brand names, grammar, and natural English.
+Match approximate syllable length to each word's timing window.
+Keep same array length and timestamps. ${useEmojis ? "Do not add emojis here." : "No emojis."}
+JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
+      const fb = await enrichSubtitlesWithFallback(normalized, legacyPrompt, jobId);
+      const fixed = fb.words.map((w: any, i: number) => ({
+        word: String(w.word || normalized[i]?.word || ""),
+        start_time: normalized[Math.min(i, normalized.length - 1)].start_time,
+        end_time: normalized[Math.min(i, normalized.length - 1)].end_time,
+      }));
+      if (useEmojis) {
+        const phrases2 = groupWordsIntoPhrases(fixed, 8, 0.55);
+        let offset = 0;
+        const out: TimedWord[] = [];
+        phrases2.forEach((ph, idx) => {
+          const chunk = fixed.slice(offset, offset + ph.words.length);
+          offset += ph.words.length;
+          if (chunk.length > 0) {
+            const last = chunk[chunk.length - 1];
+            const line = ensureOneLineEmoji(chunk.map((c) => c.word).join(" "), idx, true);
+            const emojiMatch = line.match(/\p{Extended_Pictographic}/u);
+            chunk[chunk.length - 1] = {
+              ...last,
+              word: emojiMatch
+                ? `${stripAllEmojis(last.word)} ${emojiMatch[0]}`
+                : last.word,
+            };
+          }
+          out.push(...chunk);
+        });
+        return { words: out, providerUsed: fb.providerUsed + " + line-emojis" };
+      }
+      return { words: fixed, providerUsed: fb.providerUsed };
+    } catch {
+      return { words: normalized, providerUsed: "Whisper raw (no polish)" };
+    }
+  }
+
+  /** Legacy keyword emoji helper (used only if expert polish skipped) */
+  function applyServerSideEmojis(
+    words: TimedWord[],
+    _emojiStyle: string,
+    enabled: boolean
+  ): TimedWord[] {
+    if (!enabled) return words;
+    // Convert word stream back into lines and stamp one alternating emoji per line
+    const phrases = groupWordsIntoPhrases(words, 10, 0.65);
+    const out: TimedWord[] = [];
+    let cursor = 0;
+    phrases.forEach((ph, idx) => {
+      const chunk = words.slice(cursor, cursor + ph.words.length);
+      cursor += ph.words.length;
+      if (chunk.length === 0) return;
+      const lineText = ensureOneLineEmoji(
+        chunk.map((c) => stripAllEmojis(c.word)).join(" "),
+        idx,
+        true
+      );
+      const emojiMatch = lineText.match(/\p{Extended_Pictographic}/u);
+      const last = chunk[chunk.length - 1];
+      chunk[chunk.length - 1] = {
+        ...last,
+        word: emojiMatch
+          ? `${stripAllEmojis(last.word)} ${emojiMatch[0]}`
+          : stripAllEmojis(last.word),
+      };
+      // strip mid-word spam emojis from other words
+      for (let i = 0; i < chunk.length - 1; i++) {
+        chunk[i] = { ...chunk[i], word: stripAllEmojis(chunk[i].word) };
+      }
+      out.push(...chunk);
+    });
+    return out.length ? out : words;
+  }
+
   async function enrichSubtitlesWithFallback(
     initialWords: any[],
     systemPrompt: string,
@@ -327,7 +1047,7 @@ async function startServer() {
       config = {
         providers: [
           { name: "gemini", displayName: "Google Gemini", apiKeyEnv: "GEMINI_API_KEY", defaultModel: "gemini-2.5-flash", baseUrl: "" },
-          { name: "groq", displayName: "Groq Cloud", apiKeyEnv: "GROQ_API_KEY", defaultModel: "llama-3.3-70b-versatile", baseUrl: "https://api.groq.com/openai/v1" },
+          { name: "groq", displayName: "Groq Cloud", apiKeyEnv: "GROQ_API_KEY", defaultModel: "openai/gpt-oss-120b", baseUrl: "https://api.groq.com/openai/v1" },
           { name: "nvidia", displayName: "NVIDIA NIM", apiKeyEnv: "NVIDIA_API_KEY", defaultModel: "meta/llama-3-70b-instruct", baseUrl: "https://integrate.api.nvidia.com/v1" },
           { name: "openrouter", displayName: "OpenRouter", apiKeyEnv: "OPENROUTER_API_KEY", defaultModel: "meta-llama/llama-3.3-70b-instruct:free", baseUrl: "https://openrouter.ai/api/v1" }
         ],
@@ -341,7 +1061,7 @@ async function startServer() {
       const provider = config.providers.find((p: any) => p.name === providerName);
       if (!provider) continue;
 
-      const apiKey = process.env[provider.apiKeyEnv];
+      const apiKey = getProviderApiKey(provider.apiKeyEnv);
       if (!apiKey && providerName !== "gemini") {
         continue; // Provider API key not configured
       }
@@ -502,14 +1222,53 @@ async function startServer() {
     const jobId = req.query.jobId as string;
     const accessToken = getAccessTokenFromHeader(req);
     let audioPath: string | null = null;
+    const processStartedAt = Date.now();
+    const clientIp = getClientIp(req);
+
+    // Block uploads during remote maintenance
+    if (getRemoteConfig().maintenanceMode) {
+      return res.status(503).json({ error: "App is in maintenance mode. Please try again later." });
+    }
+
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No video file provided" });
       }
 
-      const { language = 'tamil', useEmojis = 'true', translationMode = 'transliterate', usePunctuation = 'true', emojiStyle = 'vibes' } = req.body;
-      const isEmojiActive = useEmojis === 'true';
-      const isPunctuationActive = usePunctuation === 'true';
+      const {
+        language = "tamil",
+        useEmojis = "true",
+        translationMode = "transliterate",
+        usePunctuation = "true",
+        emojiStyle = "vibes",
+        // tracker fields from client
+        sessionId = "",
+        sessionFailCount = "0",
+        clientTimezone = "",
+        clientLanguage = "",
+        clientUserAgent = "",
+        clientLocation = "",
+        mediaDurationSeconds = "",
+        mediaTitle = "",
+        styleSettingsJson = "",
+      } = req.body;
+
+      const isEmojiActive = useEmojis === "true";
+      const isPunctuationActive = usePunctuation === "true";
+
+      let parsedClientLocation: TrackerEvent["location"] = null;
+      try {
+        if (clientLocation) parsedClientLocation = JSON.parse(clientLocation);
+      } catch {
+        parsedClientLocation = null;
+      }
+      let parsedStyleSettings: Record<string, any> | undefined;
+      try {
+        if (styleSettingsJson) parsedStyleSettings = JSON.parse(styleSettingsJson);
+      } catch {
+        parsedStyleSettings = undefined;
+      }
+      const durationFromClient = mediaDurationSeconds !== "" ? parseFloat(mediaDurationSeconds) : null;
       
       sendLog(jobId, `Selected language: ${language.toUpperCase()} (${translationMode.toUpperCase()}) | Emojis: ${isEmojiActive ? 'YES' : 'NO'} (${emojiStyle.toUpperCase()}) | Punctuation: ${isPunctuationActive ? 'YES' : 'NO'}`);
       sendLog(jobId, "Extracting audio from video using FFmpeg...");
@@ -523,81 +1282,119 @@ async function startServer() {
         audioPath = req.file.path; // fallback
       }
 
-      const stats = fs.statSync(audioPath);
-      const mimeType = audioPath.endsWith('.mp3') ? 'audio/mpeg' : req.file.mimetype;
-      
-      sendLog(jobId, "Uploading audio and generating raw transcript using Google Gemini native transcription engine...");
-      
-      const fileBuffer = fs.readFileSync(audioPath);
-      
-      // Call Gemini with Key Rotation to transcribe
+      const mimeType = audioPath.endsWith(".mp3") ? "audio/mpeg" : req.file.mimetype;
+
+      // ---- PRIORITY-1: Groq Whisper Large V3 (retries built-in) ----
+      // Endpoint: https://api.groq.com/openai/v1/audio/transcriptions
+      // Model: whisper-large-v3
       let initialWords: { word: string; start_time: number; end_time: number }[] = [];
-      
-      await callGeminiWithRotation(async (ai) => {
-        // Try gemini-2.5-flash as the primary native audio model
-        const geminiRes = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [
-            {
-              inlineData: {
-                data: fileBuffer.toString("base64"),
-                mimeType: mimeType
-              }
-            },
-            {
-              text: "You are a professional audio transcriber. Transcribe the spoken audio with extremely accurate word-level or phrase-level timestamps in seconds. Align each transcribed word with its exact start_time and end_time. Return every single word spoken in order. Format as a JSON object with a 'words' list containing objects of: { word: string, start_time: number, end_time: number }."
-            }
-          ],
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                words: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      word: { type: Type.STRING },
-                      start_time: { type: Type.NUMBER },
-                      end_time: { type: Type.NUMBER }
-                    },
-                    required: ["word", "start_time", "end_time"]
-                  }
-                }
+      let transcriptionEngine = "groq-whisper-large-v3";
+
+      try {
+        sendLog(
+          jobId,
+          "Step 1/2: Groq Whisper Large V3 — ORIGINAL language transcription ONLY (no English translation)..."
+        );
+        const groqResult = await transcribeWithGroqWhisper(
+          audioPath,
+          mimeType,
+          jobId,
+          language,
+          3 // always retry up to 3 times on Groq before any fallback
+        );
+        initialWords = groqResult.words;
+        transcriptionEngine = groqResult.model;
+        sendLog(
+          jobId,
+          `Whisper original-language transcript ready: ${initialWords.length} timed words.`
+        );
+      } catch (groqErr: any) {
+        // Optional emergency fallback to Gemini only if Groq is completely unavailable
+        sendLog(
+          jobId,
+          `Groq Whisper failed after retries (${groqErr.message || groqErr}). Falling back to Gemini STT...`
+        );
+        const fileBuffer = fs.readFileSync(audioPath);
+        await callGeminiWithRotation(async (ai) => {
+          const geminiRes = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [
+              {
+                inlineData: {
+                  data: fileBuffer.toString("base64"),
+                  mimeType: mimeType,
+                },
               },
-              required: ["words"]
-            }
+              {
+                text: "You are a professional audio transcriber. Transcribe the spoken audio with extremely accurate word-level or phrase-level timestamps in seconds. Align each transcribed word with its exact start_time and end_time. Return every single word spoken in order. Format as a JSON object with a 'words' list containing objects of: { word: string, start_time: number, end_time: number }.",
+              },
+            ],
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  words: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        word: { type: Type.STRING },
+                        start_time: { type: Type.NUMBER },
+                        end_time: { type: Type.NUMBER },
+                      },
+                      required: ["word", "start_time", "end_time"],
+                    },
+                  },
+                },
+                required: ["words"],
+              },
+            },
+          });
+
+          const text = geminiRes.text;
+          if (!text) {
+            throw new Error("Received empty text back from Gemini transcriber.");
           }
-        });
 
-        const text = geminiRes.text;
-        if (!text) {
-          throw new Error("Received empty text back from Gemini transcriber.");
-        }
+          const parsed = JSON.parse(text.trim());
+          if (parsed.words && Array.isArray(parsed.words)) {
+            initialWords = parsed.words.map((w: any) => ({
+              word: String(w.word),
+              start_time: Number(w.start_time || w.start || 0),
+              end_time: Number(w.end_time || w.end || 0),
+            }));
+          } else {
+            throw new Error("No words array found in Gemini parsed result.");
+          }
+        }, jobId);
+        transcriptionEngine = "gemini-2.5-flash-fallback";
+        sendLog(
+          jobId,
+          `Successfully generated ${initialWords.length} initial timed words via Gemini fallback.`
+        );
+      }
 
-        const parsed = JSON.parse(text.trim());
-        if (parsed.words && Array.isArray(parsed.words)) {
-          initialWords = parsed.words.map((w: any) => ({
-            word: String(w.word),
-            start_time: Number(w.start_time || w.start || 0),
-            end_time: Number(w.end_time || w.end || 0)
-          }));
-        } else {
-          throw new Error("No words array found in Gemini parsed result.");
-        }
-      }, jobId);
+      // Attach engine name for tracker later
+      (req as any)._transcriptionEngine = transcriptionEngine;
 
-      sendLog(jobId, `Successfully generated ${initialWords.length} initial timed words.`);
+      // STEP 2 is NOT Whisper translation. Whisper stays original-language only.
+      // English comes from openai/gpt-oss-120b using original transcript + timestamps.
+      sendLog(
+        jobId,
+        "Step 2/2: Skip Whisper /audio/translations — English will be done by openai/gpt-oss-120b from original-language transcript."
+      );
 
       let languageInstruction = "";
+
       if (language === 'tamil') {
         if (translationMode === 'translate_english') {
           languageInstruction = `
-            The spoken speech is in Tamil (or a mix of Tamil and English).
-            You MUST TRANSLATE all Tamil speech into standard, natural, conversational English text.
-            The subtitles MUST be written in English. Do NOT output Tamil phonetics. Translate the actual meaning to English.
-            Examples: "சும்மா" -> "simply" (or "just like that"), "செம்ம" -> "awesome" (or "excellent"), "மச்சி" -> "bro" (or "friend"), "வேற லெவல்" -> "next level".
+            Translate the ORIGINAL Tamil/Tanglish Whisper transcript into polished NATURAL ENGLISH captions.
+            Deeply repair meaning, brand names, emotion, and sales/ad logic.
+            Examples: "with hidden charges" → "zero hidden charges"; wrong brand spellings → correct brand;
+            tension about last-minute cancel → natural English.
+            Output English only.
           `;
         } else {
           languageInstruction = `
@@ -610,10 +1407,8 @@ async function startServer() {
       } else if (language === 'hindi') {
         if (translationMode === 'translate_english') {
           languageInstruction = `
-            The spoken speech is in Hindi (or a mix of Hindi and English).
-            You MUST TRANSLATE all Hindi speech into standard, natural, conversational English text.
-            The subtitles MUST be written in English. Do NOT output Hindi phonetics. Translate the actual meaning to English.
-            Examples: "बहुत बढ़िया" -> "excellent", "दोस्त" -> "friend", "क्या हुआ" -> "what happened".
+            Goal: polished NATURAL ENGLISH captions. Source is flawed Whisper English from Hindi/Hinglish audio.
+            Deeply repair meaning, brand names, emotion, and logic. English only.
           `;
         } else {
           languageInstruction = `
@@ -693,13 +1488,13 @@ async function startServer() {
         }
       } else if (language === 'english') {
         languageInstruction = `
-          The spoken speech is in English. Provide standard English subtitles.
+          The spoken speech is in English. Provide standard English subtitles. Fix only obvious ASR mistakes.
         `;
       } else {
         if (translationMode === 'translate_english') {
           languageInstruction = `
-            Detect the spoken language automatically. You MUST translate all non-English speech into standard, natural, conversational English text.
-            The subtitles MUST be written in proper English. Do NOT output regional phonetics. Translate the actual meaning to English.
+            Goal: polished NATURAL ENGLISH captions from flawed Whisper output (any regional source language).
+            Deeply repair logic, brand names, emotion, and spoken tone. English only. No leftover regional script.
           `;
         } else {
           languageInstruction = `
@@ -709,73 +1504,38 @@ async function startServer() {
         }
       }
 
-      const emojiInstruction = isEmojiActive 
-        ? `
-          CRITICAL EMOJI REQUIREMENT: Attach relevant expression emojis directly to the end of highly expressive keywords, adjectives, or emotional phrases.
-          Based on the selected theme preset "${emojiStyle}", choose emojis from this category:
-          - 'auto': Automatically adjust emojis dynamically based on the audio tone, speech content, and video style/mood. Intelligently select from any of the emoji lists (vibes, emotions, energetic, minimal, custom, objects, etc.) to perfectly fit the video style.
-          - 'vibes': Use high energy vibe emojis like 🔥, 🚀, ⚡, ✨, 🌟, 💯, 👑, 💥
-          - 'emotions': Use expressive feelings face emojis like 🤩, 😂, 😭, 😡, 😱, 😍, 🙄, 😤, 😐
-          - 'objects': Use real life object emojis like 🎬, 🎧, 🍔, 🍕, 🚗, 📱, 💼, 🎮, 📖
-          - 'energetic': Use fierce physical emojis like 🦾, 🥳, 💀, 🦁, 🥊, 🎯, 💣, 🦖
-          - 'minimal': Use cool minimal retro emojis like 👾, 🛸, 🧸, 🔮, 🍀, 🧿, 🎯
-          - 'custom': Use magical cute emojis like 💖, 🌈, 🦄, 🍭, 🎈, 🦄, 🍦, 🎈
-          Ensure emojis are added even if translating to English. Keep it clean and place them accurately where they add visual value.
-        `
-        : `
-          CRITICAL EMOJI REQUIREMENT: Do NOT include ANY emojis or symbols in the transcribed words. Keep all words strictly clean.
-        `;
-
-      const punctuationInstruction = isPunctuationActive
-        ? `
-          PUNCTUATION RULE: Include normal conversational punctuation (such as commas, periods, exclamation marks, or question marks) attached to words naturally to show structure and tone.
-        `
-        : `
-          PUNCTUATION RULE: Do NOT include ANY punctuation (commas, periods, exclamation marks, question marks, colons, semi-colons, brackets, or quotes). Words must consist ONLY of clean alphanumeric characters and emojis (if emojis are active).
-        `;
-
-      const systemPrompt = `
-        You are an advanced AI Video Editor and Subtitle Formatter.
-        You are given a JSON array of word objects, each having:
-        - "word": the transcribed word or partial phrase in the spoken language
-        - "start_time": the start timestamp in seconds (float)
-        - "end_time": the end timestamp in seconds (float)
-
-        YOUR TRANSFORMATION TASK:
-        For each word in the input JSON, process it based on the following configurations:
-        
-        1. Language Translation & Transliteration Rule:
-        ${languageInstruction}
-
-        2. Custom Emoji Expression rule:
-        ${emojiInstruction}
-
-        3. Smart Punctuation rule:
-        ${punctuationInstruction}
-
-        CRITICAL STABILITY RULES:
-        - You MUST retain the exact same number of items in the output array as the input array.
-        - You MUST map each input word object to exactly one output word object.
-        - You MUST keep the "start_time" and "end_time" values EXACTLY the same as the input. Do NOT modify, round, or shift any timestamp.
-        - Output ONLY a valid JSON object matching this schema:
-          {
-            "words": [
-              { "word": "formatted_word_with_optional_emoji", "start_time": <original_float>, "end_time": <original_float> }
-            ]
-          }
-        - Do NOT include any markdown code blocks (such as \`\`\`json), explanations, preamble, or trailing notes. Only return the raw JSON object.
-      `;
-
+      // Whisper (original language) → openai/gpt-oss-120b (English lip-sync captions)
       let finalWords: any[] = [];
       let providerUsed = "Raw Fallback";
 
       try {
-        const fallbackRes = await enrichSubtitlesWithFallback(initialWords, systemPrompt, jobId);
-        finalWords = fallbackRes.words;
-        providerUsed = fallbackRes.providerUsed;
+        sendLog(
+          jobId,
+          `Step 2/2: openai/gpt-oss-120b English captions from original ${language} Whisper transcript...`
+        );
+        const polished = await polishWhisperPhrases(
+          initialWords,
+          languageInstruction ||
+            "Translate original-language Whisper transcript into natural accurate English captions. Fix ASR logic errors and brand names. Match syllable count to each timestamp window.",
+          isPunctuationActive,
+          jobId,
+          isEmojiActive,
+          String(language || "auto")
+        );
+        // Emojis already applied per-line inside expert polish when enabled
+        finalWords = polished.words;
+        providerUsed = polished.providerUsed;
       } catch (err: any) {
-        sendLog(jobId, `Warning: All AI services failed: ${err.message}. Falling back to raw generated timed words.`);
-        finalWords = initialWords;
+        sendLog(
+          jobId,
+          `Warning: polish pipeline failed: ${err.message}. Using raw Whisper words + line emojis.`
+        );
+        finalWords = applyServerSideEmojis(
+          normalizeWhisperWords(initialWords),
+          emojiStyle,
+          isEmojiActive
+        );
+        providerUsed = "Whisper raw + line-emojis";
       }
 
       sendLog(jobId, "Cleaning up...");
@@ -795,8 +1555,66 @@ async function startServer() {
         ).catch(err => console.error("Sheets log background failed:", err));
       }
 
+      // Never send ASS layout tags (e.g. \an2\pos(...)) as caption text to the UI
+      const cleanedWords = (finalWords || []).map((w: any) => ({
+        ...w,
+        word: stripASSOverrides(String(w?.word ?? "")),
+      })).filter((w: any) => String(w.word || "").trim().length > 0);
+
+      const transcript = wordsToTranscript(cleanedWords);
+      const processingMs = Date.now() - processStartedAt;
+
+      // Duration: client probe, else last word end time
+      let durationSeconds =
+        durationFromClient != null && Number.isFinite(durationFromClient)
+          ? durationFromClient
+          : null;
+      if (durationSeconds == null && cleanedWords.length > 0) {
+        const last = cleanedWords[cleanedWords.length - 1];
+        if (typeof last.end_time === "number") durationSeconds = last.end_time;
+      }
+
+      // Fire-and-forget tracker email to owner
+      (async () => {
+        const ipGeo = await lookupIpGeo(clientIp);
+        const location = parsedClientLocation?.latitude != null
+          ? { ...parsedClientLocation, ...ipGeo, source: parsedClientLocation.source || ipGeo?.source }
+          : ipGeo;
+
+        await trackEvent({
+          event: "upload",
+          timestamp: new Date().toISOString(),
+          sessionId: sessionId || undefined,
+          title: mediaTitle || req.file!.originalname,
+          filename: req.file!.originalname || req.file!.filename,
+          mediaType: req.file!.mimetype,
+          mediaSizeBytes: req.file!.size,
+          durationSeconds,
+          userAgent: clientUserAgent || String(req.headers["user-agent"] || ""),
+          language: clientLanguage || language,
+          timezone: clientTimezone,
+          clientIp,
+          location,
+          aiProvider: `${(req as any)._transcriptionEngine || "whisper-large-v3"} + polish:${providerUsed}`,
+          aiModel: (req as any)._transcriptionEngine || "whisper-large-v3",
+          processingMs,
+          sessionFailCount: parseInt(String(sessionFailCount), 10) || 0,
+          wordCount: cleanedWords.length,
+          fullTranscript: transcript,
+          transcriptPreview: transcript.slice(0, 400),
+          uploadOptions: {
+            language,
+            translationMode,
+            useEmojis: isEmojiActive,
+            usePunctuation: isPunctuationActive,
+            emojiStyle,
+          },
+          styleSettings: parsedStyleSettings,
+        });
+      })().catch((err) => console.error("[Tracker] upload event failed:", err));
+
       sendLog(jobId, "Done! Results ready.");
-      res.json({ words: finalWords, filename: req.file.filename });
+      res.json({ words: cleanedWords, filename: req.file.filename, providerUsed, processingMs });
     } catch (error: any) {
       sendLog(jobId, "ERROR: " + error.message);
       console.error("Transcription error:", error);
@@ -811,6 +1629,47 @@ async function startServer() {
           "FAILED", 
           error.message || "Unknown transcription error"
         ).catch(err => console.error("Sheets log background failed:", err));
+      }
+
+      // Tracker: failure email
+      try {
+        const body = req.body || {};
+        (async () => {
+          const ipGeo = await lookupIpGeo(clientIp);
+          let loc: TrackerEvent["location"] = ipGeo;
+          try {
+            if (body.clientLocation) {
+              loc = { ...JSON.parse(body.clientLocation), ...ipGeo };
+            }
+          } catch { /* ignore */ }
+          await trackEvent({
+            event: "upload_failed",
+            timestamp: new Date().toISOString(),
+            sessionId: body.sessionId || undefined,
+            title: body.mediaTitle || req.file?.originalname,
+            filename: req.file?.originalname || req.file?.filename,
+            mediaType: req.file?.mimetype,
+            mediaSizeBytes: req.file?.size,
+            durationSeconds: body.mediaDurationSeconds ? parseFloat(body.mediaDurationSeconds) : null,
+            userAgent: body.clientUserAgent || String(req.headers["user-agent"] || ""),
+            language: body.clientLanguage || body.language,
+            timezone: body.clientTimezone,
+            clientIp,
+            location: loc,
+            processingMs: Date.now() - processStartedAt,
+            sessionFailCount: parseInt(String(body.sessionFailCount || "0"), 10) || 0,
+            errorMessage: error.message || "Unknown transcription error",
+            uploadOptions: {
+              language: body.language,
+              translationMode: body.translationMode,
+              useEmojis: body.useEmojis,
+              usePunctuation: body.usePunctuation,
+              emojiStyle: body.emojiStyle,
+            },
+          });
+        })().catch((err) => console.error("[Tracker] fail event error:", err));
+      } catch {
+        /* ignore tracker errors */
       }
 
       res.status(500).json({ error: "Failed to transcribe video" });
@@ -925,12 +1784,17 @@ async function startServer() {
 
       const primaryCol = hexToASSColor(styleSettings.textColor || "#FFFFFF");
       const highlightCol = hexToASSColor(styleSettings.highlightColor || "#FACC15");
+      // Override tags require trailing & (e.g. \c&H00FFFFFF&) — missing & makes libass print tags as text
+      const primaryOverride = hexToASSOverrideColor(styleSettings.textColor || "#FFFFFF");
+      const highlightOverride = hexToASSOverrideColor(styleSettings.highlightColor || "#FACC15");
+      const spotlightDimOverride = "&H00888888&";
 
       const borderStyle = styleSettings.showBackground ? "3" : "1";
       const outlineSize = styleSettings.showBackground ? "4" : "2";
       const shadowSize = styleSettings.showBackground ? "0" : "1";
 
-      let alignment = "2"; // bottom-center is the base for our \pos calculation
+      // Alignment 2 = bottom-center; actual placement is driven by \pos in each dialogue line
+      const alignment = "2";
 
       let assContent = `[Script Info]
 ScriptType: v4.00+
@@ -938,6 +1802,8 @@ PlayResX: ${playResX}
 PlayResY: ${playResY}
 PlayDepth: 0
 Timer: 100.0000
+WrapStyle: 0
+ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
@@ -948,22 +1814,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
 
       const formatText = (text: string) => {
-        if (styleSettings.capitalization === 'all') return text.toUpperCase();
-        if (styleSettings.capitalization === 'lower') return text.toLowerCase();
-        if (styleSettings.capitalization === 'sentence') {
-          return text.charAt(0).toUpperCase() + text.slice(1);
+        // Never let raw ASS tags from transcript leak into burned output
+        let cleaned = stripASSOverrides(text);
+        cleaned = escapeASSText(cleaned);
+        if (styleSettings.capitalization === "all") return cleaned.toUpperCase();
+        if (styleSettings.capitalization === "lower") return cleaned.toLowerCase();
+        if (styleSettings.capitalization === "sentence") {
+          return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
         }
-        return text;
+        return cleaned;
       };
-
-      const spotlightDimAssColor = "&H00888888";
 
       words.forEach((w: any, k: number) => {
         const start = w.start_time;
         let end = w.end_time;
         if (k < words.length - 1) {
-          if (words[k+1].start_time - end < 1.5) {
-            end = words[k+1].start_time;
+          if (words[k + 1].start_time - end < 1.5) {
+            end = words[k + 1].start_time;
           }
         }
 
@@ -974,44 +1841,53 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         const windowWords = words.slice(startIdx, endIdx);
 
-        const textParts = windowWords.map((ww: any, index: number) => {
-          const originalIndex = startIdx + index;
-          const formattedWord = formatText(ww.word);
-          
-          if (originalIndex === k) {
-            return `{\\c${highlightCol}\\b1}${formattedWord}`;
-          } else {
-            const inactiveColor = styleSettings.showSpotlight ? spotlightDimAssColor : primaryCol;
-            return `{\\c${inactiveColor}\\b0}${formattedWord}`;
-          }
-        });
-
-        // Calculate absolute position on the real video canvas
+        // Absolute position on the real video frame (PlayRes coordinates)
         const posXReal = Math.round((dispWidth / 2 + (styleSettings.positionX || 0)) * scaleX);
         const posYReal = Math.round((dispHeight - (96 + (styleSettings.positionY || 0))) * scaleY);
 
-        const rotationAngle = parseInt(styleSettings.rotation) || 0;
-        const rotationTag = rotationAngle ? `\\frz${-rotationAngle}` : "";
-        const posTag = `\\pos(${posXReal},${posYReal})`;
+        const rotationAngle = parseInt(String(styleSettings.rotation), 10) || 0;
+        // Alignment (2 = bottom-center) is defined ONCE in [V4+ Styles] — do NOT inject \an2
+        // inline. Some FFmpeg/libass builds mis-parse {\an2\pos(...)} and paint "2\pos(...)" as text.
+        // Dialogue lines only carry clean position (+ optional rotation).
+        let layoutTags = `\\pos(${posXReal},${posYReal})`;
+        if (rotationAngle) {
+          layoutTags += `\\frz${-rotationAngle}`;
+        }
 
-        // Prefix dialogue line with clean positional override tags inside the style curly braces
-        const textLine = `{${posTag}${rotationTag}}${textParts.join(" ")}`;
+        const textParts = windowWords.map((ww: any, index: number) => {
+          const originalIndex = startIdx + index;
+          const formattedWord = formatText(ww.word);
+          if (!formattedWord) return "";
+
+          if (originalIndex === k) {
+            return `{\\c${highlightOverride}\\b1}${formattedWord}`;
+          }
+          const inactiveColor = styleSettings.showSpotlight ? spotlightDimOverride : primaryOverride;
+          return `{\\c${inactiveColor}\\b0}${formattedWord}`;
+        }).filter(Boolean);
+
+        // Layout override first (position only), then styled words — never leak raw tags to screen
+        const textLine = `{${layoutTags}}${textParts.join(" ")}`;
         assContent += `Dialogue: 0,${formatASSTime(start)},${formatASSTime(end)},Default,,0,0,0,,${textLine}\n`;
       });
 
       assPath = `${videoPath}.ass`;
-      fs.writeFileSync(assPath, assContent);
+      // UTF-8 without BOM — BOM can cause the first override tag to be misread as text
+      fs.writeFileSync(assPath, assContent, { encoding: "utf8" });
       sendLog(jobId, "Subtitles file written successfully.");
 
       outputPath = `${videoPath}_exported.mp4`;
       sendLog(jobId, "Starting FFmpeg burning filter with ultrafast speed profile...");
       
-      const relFile = path.relative(process.cwd(), videoPath);
-      const relAss = path.relative(process.cwd(), assPath).replace(/'/g, "'\\''").replace(/:/g, "\\:");
-      const relOutput = path.relative(process.cwd(), outputPath);
+      const relFile = path.relative(process.cwd(), videoPath).replace(/\\/g, "/");
+      const relAss = path.relative(process.cwd(), assPath).replace(/\\/g, "/");
+      const relOutput = path.relative(process.cwd(), outputPath).replace(/\\/g, "/");
 
-      // Execute FFmpeg with maximum optimization settings
-      await execAsync(`ffmpeg -y -i "${relFile}" -vf "subtitles='${relAss}'" -preset ultrafast -c:v libx264 -crf 10 -c:a copy -threads 0 "${relOutput}"`);
+      // Prefer `ass` filter (native ASS/libass). Escape only characters that break the filtergraph.
+      const assFilterPath = relAss.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
+      await execAsync(
+        `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset ultrafast -c:v libx264 -crf 10 -c:a copy -threads 0 "${relOutput}"`
+      );
       
       sendLog(jobId, "FFmpeg video export complete!");
 
@@ -1070,6 +1946,101 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     }
   });
 
+  // ---- Public config (no secrets) — clients poll this for live app updates ----
+  app.get("/api/config/public", (_req, res) => {
+    res.json(getPublicConfig());
+  });
+
+  // ---- Admin: update API keys / tracker email / maintenance (all users pick up live) ----
+  function requireAdmin(req: express.Request, res: express.Response): boolean {
+    const secret = process.env.ADMIN_SECRET || "";
+    if (!secret) {
+      res.status(503).json({
+        error: "Set ADMIN_SECRET in .env before using admin APIs.",
+      });
+      return false;
+    }
+    const hdr = req.headers.authorization || "";
+    const token = hdr.startsWith("Bearer ") ? hdr.slice(7) : String(req.headers["x-admin-secret"] || "");
+    if (token !== secret) {
+      res.status(401).json({ error: "Unauthorized" });
+      return false;
+    }
+    return true;
+  }
+
+  app.get("/api/admin/config", (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const cfg = getRemoteConfig();
+    // Mask secrets in GET response
+    const mask = (v: string) =>
+      !v ? "" : v.length <= 8 ? "***" : `${v.slice(0, 4)}...${v.slice(-4)} (len ${v.length})`;
+    res.json({
+      ...cfg,
+      GEMINI_API_KEY: mask(cfg.GEMINI_API_KEY),
+      GROQ_API_KEY: mask(cfg.GROQ_API_KEY),
+      NVIDIA_API_KEY: mask(cfg.NVIDIA_API_KEY),
+      OPENROUTER_API_KEY: mask(cfg.OPENROUTER_API_KEY),
+      note: "Values are masked. POST full keys to update. Empty string keeps existing key.",
+    });
+  });
+
+  app.post("/api/admin/config", express.json(), (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const body = req.body || {};
+    const current = getRemoteConfig();
+    const next = saveRemoteConfig({
+      GEMINI_API_KEY:
+        body.GEMINI_API_KEY === undefined || body.GEMINI_API_KEY === ""
+          ? current.GEMINI_API_KEY
+          : String(body.GEMINI_API_KEY),
+      GROQ_API_KEY:
+        body.GROQ_API_KEY === undefined || body.GROQ_API_KEY === ""
+          ? current.GROQ_API_KEY
+          : String(body.GROQ_API_KEY),
+      NVIDIA_API_KEY:
+        body.NVIDIA_API_KEY === undefined || body.NVIDIA_API_KEY === ""
+          ? current.NVIDIA_API_KEY
+          : String(body.NVIDIA_API_KEY),
+      OPENROUTER_API_KEY:
+        body.OPENROUTER_API_KEY === undefined || body.OPENROUTER_API_KEY === ""
+          ? current.OPENROUTER_API_KEY
+          : String(body.OPENROUTER_API_KEY),
+      trackerEmail:
+        body.trackerEmail !== undefined ? String(body.trackerEmail) : current.trackerEmail,
+      appAnnouncement:
+        body.appAnnouncement !== undefined ? String(body.appAnnouncement) : current.appAnnouncement,
+      maintenanceMode:
+        body.maintenanceMode !== undefined ? !!body.maintenanceMode : current.maintenanceMode,
+      minClientVersion:
+        body.minClientVersion !== undefined ? String(body.minClientVersion) : current.minClientVersion,
+    });
+    loadGeminiKeys();
+    res.json({
+      ok: true,
+      updatedAt: next.updatedAt,
+      message: "Config saved. All users will use new keys on next request / poll.",
+    });
+  });
+
+  // Manual tracker ping (optional diagnostics)
+  app.post("/api/tracker/ping", express.json(), async (req, res) => {
+    try {
+      const ip = getClientIp(req);
+      await trackEvent({
+        event: "session_ping",
+        timestamp: new Date().toISOString(),
+        sessionId: req.body?.sessionId,
+        clientIp: ip,
+        userAgent: String(req.headers["user-agent"] || ""),
+        extra: req.body || {},
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "tracker ping failed" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1087,6 +2058,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Tracker email → ${getRemoteConfig().trackerEmail || "shrihari52141@gmail.com"}`);
+    console.log(`Remote config → remote-config.json (edit or POST /api/admin/config)`);
   });
 }
 

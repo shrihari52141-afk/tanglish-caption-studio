@@ -3,6 +3,7 @@ import { CaptionWord, SubtitleStyleSettings } from '../types';
 import { PRESETS, STYLE_CATEGORIES } from '../data/presets';
 import { Sparkles, Type, CaseSensitive, AlignCenter, AlignLeft, AlignRight, Sliders, Edit3, Check, Play, Hash, Smile } from 'lucide-react';
 import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from '../utils/subtitleExporter';
+import { stripASSTags } from '../utils/captionFormatter';
 
 interface EditorPanelProps {
   styleSettings: SubtitleStyleSettings;
@@ -140,7 +141,7 @@ export default function EditorPanel({
       if (gap > maxGap || currentGroup.length >= maxWords) {
         list.push({
           id: currentGroup[0].id + '_sentence',
-          text: currentGroup.map(w => w.word).join(' '),
+          text: currentGroup.map(w => stripASSTags(w.word)).filter(Boolean).join(' '),
           start_time: currentGroup[0].start_time,
           end_time: currentGroup[currentGroup.length - 1].end_time,
           words: currentGroup
@@ -154,7 +155,7 @@ export default function EditorPanel({
     if (currentGroup.length > 0) {
       list.push({
         id: currentGroup[0].id + '_sentence',
-        text: currentGroup.map(w => w.word).join(' '),
+        text: currentGroup.map(w => stripASSTags(w.word)).filter(Boolean).join(' '),
         start_time: currentGroup[0].start_time,
         end_time: currentGroup[currentGroup.length - 1].end_time,
         words: currentGroup
@@ -172,7 +173,7 @@ export default function EditorPanel({
   const handleStartWordEdit = (w: CaptionWord, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingWordId(w.id);
-    setEditingWordText(w.word);
+    setEditingWordText(stripASSTags(w.word));
     setEditingSentenceId(null);
   };
 
@@ -972,7 +973,7 @@ export default function EditorPanel({
                                   }`}
                                 >
                                   {isSelected && <span className="text-[10px] text-fuchsia-200">✓</span>}
-                                  {w.word}
+                                  {stripASSTags(w.word)}
                                 </span>
                               );
                             }
@@ -987,7 +988,7 @@ export default function EditorPanel({
                                     : 'bg-[#2a2a2a] text-zinc-100 border-[#3a3a3a] hover:border-fuchsia-500/50'
                                 }`}
                               >
-                                {w.word}
+                                {stripASSTags(w.word)}
                               </span>
                             );
                           })}

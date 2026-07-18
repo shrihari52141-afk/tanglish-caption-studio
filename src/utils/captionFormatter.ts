@@ -20,7 +20,13 @@ const ASSOCIATIONS: Record<string, Record<string, string>> = {
     angry: '🔥', mad: '🔥', rage: '🔥', hate: '🔥', irritate: '⚡', nonsense: '💥',
     shock: '⚡', surprise: '✨', enna: '⚡', kya: '⚡', what: '⚡', wait: '⚡', oh: '✨', god: '✨',
     fun: '⚡', laugh: '✨', haha: '⚡', lol: '⚡', comedy: '✨', joke: '✨',
-    silent: '🌌', quiet: '🌌', boring: '🌌', empty: '🌌'
+    silent: '🌌', quiet: '🌌', boring: '🌌', empty: '🌌',
+    // English / social captions (Whisper + translate_english)
+    movie: '🎬', movies: '🎬', film: '🎬', watching: '👀', watch: '👀', video: '🎥',
+    song: '🎵', music: '🎶', dance: '💃', party: '🎉', beautiful: '✨', cute: '🥰',
+    cool: '😎', hot: '🔥', yes: '✅', no: '❌', money: '💰', food: '🍔', call: '📞',
+    heart: '❤️', kiss: '😘', miss: '💔', thanks: '🙏', thank: '🙏', please: '🙏',
+    fire: '🔥', best: '👑', win: '🏆', night: '🌙', morning: '☀️', home: '🏠'
   },
   objects: {
     happy: '🍔', positive: '🍔', great: '🍕', love: '🎁', super: '🚗', amazing: '🍕',
@@ -80,6 +86,56 @@ const DEFAULT_FALLBACK_EMOJI: Record<string, string> = {
  * Advanced caption formatting utility. Handles dynamic emoji stripping, custom category mapping,
  * and punctuation removal at runtime.
  */
+/** Remove ASS/SSA override tags so they never appear as on-screen caption text */
+export function stripASSTags(raw: string): string {
+  if (!raw) return '';
+  let s = String(raw);
+
+  // Normalize double-escaped backslashes from JSON/logs (\\pos -> \pos)
+  while (s.includes('\\\\')) {
+    s = s.replace(/\\\\/g, '\\');
+  }
+
+  // Full override blocks: {\an2\pos(220,517)\c&HFFFFFF&\b1}
+  s = s.replace(/\{[^{}]*\}/g, '');
+
+  // Tags with parenthetical args: \pos(220,517) \move(...) \clip(...) \org(...)
+  s = s.replace(/\\[a-zA-Z]+\d*\([^)]*\)/g, '');
+
+  // Tags with trailing numbers: \an2 \b1 \fs48 \frz-15 \bord2 \shad1
+  s = s.replace(/\\[a-zA-Z]+-?\d+/g, '');
+
+  // Named tags without args: \rDefault \b \i \u \s \q
+  s = s.replace(/\\[a-zA-Z]+/g, '');
+
+  // Leftover color codes &HBBGGRR&
+  s = s.replace(/&H[0-9A-Fa-f]{1,8}&?/gi, '');
+
+  // Any remaining backslashes from broken tags
+  s = s.replace(/\\/g, '');
+
+  // Collapse whitespace
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+/** True if text still looks like it contains ASS control codes */
+export function containsASSTags(raw: string): boolean {
+  if (!raw) return false;
+  return /\\(?:an|pos|move|clip|org|frz|fsp|fscx|fscy|fs|bord|shad|alpha|c&H|1c|2c|3c|4c|rDefault|b\d|i\d)|\{[^}]*\\|(?:^|[^a-zA-Z])an\d*\\pos\s*\(/i.test(raw);
+}
+
+/** Sanitize a full words array (API / draft / edits) */
+export function sanitizeCaptionWords<T extends { word: string }>(words: T[]): T[] {
+  if (!Array.isArray(words)) return [];
+  return words
+    .map((w) => ({
+      ...w,
+      word: stripASSTags(w?.word ?? ''),
+    }))
+    .filter((w) => String(w.word).trim().length > 0);
+}
+
 export function applyCaptionFormatting(
   rawWord: string,
   showEmojis: boolean,
@@ -88,12 +144,16 @@ export function applyCaptionFormatting(
 ): string {
   if (!rawWord) return '';
 
+  // Strip leaked ASS tags (e.g. 2\pos(220,517)) before any other formatting
+  const cleanedRaw = stripASSTags(rawWord);
+  if (!cleanedRaw) return '';
+
   // Extract any emoji from the word
-  const matchedEmojis = rawWord.match(EMOJI_REGEX) || [];
+  const matchedEmojis = cleanedRaw.match(EMOJI_REGEX) || [];
   const hadOriginalEmoji = matchedEmojis.length > 0;
 
   // Word without emoji
-  let wordOnly = rawWord.replace(EMOJI_REGEX, '').trim();
+  let wordOnly = cleanedRaw.replace(EMOJI_REGEX, '').trim();
 
   // Strip punctuation if requested
   if (!showPunctuation) {

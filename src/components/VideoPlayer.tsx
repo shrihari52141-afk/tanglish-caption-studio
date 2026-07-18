@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { CaptionWord, SubtitleStyleSettings } from '../types';
 import { Move, ZoomIn, ZoomOut, RotateCw, Edit3, Check, X, ShieldAlert, Play, Pause, RotateCcw } from 'lucide-react';
-import { applyCaptionFormatting } from '../utils/captionFormatter';
+import { applyCaptionFormatting, stripASSTags } from '../utils/captionFormatter';
 
 interface VideoPlayerProps {
   videoUrl: string | null;
@@ -106,6 +106,34 @@ export default function VideoPlayer({
     video.addEventListener('timeupdate', handleTimeUpdate);
     return () => video.removeEventListener('timeupdate', handleTimeUpdate);
   }, [onTimeUpdate]);
+
+  // Never show native/soft subtitle tracks from the media file (can look like ASS junk on screen)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const hideTracks = () => {
+      try {
+        for (let i = 0; i < video.textTracks.length; i++) {
+          video.textTracks[i].mode = 'disabled';
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    hideTracks();
+    video.addEventListener('loadedmetadata', hideTracks);
+    if (video.textTracks) {
+      video.textTracks.addEventListener?.('addtrack', hideTracks as any);
+    }
+    return () => {
+      video.removeEventListener('loadedmetadata', hideTracks);
+      if (video.textTracks) {
+        video.textTracks.removeEventListener?.('addtrack', hideTracks as any);
+      }
+    };
+  }, [videoUrl]);
 
   // Handle Dragging
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -283,8 +311,9 @@ export default function VideoPlayer({
   })();
 
   const formatWordText = (text: string) => {
+    // Always strip ASS tags first so layout codes never paint as caption text
     let formatted = applyCaptionFormatting(
-      text,
+      stripASSTags(text),
       styleSettings.showEmojis !== false,
       styleSettings.showPunctuation !== false,
       styleSettings.emojiStyle || 'vibes'
@@ -300,12 +329,12 @@ export default function VideoPlayer({
   const handleEditClick = (word: CaptionWord, e: React.MouseEvent | React.TouchEvent) => {
     e.stopPropagation();
     setEditingWord(word);
-    setEditTextValue(word.word);
+    setEditTextValue(stripASSTags(word.word));
   };
 
   const handleSaveEdit = () => {
     if (editingWord) {
-      onUpdateWordText(editingWord.id, editTextValue);
+      onUpdateWordText(editingWord.id, stripASSTags(editTextValue));
       setEditingWord(null);
     }
   };
@@ -597,7 +626,7 @@ export default function VideoPlayer({
             e.stopPropagation();
             const activeWord = words[activeWordIndex];
             setEditingWord(activeWord);
-            setEditTextValue(activeWord.word);
+            setEditTextValue(stripASSTags(activeWord.word));
           }}
           className="w-full max-w-[min(520px,calc(100vw-24px))] md:max-w-[520px] bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-5 py-2.5 rounded-xl shadow-[0_4px_20px_rgba(219,39,119,0.4)] flex items-center justify-center gap-2 border border-fuchsia-400/30 active:scale-95 transition-transform font-bold text-xs uppercase cursor-pointer mt-3.5"
           style={{ minHeight: '44px' }}

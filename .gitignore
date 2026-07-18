@@ -10,3 +10,5 @@ coverage/
 !.env.example
 uploads/*
 !uploads/.gitkeep
+tracker-logs/
+remote-config.json

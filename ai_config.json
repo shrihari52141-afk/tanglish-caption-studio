@@ -1,8 +1,24 @@
 {
   "providers": [
     {
+      "name": "groq",
+      "displayName": "Groq Cloud (Primary)",
+      "apiKeyEnv": "GROQ_API_KEY",
+      "models": [
+        "whisper-large-v3",
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile"
+      ],
+      "defaultModel": "openai/gpt-oss-120b",
+      "transcriptionModel": "whisper-large-v3",
+      "transcriptionEndpoint": "https://api.groq.com/openai/v1/audio/transcriptions",
+      "captionLlmModel": "openai/gpt-oss-120b",
+      "captionLlmEndpoint": "https://api.groq.com/openai/v1/chat/completions",
+      "baseUrl": "https://api.groq.com/openai/v1"
+    },
+    {
       "name": "gemini",
-      "displayName": "Google Gemini (Primary)",
+      "displayName": "Google Gemini (Failover)",
       "apiKeyEnv": "GEMINI_API_KEY",
       "models": [
         "gemini-2.5-flash",
@@ -11,18 +27,6 @@
       ],
       "defaultModel": "gemini-2.5-flash",
       "baseUrl": "https://generativelanguage.googleapis.com"
-    },
-    {
-      "name": "groq",
-      "displayName": "Groq Cloud (Failover)",
-      "apiKeyEnv": "GROQ_API_KEY",
-      "models": [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768"
-      ],
-      "defaultModel": "llama-3.3-70b-versatile",
-      "baseUrl": "https://api.groq.com/openai/v1"
     },
     {
       "name": "nvidia",
@@ -50,8 +54,8 @@
     }
   ],
   "priority": [
-    "gemini",
     "groq",
+    "gemini",
     "nvidia",
     "openrouter"
   ]

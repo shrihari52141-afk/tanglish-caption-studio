@@ -1,4 +1,9 @@
 import { CaptionWord } from '../types';
+import { stripASSTags } from './captionFormatter';
+
+function cleanWord(w: CaptionWord): string {
+  return stripASSTags(w.word || '');
+}
 
 export function formatSRTTime(seconds: number): string {
   const pad = (n: number, width: number) => n.toString().padStart(width, '0');
@@ -32,7 +37,8 @@ export function exportToSRT(words: CaptionWord[], maxWordsPerLine: number = 3): 
   let counter = 1;
   for (let i = 0; i < words.length; i += maxWordsPerLine) {
     const chunk = words.slice(i, i + maxWordsPerLine);
-    const text = chunk.map(w => w.word).join(' ');
+    const text = chunk.map(cleanWord).filter(Boolean).join(' ');
+    if (!text) continue;
     const start = chunk[0].start_time;
     const end = chunk[chunk.length - 1].end_time;
     
@@ -48,7 +54,8 @@ export function exportToVTT(words: CaptionWord[], maxWordsPerLine: number = 3): 
   let vtt = 'WEBVTT\n\n';
   for (let i = 0; i < words.length; i += maxWordsPerLine) {
     const chunk = words.slice(i, i + maxWordsPerLine);
-    const text = chunk.map(w => w.word).join(' ');
+    const text = chunk.map(cleanWord).filter(Boolean).join(' ');
+    if (!text) continue;
     const start = chunk[0].start_time;
     const end = chunk[chunk.length - 1].end_time;
     
@@ -72,9 +79,12 @@ Style: Default,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
 
+  // Alignment=2 is set globally in Style above. Do not inject \an2 on dialogue lines
+  // (that pattern can render as literal "2\pos(...)" with some burn-in pipelines).
   for (let i = 0; i < words.length; i += maxWordsPerLine) {
     const chunk = words.slice(i, i + maxWordsPerLine);
-    const text = chunk.map(w => w.word).join(' ');
+    const text = chunk.map(cleanWord).filter(Boolean).join(' ');
+    if (!text) continue;
     const start = chunk[0].start_time;
     const end = chunk[chunk.length - 1].end_time;
     

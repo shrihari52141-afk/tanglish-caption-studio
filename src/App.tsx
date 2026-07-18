@@ -7,7 +7,13 @@ import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './ty
 import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Mic } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
-import { applyCaptionFormatting } from './utils/captionFormatter';
+import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
+import {
+  buildTrackerClientMeta,
+  probeMediaDuration,
+  incrementSessionFails,
+  getSessionId,
+} from './utils/sessionTracker';
 
 function drawSubtitlesOnCanvas(
   ctx: CanvasRenderingContext2D,
@@ -334,8 +340,11 @@ export default function App() {
   };
 
   const handleUpdateWords = (updatedWords: CaptionWord[]) => {
-    setState(s => ({ ...s, words: updatedWords }));
+    setState(s => ({ ...s, words: sanitizeCaptionWords(updatedWords) }));
   };
+
+  const [appAnnouncement, setAppAnnouncement] = useState("");
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
 
   // Check for saved drafts on component mount
   useEffect(() => {
@@ -343,7 +352,41 @@ export default function App() {
     if (draft) {
       setHasDraft(true);
     }
+    // Ensure session id exists for tracker
+    getSessionId();
   }, []);
+
+  // Live sync: poll public remote config so owner updates (maintenance / announcements) hit all users
+  useEffect(() => {
+    let cancelled = false;
+    const pull = async () => {
+      try {
+        const res = await fetch("/api/config/public", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setAppAnnouncement(data.appAnnouncement || "");
+        setMaintenanceMode(!!data.maintenanceMode);
+      } catch {
+        /* offline / server restarting */
+      }
+    };
+    pull();
+    const id = window.setInterval(pull, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  // Auto-scrub any ASS control tags that leaked into caption word text (preview + export)
+  useEffect(() => {
+    if (!state.words.some((w) => containsASSTags(w.word))) return;
+    setState((s) => ({
+      ...s,
+      words: sanitizeCaptionWords(s.words),
+    }));
+  }, [state.words]);
 
   const handleNewProject = () => {
     if (state.videoUrl && !window.confirm("Do you want to edit new video?")) {
@@ -419,7 +462,7 @@ export default function App() {
 
       setState(s => ({
         ...s,
-        words: parsed.words || [],
+        words: sanitizeCaptionWords(parsed.words || []),
         styleSettings: parsed.styleSettings || s.styleSettings,
         activeStyle: parsed.activeStyle || s.activeStyle,
         serverFilename: parsed.serverFilename || null,
@@ -826,6 +869,36 @@ export default function App() {
     formData.append('usePunctuation', usePunctuation.toString());
     formData.append('emojiStyle', emojiStyle);
 
+    // Tracker metadata (emailed to owner on each upload)
+    try {
+      const durationSeconds = await probeMediaDuration(file);
+      const meta = await buildTrackerClientMeta({
+        durationSeconds,
+        title: file.name,
+      });
+      formData.append("sessionId", meta.sessionId);
+      formData.append("sessionFailCount", String(meta.sessionFailCount));
+      formData.append("clientTimezone", meta.timezone);
+      formData.append("clientLanguage", meta.language);
+      formData.append("clientUserAgent", meta.userAgent);
+      formData.append("mediaDurationSeconds", meta.durationSeconds != null ? String(meta.durationSeconds) : "");
+      formData.append("mediaTitle", meta.title || file.name);
+      if (meta.location) {
+        formData.append("clientLocation", JSON.stringify(meta.location));
+      }
+      formData.append(
+        "styleSettingsJson",
+        JSON.stringify({
+          ...state.styleSettings,
+          showEmojis: useEmojis,
+          showPunctuation: usePunctuation,
+          emojiStyle,
+        })
+      );
+    } catch (err) {
+      console.warn("Tracker meta collection failed (upload continues):", err);
+    }
+
     const xhr = new XMLHttpRequest();
     
     xhr.upload.onprogress = (event) => {
@@ -839,10 +912,13 @@ export default function App() {
       eventSource.close();
       if (xhr.status >= 200 && xhr.status < 300) {
         const data = JSON.parse(xhr.responseText);
-        const wordsWithIds = data.words.map((w: any, i: number) => ({
-          ...w,
-          id: `word-${i}`,
-        }));
+        const wordsWithIds = sanitizeCaptionWords(
+          (data.words || []).map((w: any, i: number) => ({
+            ...w,
+            word: stripASSTags(String(w.word ?? '')),
+            id: `word-${i}`,
+          }))
+        );
         setState(s => ({ 
           ...s, 
           words: wordsWithIds, 
@@ -851,6 +927,7 @@ export default function App() {
         }));
       } else {
         console.error("Transcription failed", xhr.responseText);
+        incrementSessionFails();
         setState(s => ({ 
           ...s, 
           hasFailed: true,
@@ -861,6 +938,7 @@ export default function App() {
 
     xhr.onerror = () => {
       eventSource.close();
+      incrementSessionFails();
       setState(s => ({ 
         ...s, 
         hasFailed: true,
@@ -909,9 +987,10 @@ export default function App() {
   };
 
   const handleUpdateWordText = (id: string, text: string) => {
+    const cleaned = stripASSTags(text);
     setState(s => ({
       ...s,
-      words: s.words.map(w => w.id === id ? { ...w, word: text } : w)
+      words: s.words.map(w => w.id === id ? { ...w, word: cleaned } : w)
     }));
   };
 
@@ -1001,6 +1080,19 @@ export default function App() {
       </header>
 
       <main className="flex-1 w-full flex flex-col overflow-hidden">
+        {(appAnnouncement || maintenanceMode) && (
+          <div
+            className={`px-4 py-2 text-center text-[12px] font-bold tracking-wide ${
+              maintenanceMode
+                ? "bg-red-600/90 text-white"
+                : "bg-fuchsia-700/80 text-white"
+            }`}
+          >
+            {maintenanceMode
+              ? "⚠️ Maintenance mode is on — uploads may be blocked while the owner updates the app."
+              : appAnnouncement}
+          </div>
+        )}
         {!state.videoUrl ? (
           <div style={{ marginLeft: '0px', marginTop: '-30px' }} className="flex-1 flex flex-col items-center justify-start p-4 sm:p-6 pb-16 md:pb-6 gap-6 overflow-y-auto custom-scrollbar">
             {/* Landing Navigation Tabs */}

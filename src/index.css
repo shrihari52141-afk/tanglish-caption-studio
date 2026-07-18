@@ -14,6 +14,14 @@ html, body, #root {
   padding: 0;
 }
 
+/* Hide any native/soft subtitles embedded in the video file */
+video::cue {
+  opacity: 0 !important;
+  color: transparent !important;
+  background: transparent !important;
+  visibility: hidden !important;
+}
+
 @theme {
   --font-sans: "Helvetica Neue", Arial, sans-serif;
   --font-display: "Impact", sans-serif;
