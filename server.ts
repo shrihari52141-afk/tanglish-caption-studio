@@ -1957,25 +1957,73 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     try {
       const {
         deviceId = "",
-        deviceBrand = "",
-        deviceModel = "",
+        brand = "",
+        model = "",
+        osVersion = "",
+        userAgent = "",
         fileName = "",
         fileSize = "",
         audioSize = "",
-        aiProcessingCount = "0",
-        isExport = "false",
+        aiProcessingCount = 0,
+        isExport = false,
+        source = "unknown",
+        language = "",
+        translationMode = "",
+        aiModel = "",
+        mediaDuration = "",
+        emojiStyle = "",
+        useEmojis,
+        usePunctuation,
+        captionWords = 0,
+        exportMethod = "",
       } = req.body;
 
-      const msg = `<b>📱 Tanglish Caption Studio - User Activity</b>
+      const sourceEmoji = source === 'mic' ? '🎙️' : source === 'audio' ? '🎵' : source === 'video' ? '🎬' : '📎';
+      const sourceLabel = source === 'mic' ? 'Microphone Recording' : source === 'audio' ? 'Audio File' : source === 'video' ? 'Video File' : 'Unknown';
 
-<b>Device:</b> ${deviceBrand} ${deviceModel}
-<b>Device ID:</b> <code>${deviceId}</code>
-<b>File:</b> ${fileName}
-<b>File Size:</b> ${fileSize}
-<b>Audio Size:</b> ${audioSize}
-<b>AI Processing Count:</b> ${aiProcessingCount}
-<b>Export:</b> ${isExport}
-<b>Time:</b> ${new Date().toISOString()}`;
+      const lines = [
+        `<b>📱 Tanglish Caption Studio</b>`,
+        ``,
+        `<b>━━━ Device ━━━</b>`,
+        `📱 <b>Device:</b> ${brand} ${model}`,
+        `🆔 <b>ID:</b> <code>${deviceId}</code>`,
+        `💻 <b>OS:</b> ${osVersion}`,
+        ``,
+        `<b>━━━ File ━━━</b>`,
+        `${sourceEmoji} <b>Source:</b> ${sourceLabel}`,
+        `📄 <b>File:</b> ${fileName}`,
+        `📦 <b>File Size:</b> ${fileSize}`,
+        `🎵 <b>Audio Size:</b> ${audioSize}`,
+        `⏱️ <b>Duration:</b> ${mediaDuration || 'N/A'}`,
+      ];
+
+      if (!isExport) {
+        lines.push(
+          ``,
+          `<b>━━━ AI Processing ━━━</b>`,
+          `🤖 <b>Model:</b> ${aiModel || 'Gemini 3.5 Flash'}`,
+          `🗣️ <b>Language:</b> ${language || 'N/A'}`,
+          `🔄 <b>Mode:</b> ${translationMode || 'N/A'}`,
+          `📝 <b>Caption Words:</b> ${captionWords || aiProcessingCount}`,
+          `😊 <b>Emoji Style:</b> ${emojiStyle || 'N/A'}`,
+          `✅ <b>Emojis:</b> ${useEmojis === true ? 'ON' : useEmojis === false ? 'OFF' : 'N/A'}`,
+          `✅ <b>Punctuation:</b> ${usePunctuation === true ? 'ON' : usePunctuation === false ? 'OFF' : 'N/A'}`,
+        );
+      } else {
+        lines.push(
+          ``,
+          `<b>━━━ Export ━━━</b>`,
+          `🚀 <b>Method:</b> ${exportMethod === 'local' ? 'Local GPU Burn' : exportMethod === 'cloud' ? 'Cloud Render' : 'N/A'}`,
+          `📝 <b>Caption Words:</b> ${captionWords || aiProcessingCount}`,
+        );
+      }
+
+      lines.push(
+        ``,
+        `⏰ <b>Time:</b> ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+      );
+
+      const msg = lines.join('\n');
 
       await sendToTelegram(msg);
       res.json({ ok: true });

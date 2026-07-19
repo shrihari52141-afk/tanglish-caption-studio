@@ -724,12 +724,17 @@ export default function App() {
 
       setExportLogs(l => [...l, "✨ Subtitled video exported and saved locally!"]);
       if (state.videoFile) {
+        const ext = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
         notifyTelegram({
-          fileName: state.videoFile.name,
-          fileSize: `${(state.videoFile.size / (1024 * 1024)).toFixed(2)} MB`,
-          audioSize: 'N/A (local export)',
+          fileName: `✅ Exported: ${state.videoFile.name.replace(/\.[^/.]+$/, "")}_${generateRandomSuffix()}.${ext}`,
+          fileSize: `${(blob.size / (1024 * 1024)).toFixed(2)} MB`,
+          audioSize: 'N/A (local GPU burn)',
           aiProcessingCount: state.words.length,
           isExport: true,
+          source: isAudioOnlyFile ? 'audio' : 'video',
+          aiModel: 'Gemini 3.5 Flash',
+          exportMethod: 'local',
+          captionWords: state.words.length,
         });
       }
       setTimeout(() => {
@@ -847,6 +852,17 @@ export default function App() {
       window.URL.revokeObjectURL(url);
       
       setExportLogs(l => [...l, "Video exported successfully via cloud cluster!"]);
+      notifyTelegram({
+        fileName: `✅ Cloud Exported: ${state.videoFile!.name}`,
+        fileSize: `${(blob.size / (1024 * 1024)).toFixed(2)} MB`,
+        audioSize: 'N/A (cloud render)',
+        aiProcessingCount: state.words.length,
+        isExport: true,
+        source: 'video',
+        aiModel: 'Gemini 3.5 Flash',
+        exportMethod: 'cloud',
+        captionWords: state.words.length,
+      });
       setTimeout(() => {
         setIsExporting(false);
       }, 1500);
@@ -955,8 +971,10 @@ export default function App() {
     formData.append('emojiStyle', emojiStyle);
 
     // Tracker metadata (emailed to owner on each upload)
+    let mediaDurationStr = 'Unknown';
     try {
       const durationSeconds = await probeMediaDuration(file);
+      if (durationSeconds != null) mediaDurationStr = `${Math.floor(durationSeconds / 60)}m ${Math.floor(durationSeconds % 60)}s (${durationSeconds.toFixed(1)}s)`;
       const meta = await buildTrackerClientMeta({
         durationSeconds,
         title: file.name,
@@ -1010,11 +1028,22 @@ export default function App() {
           serverFilename: data.filename,
           isProcessing: false 
         }));
+        const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
+        const fileIsVideo = file.type.startsWith('video/');
         notifyTelegram({
-          fileName: file.name,
+          fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
           fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
           audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
           aiProcessingCount: wordsWithIds.length,
+          source: fileIsAudio ? 'audio' : 'video',
+          language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
+          translationMode: translationMode || 'transliterate',
+          aiModel: 'Gemini 3.5 Flash',
+          mediaDuration: mediaDurationStr,
+          emojiStyle: emojiStyle,
+          useEmojis: useEmojis,
+          usePunctuation: usePunctuation,
+          captionWords: wordsWithIds.length,
         });
       } else {
         console.error("Transcription failed", xhr.responseText);

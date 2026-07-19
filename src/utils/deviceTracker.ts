@@ -31,16 +31,31 @@ export function getDeviceInfo() {
     model = navigator.platform || 'Desktop';
   }
 
-  return { brand, model, deviceId: getDeviceId() };
+  const osMatch = ua.match(/Android\s([\d.]+)/);
+  const osVersion = osMatch ? `Android ${osMatch[1]}` : (/iPhone|iPad/.test(ua) ? 'iOS' : 'Web');
+
+  return { brand, model, deviceId: getDeviceId(), osVersion, userAgent: ua };
 }
 
-export async function notifyTelegram(details: {
+export interface TelegramNotifyDetails {
   fileName: string;
   fileSize: string;
   audioSize: string;
   aiProcessingCount: number;
   isExport?: boolean;
-}) {
+  source?: 'mic' | 'video' | 'audio';
+  language?: string;
+  translationMode?: string;
+  aiModel?: string;
+  mediaDuration?: string;
+  emojiStyle?: string;
+  useEmojis?: boolean;
+  usePunctuation?: boolean;
+  captionWords?: number;
+  exportMethod?: 'local' | 'cloud' | 'none';
+}
+
+export async function notifyTelegram(details: TelegramNotifyDetails) {
   try {
     const info = getDeviceInfo();
     await fetch('/api/telegram/notify', {

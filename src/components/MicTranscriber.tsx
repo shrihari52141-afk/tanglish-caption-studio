@@ -199,10 +199,16 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
       }
 
       notifyTelegram({
-        fileName: 'Voice Recording',
-        fileSize: `${(audioBlob.size / 1024).toFixed(1)} KB`,
-        audioSize: `${(audioBlob.size / 1024).toFixed(1)} KB`,
+        fileName: '🎙️ Voice Recording',
+        fileSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
+        audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
         aiProcessingCount: data.words?.length || 0,
+        source: 'mic',
+        language: selectedLanguage === 'auto' ? 'Auto-Detect' : LANGUAGES.find(l => l.code === selectedLanguage)?.label || selectedLanguage,
+        translationMode: enableTranslation ? `Translate → ${TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.label}` : 'Transliterate',
+        aiModel: 'Gemini 3.5 Flash',
+        mediaDuration: `${formatTime(recordingTime)} (${recordingTime}s)`,
+        captionWords: data.words?.length || 0,
       });
     } catch (err: any) {
       setError(`Transcription failed: ${err.message || err}. Please try again.`);
