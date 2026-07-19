@@ -1,14 +1,18 @@
 package com.tanglish.captionstudio;
 
+import android.app.DownloadManager;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -25,6 +29,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_REQUEST = 1;
     private static final int PERMISSION_REQUEST = 2;
+    private boolean micPermissionGranted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,7 +70,6 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                // Grant microphone permission to the WebView
                 request.grant(request.getResources());
             }
 
@@ -77,7 +81,6 @@ public class MainActivity extends Activity {
                 }
                 filePathCallback = callback;
 
-                // Simple approach: accept all files, let the web app handle filtering
                 Intent fileIntent = new Intent(Intent.ACTION_GET_CONTENT);
                 fileIntent.addCategory(Intent.CATEGORY_OPENABLE);
                 fileIntent.setType("*/*");
@@ -97,47 +100,80 @@ public class MainActivity extends Activity {
 
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
             try {
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setData(Uri.parse(url));
-                startActivity(intent);
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                String cookie = CookieManager.getInstance().getCookie(url);
+                request.addRequestHeader("Cookie", cookie);
+                request.addRequestHeader("User-Agent", userAgent);
+                request.setMimeType(mimeType);
+                request.addRequestHeader("Content-Disposition", contentDisposition);
+
+                String urlFileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                String randomSuffix = Long.toHexString(Double.doubleToLongBits(Math.random()));
+                randomSuffix = randomSuffix.substring((int)(Math.random() * 4) + 2, (int)(Math.random() * 4) + 6);
+                String baseName = urlFileName.contains(".")
+                    ? urlFileName.substring(0, urlFileName.lastIndexOf('.'))
+                    : urlFileName;
+                String ext = urlFileName.contains(".")
+                    ? urlFileName.substring(urlFileName.lastIndexOf('.'))
+                    : "";
+                String finalName = baseName + "_" + randomSuffix + ext;
+
+                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, finalName);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setTitle("Caption Studio Export");
+                request.setDescription("Saving " + finalName);
+
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                dm.enqueue(request);
+
+                Toast.makeText(this, "Saving " + finalName + " to Downloads", Toast.LENGTH_LONG).show();
             } catch (Exception e) {
-                Toast.makeText(this, "No app found to open this link", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Failed to save file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
             }
         });
 
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.loadUrl("https://tanglish-caption-studio.pages.dev");
 
-        requestPermissionsLoop();
+        requestMicPermission();
     }
 
-    private void requestPermissionsLoop() {
-        String[] perms;
+    private void requestMicPermission() {
+        if (micPermissionGranted) return;
+
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            micPermissionGranted = true;
+            return;
+        }
+
+        requestPermissions(new String[]{
+            Manifest.permission.RECORD_AUDIO,
+        }, PERMISSION_REQUEST);
+    }
+
+    private void requestStoragePermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms = new String[]{
+            String[] perms = {
                 Manifest.permission.READ_MEDIA_IMAGES,
                 Manifest.permission.READ_MEDIA_VIDEO,
                 Manifest.permission.READ_MEDIA_AUDIO,
-                Manifest.permission.RECORD_AUDIO
             };
-        } else {
-            perms = new String[]{
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.RECORD_AUDIO
-            };
-        }
-
-        boolean allGranted = true;
-        for (String p : perms) {
-            if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
-                allGranted = false;
-                break;
+            boolean needRequest = false;
+            for (String p : perms) {
+                if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
+                    needRequest = true;
+                    break;
+                }
             }
-        }
-
-        if (!allGranted) {
-            requestPermissions(perms, PERMISSION_REQUEST);
+            if (needRequest) requestPermissions(perms, PERMISSION_REQUEST + 1);
+        } else {
+            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                }, PERMISSION_REQUEST + 1);
+            }
         }
     }
 
@@ -146,20 +182,18 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
         if (requestCode == PERMISSION_REQUEST) {
-            boolean allGranted = true;
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
-                    allGranted = false;
-                    break;
+            for (int i = 0; i < permissions.length; i++) {
+                if (permissions[i].equals(Manifest.permission.RECORD_AUDIO) &&
+                    grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    micPermissionGranted = true;
                 }
             }
 
-            if (!allGranted) {
+            if (!micPermissionGranted) {
                 Toast.makeText(this,
-                    "Microphone and storage permissions are required. Please grant them.",
+                    "Microphone permission is required for voice recording. Please grant it.",
                     Toast.LENGTH_LONG).show();
-                // Retry after 2 seconds
-                webView.postDelayed(() -> requestPermissionsLoop(), 2000);
+                webView.postDelayed(() -> requestMicPermission(), 3000);
             }
         }
     }
@@ -173,7 +207,6 @@ public class MainActivity extends Activity {
                 if (resultCode == RESULT_OK && data != null) {
                     String dataString = data.getDataString();
                     if (dataString != null) {
-                        // Accept the file — let the web app validate the type
                         results = new Uri[]{Uri.parse(dataString)};
                     } else if (data.getClipData() != null) {
                         int count = data.getClipData().getItemCount();

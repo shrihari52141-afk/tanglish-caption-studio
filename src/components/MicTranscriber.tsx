@@ -58,7 +58,7 @@ const TRANSLATE_LANGUAGES = [
 ];
 
 interface MicTranscriberProps {
-  onSendToEditor?: (words: CaptionWord[]) => void;
+  onSendToEditor?: (words: CaptionWord[], audioBlob?: Blob, audioUrl?: string) => void;
   onVideoFileSelected?: (file: File) => void;
 }
 
@@ -223,8 +223,8 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
   };
 
   const handleSendToEditor = () => {
-    if (timedWords.length > 0 && onSendToEditor) {
-      onSendToEditor(timedWords);
+    if (timedWords.length > 0 && onSendToEditor && audioBlob && audioUrl) {
+      onSendToEditor(timedWords, audioBlob, audioUrl);
     }
   };
 

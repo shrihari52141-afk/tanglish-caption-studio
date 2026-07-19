@@ -542,6 +542,21 @@ export default function App() {
 
   const [exportBgColor, setExportBgColor] = useState('#000000');
 
+  const isAudioOnlyFile = state.videoFile && (
+    state.videoFile.type.startsWith('audio/') ||
+    state.videoFile.name.endsWith('.mp3') ||
+    state.videoFile.name.endsWith('.wav') ||
+    state.videoFile.name.endsWith('.m4a') ||
+    state.videoFile.name.endsWith('.webm')
+  );
+
+  const generateRandomSuffix = () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 8; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+    return result;
+  };
+
   const startLocalExport = async () => {
     setExportMode('local');
     setExportLogs(["Initializing 100% local video renderer..."]);
@@ -698,9 +713,10 @@ export default function App() {
       const downloadUrl = URL.createObjectURL(blob);
       
       const ext = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
+      const baseName = state.videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = `${state.videoFile?.name.replace(/\.[^/.]+$/, "")}_subtitled.${ext}`;
+      a.download = `${baseName}_${generateRandomSuffix()}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -824,7 +840,7 @@ export default function App() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${state.videoFile!.name.replace(/\.[^/.]+$/, "")}_burned.mp4`;
+      a.download = `${state.videoFile!.name.replace(/\.[^/.]+$/, "")}_${generateRandomSuffix()}.mp4`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1255,14 +1271,29 @@ export default function App() {
               </>
             ) : (
               <MicTranscriber 
-                onSendToEditor={(words) => {
-                  pushUndo([]);
-                  setState(s => ({
-                    ...s,
-                    words,
-                    logs: [...s.logs, `Received ${words.length} caption words from voice recording.`],
-                  }));
-                  setLandingTab('video');
+                onSendToEditor={(words, audioBlob, audioUrl) => {
+                  try {
+                    pushUndo([]);
+                    let audioFile: File | null = null;
+                    let audioUrlVal: string | null = null;
+                    if (audioBlob) {
+                      audioFile = new File([audioBlob], 'recording.webm', { type: audioBlob.type || 'audio/webm' });
+                    }
+                    if (audioUrl) {
+                      audioUrlVal = audioUrl;
+                    }
+                    setState(s => ({
+                      ...s,
+                      words,
+                      videoFile: audioFile || s.videoFile,
+                      videoUrl: audioUrlVal || s.videoUrl,
+                      logs: [...s.logs, `Received ${words.length} caption words from voice recording.`],
+                    }));
+                    setLandingTab('video');
+                  } catch (err) {
+                    console.error('Send to editor failed:', err);
+                    alert('Failed to send to editor. Please try again.');
+                  }
                 }}
               />
             )}
@@ -1412,6 +1443,7 @@ export default function App() {
                   Choose how you want to burn your beautifully styled captions directly onto your video.
                 </p>
 
+                {isAudioOnlyFile && (
                 <div className="flex items-center gap-3 p-3 bg-[#111] rounded-xl border border-[#252525]">
                   <label className="text-[11px] font-bold text-[#aaa] uppercase tracking-wider whitespace-nowrap">Background Color</label>
                   <input
@@ -1428,6 +1460,7 @@ export default function App() {
                     Reset
                   </button>
                 </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {/* Local Option */}
