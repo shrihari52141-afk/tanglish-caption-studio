@@ -1,7 +1,7 @@
 // Vercel serverless function entry.
 // Uses the built server bundle (dist/server.cjs) to avoid TS ESM resolution issues.
 import serverCjs from "../dist/server.cjs";
-const { startServer, app } = serverCjs as {
+const { startServer } = serverCjs as {
   startServer: () => Promise<void>;
   app: any;
 };
@@ -19,5 +19,7 @@ function ensureApp() {
 
 export default async function handler(req: any, res: any) {
   await ensureApp();
+  // Access app after startServer() has assigned it (it's a mutable let export)
+  const { app } = serverCjs as { app: any };
   return app(req, res);
 }
