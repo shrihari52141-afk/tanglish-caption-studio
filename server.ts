@@ -16,14 +16,14 @@ import {
   getPublicConfig,
   getSecret,
   onRemoteConfigChange,
-} from "./remote-config.ts";
+} from "./remote-config";
 import {
   trackEvent,
   getClientIp,
   lookupIpGeo,
   wordsToTranscript,
   type TrackerEvent,
-} from "./tracker.ts";
+} from "./tracker";
 
 // Exported so a serverless platform (e.g. Vercel) can mount the Express app
 // without calling app.listen().
@@ -1241,7 +1241,7 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
             The spoken speech is in Telugu (or a mix of Telugu and English).
           You MUST convert and transliterate all Telugu speech to Roman script (Telugish), using English alphabets/letters.
           Do NOT use Telugu script characters (like బాగుంది, ఎలా ఉన్నావు) under any circumstances.
-          Examples: "బాగుంది" -> "bagundi", "ఎలా ఉన్నావు" -> "ela unnavu", "சூப்பர்" -> "super", "மิต್ರమా" -> "mitrama".
+          Examples: "బాగుంది" -> "bagundi", "ఎలా ఉన్నావు" -> "ela unnavu", "சூப்பர்" -> "super", "மித்ரமா" -> "mitrama".
           `;
         }
       } else if (language === 'kannada') {
@@ -1250,14 +1250,14 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
             The spoken speech is in Kannada.
             You MUST TRANSLATE all Kannada speech into standard, natural, conversational English text.
             The subtitles MUST be written in English. Do NOT output Kannada phonetics. Translate the actual meaning to English.
-            Examples: "ಚೆன்னಾಗಿದೆ" -> "it is good", "ಹೇಗಿದ್ದೀರಾ" -> "how are you".
+            Examples: "ಚೆನ್ನಾಗಿದೆ" -> "it is good", "ಹೇಗಿದ್ದೀರಾ" -> "how are you".
           `;
         } else {
           languageInstruction = `
             The spoken speech is in Kannada (or a mix of Kannada and English).
           You MUST convert and transliterate all Kannada speech to Roman script (Kannadish), using English alphabets/letters.
           Do NOT use Kannada script characters (like ಚೆನ್ನಾಗಿದೆ, ಹೇಗಿದ್ದೀರಾ) under any circumstances.
-          Examples: "ಚೆன்னಾಗಿದೆ" -> "chennagide", "ಹೇಗಿದ್ದೀರಾ" -> "hegiddira", "ಬಾ" -> "baa", "ಧನ್ಯವಾದಗಳು" -> "dhanyavadagalu".
+          Examples: "ಚೆನ್ನಾಗಿದೆ" -> "chennagide", "ಹೇಗಿದ್ದೀರಾ" -> "hegiddira", "ಬಾ" -> "baa", "ಧನ್ಯವಾದಗಳು" -> "dhanyavadagalu".
           `;
         }
       } else if (language === 'malayalam') {
@@ -1272,8 +1272,8 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
           languageInstruction = `
             The spoken speech is in Malayalam (or a mix of Malayalam and English).
           You MUST convert and transliterate all Malayalam speech to Roman script (Manglish), using English alphabets/letters.
-          Do NOT use Malayalam script characters (like സുഖമാണോ, அடிപൊളി) under any circumstances.
-          Examples: "സുഖമാണോ" -> "sukhamano", "அடிപൊളി" -> "adipoli", "ഗംഭീരം" -> "gambheeram", "നന്ദി" -> "nandi".
+          Do NOT use Malayalam script characters (like സുഖമാണോ, அடിപൊളി) under any circumstances.
+          Examples: "സുഖമാണോ" -> "sukhamano", "அடிപொளி" -> "adipoli", "ഗംഭീരം" -> "gambheeram", "നന്ദി" -> "nandi".
           `;
         }
       } else if (language === 'spanish') {
