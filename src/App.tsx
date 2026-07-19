@@ -1019,21 +1019,10 @@ export default function App() {
         console.error("Transcription failed", xhr.status, xhr.responseText);
         incrementSessionFails();
         let errorMsg = "";
-        if (xhr.status === 413) {
-          errorMsg = "File is too large for the server. Try a shorter video or audio clip (under 50MB).";
-        } else if (xhr.status === 502 || xhr.status === 504) {
-          errorMsg = "Server is starting up or timed out. The server may be spinning up — please try again in 30 seconds.";
-        } else if (xhr.status === 503) {
-          errorMsg = "Server is in maintenance mode. Please try again later.";
-        } else {
-          try {
-            const errData = JSON.parse(xhr.responseText);
-            errorMsg = errData.error || "Unknown server error.";
-          } catch {
-            errorMsg = `Server error (HTTP ${xhr.status}). Please try again in a few seconds.`;
-          }
-        }
-        errorMsg += "\n\nIf this keeps happening, try again in a few minutes.";
+        // Always show raw status + response so user can report the exact error
+        let rawBody = "";
+        try { rawBody = xhr.responseText.substring(0, 300); } catch { rawBody = "(empty)"; }
+        errorMsg = `[HTTP ${xhr.status}] ${rawBody}`;
         setState(s => ({ 
           ...s, 
           hasFailed: true,
@@ -1048,7 +1037,7 @@ export default function App() {
       setState(s => ({ 
         ...s, 
         hasFailed: true,
-        logs: [...s.logs, "ERROR: Network error. Please check your internet connection and try again."]
+        logs: [...s.logs, "ERROR: xhr.onerror fired — request never reached the server. Check network / DNS."]
       }));
     };
 
