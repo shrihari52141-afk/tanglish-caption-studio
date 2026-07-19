@@ -2,9 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import VideoPlayer from './components/VideoPlayer';
 import VideoUploader from './components/VideoUploader';
 import EditorPanel from './components/EditorPanel';
-import MicTranscriber from './components/MicTranscriber';
 import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './types';
-import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Mic, Undo2, Redo2, Replace, Languages } from 'lucide-react';
+import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
@@ -243,7 +242,6 @@ export default function App() {
   const [exportMode, setExportMode] = useState<'choice' | 'local' | 'cloud'>('choice');
   const [localProgress, setLocalProgress] = useState<number>(0);
   const [editorTab, setEditorTab] = useState<'presets' | 'decorations' | 'transcript'>('presets');
-  const [landingTab, setLandingTab] = useState<'video' | 'mic'>('video');
   const isCancelledRef = useRef<boolean>(false);
   
   const addVideoInputRef = useRef<HTMLInputElement>(null);
@@ -1257,73 +1255,28 @@ export default function App() {
         )}
         {!state.videoUrl ? (
           <div style={{ marginLeft: '0px', marginTop: '-30px' }} className="flex-1 flex flex-col items-center justify-start p-4 sm:p-6 pb-16 md:pb-6 gap-6 overflow-y-auto custom-scrollbar">
-            {/* Landing Navigation Tabs */}
             <div className="flex items-center gap-2 bg-[#161616] border border-[#252525] p-1.5 rounded-full mt-4 sm:mt-6 mb-2 shrink-0 self-center shadow-xl">
-              <button
-                onClick={() => setLandingTab('video')}
-                className={`px-6 py-2.5 rounded-full font-black text-xs uppercase tracking-wider transition-all flex items-center gap-2 border-none cursor-pointer ${
-                  landingTab === 'video'
-                    ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md shadow-fuchsia-600/10'
-                    : 'bg-transparent text-[#888888] hover:text-white'
-                }`}
-              >
-                <FileVideo className="w-4 h-4" /> Video Studio
-              </button>
-              <button
-                onClick={() => setLandingTab('mic')}
-                className={`px-6 py-2.5 rounded-full font-black text-xs uppercase tracking-wider transition-all flex items-center gap-2 border-none cursor-pointer ${
-                  landingTab === 'mic'
-                    ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md shadow-fuchsia-600/10'
-                    : 'bg-transparent text-[#888888] hover:text-white'
-                }`}
-              >
-                <Mic className="w-4 h-4" /> Mic Transcriber
-              </button>
+              <div className="px-6 py-2.5 rounded-full font-black text-xs uppercase tracking-wider flex items-center gap-2 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-md shadow-fuchsia-600/10">
+                <FileVideo className="w-4 h-4" /> Video & Audio Studio
+              </div>
             </div>
 
-            {landingTab === 'video' ? (
-              <>
-                <VideoUploader 
-                  onUpload={handleUpload} 
-                  isProcessing={state.isProcessing} 
-                  initialFile={state.videoFile} 
-                />
-                {hasDraft && (
-                  <button
-                    onClick={handleLoadDraft}
-                    className="flex items-center gap-2 bg-[#161616] hover:bg-[#202020] border border-[#333] hover:border-fuchsia-600/50 text-[#888888] hover:text-white px-6 py-3.5 rounded-2xl font-bold uppercase text-xs tracking-wider transition-all shadow-xl active:scale-95 animate-fade-in"
-                  >
-                    <FolderOpen className="w-4 h-4 text-fuchsia-500 animate-bounce" />
-                    Restore Saved Draft Project
-                  </button>
-                )}
-              </>
-            ) : (
-              <MicTranscriber 
-                onSendToEditor={(words, audioBlob, audioUrl, audioDuration, micLanguage, micTranslate, micTranslateTarget) => {
-                  try {
-                    if (!audioBlob) {
-                      alert('No audio recorded. Please record audio first.');
-                      return;
-                    }
-                    pushUndo([]);
-                    const audioFile = new File([audioBlob], 'voice_recording.webm', { type: audioBlob.type || 'audio/webm' });
-                    const audioBlobUrl = URL.createObjectURL(audioBlob);
-                    setState(s => ({
-                      ...s,
-                      words,
-                      videoFile: audioFile,
-                      videoUrl: audioBlobUrl,
-                      logs: [...s.logs, `Received ${words.length} caption words from mic recording.`, `Audio ready: ${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB`],
-                    }));
-                    setLandingTab('video');
-                  } catch (err) {
-                    console.error('Send to editor failed:', err);
-                    alert('Failed to send to editor. Please try again.');
-                  }
-                }}
+            <>
+              <VideoUploader 
+                onUpload={handleUpload} 
+                isProcessing={state.isProcessing} 
+                initialFile={state.videoFile} 
               />
-            )}
+              {hasDraft && (
+                <button
+                  onClick={handleLoadDraft}
+                  className="flex items-center gap-2 bg-[#161616] hover:bg-[#202020] border border-[#333] hover:border-fuchsia-600/50 text-[#888888] hover:text-white px-6 py-3.5 rounded-2xl font-bold uppercase text-xs tracking-wider transition-all shadow-xl active:scale-95 animate-fade-in"
+                >
+                  <FolderOpen className="w-4 h-4 text-fuchsia-500 animate-bounce" />
+                  Restore Saved Draft Project
+                </button>
+              )}
+            </>
           </div>
         ) : (
           <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] h-[calc(100vh-64px)] overflow-y-auto lg:overflow-hidden w-full max-w-full">
