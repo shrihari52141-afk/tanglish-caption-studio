@@ -5,12 +5,12 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
@@ -23,13 +23,15 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Toast;
+import java.util.ArrayList;
 
 public class MainActivity extends Activity {
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_REQUEST = 1;
     private static final int PERMISSION_REQUEST = 2;
-    private boolean micPermissionGranted = false;
+    private PermissionRequest pendingPermissionRequest;
+    private boolean micPermissionAsked = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -54,6 +56,8 @@ public class MainActivity extends Activity {
 
         CookieManager.getInstance().setAcceptCookie(true);
 
+        webView.addJavascriptInterface(new MicBridge(), "MicBridge");
+
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -70,7 +74,26 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                request.grant(request.getResources());
+                pendingPermissionRequest = request;
+                String[] resources = request.getResources();
+                boolean hasMic = false;
+                for (String r : resources) {
+                    if (r.equals(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                        hasMic = true;
+                        break;
+                    }
+                }
+                if (hasMic) {
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(resources);
+                        pendingPermissionRequest = null;
+                    } else {
+                        requestPermissions(new String[]{ Manifest.permission.RECORD_AUDIO }, PERMISSION_REQUEST);
+                    }
+                } else {
+                    request.grant(resources);
+                    pendingPermissionRequest = null;
+                }
             }
 
             @Override
@@ -108,8 +131,12 @@ public class MainActivity extends Activity {
                 request.addRequestHeader("Content-Disposition", contentDisposition);
 
                 String urlFileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-                String randomSuffix = Long.toHexString(Double.doubleToLongBits(Math.random()));
-                randomSuffix = randomSuffix.substring((int)(Math.random() * 4) + 2, (int)(Math.random() * 4) + 6);
+                String chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < 6; i++) {
+                    sb.append(chars.charAt((int)(Math.random() * chars.length())));
+                }
+                String randomSuffix = sb.toString();
                 String baseName = urlFileName.contains(".")
                     ? urlFileName.substring(0, urlFileName.lastIndexOf('.'))
                     : urlFileName;
@@ -133,48 +160,51 @@ public class MainActivity extends Activity {
         });
 
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        webView.loadUrl("https://tanglish-caption-studio.pages.dev");
 
-        requestMicPermission();
+        requestAllPermissions();
     }
 
-    private void requestMicPermission() {
-        if (micPermissionGranted) return;
-
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            micPermissionGranted = true;
-            return;
-        }
-
-        requestPermissions(new String[]{
-            Manifest.permission.RECORD_AUDIO,
-        }, PERMISSION_REQUEST);
-    }
-
-    private void requestStoragePermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            String[] perms = {
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO,
-                Manifest.permission.READ_MEDIA_AUDIO,
-            };
-            boolean needRequest = false;
-            for (String p : perms) {
-                if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
-                    needRequest = true;
-                    break;
+    class MicBridge {
+        @JavascriptInterface
+        public void requestMicPermission() {
+            runOnUiThread(() -> {
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    webView.evaluateJavascript("window._micPermissionGranted && window._micPermissionGranted()", null);
+                } else {
+                    micPermissionAsked = true;
+                    requestPermissions(new String[]{ Manifest.permission.RECORD_AUDIO }, PERMISSION_REQUEST);
                 }
-            }
-            if (needRequest) requestPermissions(perms, PERMISSION_REQUEST + 1);
-        } else {
-            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
-                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                }, PERMISSION_REQUEST + 1);
-            }
+            });
         }
+
+        @JavascriptInterface
+        public boolean hasMicPermission() {
+            return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        }
+    }
+
+    private void requestAllPermissions() {
+        ArrayList<String> perms = new ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.READ_MEDIA_IMAGES);
+            if (checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.READ_MEDIA_VIDEO);
+            if (checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.READ_MEDIA_AUDIO);
+        } else {
+            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+            if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+        if (!perms.isEmpty()) {
+            requestPermissions(perms.toArray(new String[0]), PERMISSION_REQUEST);
+        }
+        webView.loadUrl("https://tanglish-caption-studio.pages.dev");
     }
 
     @Override
@@ -182,18 +212,30 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
         if (requestCode == PERMISSION_REQUEST) {
+            boolean micGranted = false;
             for (int i = 0; i < permissions.length; i++) {
                 if (permissions[i].equals(Manifest.permission.RECORD_AUDIO) &&
                     grantResults[i] == PackageManager.PERMISSION_GRANTED) {
-                    micPermissionGranted = true;
+                    micGranted = true;
                 }
             }
 
-            if (!micPermissionGranted) {
+            if (pendingPermissionRequest != null) {
+                if (micGranted) {
+                    pendingPermissionRequest.grant(pendingPermissionRequest.getResources());
+                } else {
+                    pendingPermissionRequest.deny();
+                }
+                pendingPermissionRequest = null;
+            }
+
+            if (micGranted) {
+                webView.evaluateJavascript("window._micPermissionGranted && window._micPermissionGranted()", null);
+            } else if (micPermissionAsked) {
                 Toast.makeText(this,
-                    "Microphone permission is required for voice recording. Please grant it.",
+                    "Microphone permission required. Please grant it in Settings.",
                     Toast.LENGTH_LONG).show();
-                webView.postDelayed(() -> requestMicPermission(), 3000);
+                micPermissionAsked = false;
             }
         }
     }

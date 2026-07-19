@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, Square, Pause, Play, Copy, Download, Loader2, Check, Send, Globe, ChevronDown } from 'lucide-react';
 import { CaptionWord } from '../types';
 import { sanitizeCaptionWords, stripASSTags } from '../utils/captionFormatter';
@@ -58,7 +58,7 @@ const TRANSLATE_LANGUAGES = [
 ];
 
 interface MicTranscriberProps {
-  onSendToEditor?: (words: CaptionWord[], audioBlob?: Blob, audioUrl?: string) => void;
+  onSendToEditor?: (words: CaptionWord[], audioBlob?: Blob, audioUrl?: string, audioDuration?: number) => void;
   onVideoFileSelected?: (file: File) => void;
 }
 
@@ -73,6 +73,8 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
   const [timedWords, setTimedWords] = useState<CaptionWord[]>([]);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [micReady, setMicReady] = useState(false);
 
   const [selectedLanguage, setSelectedLanguage] = useState('tamil');
   const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
@@ -86,6 +88,19 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    if (isAndroid && (window as any).MicBridge) {
+      (window as any).MicBridge.requestMicPermission();
+      (window as any)._micPermissionGranted = () => {
+        setMicReady(true);
+      };
+      if ((window as any).MicBridge.hasMicPermission()) {
+        setMicReady(true);
+      }
+    } else {
+      setMicReady(true);
+    }
+
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (streamRef.current) {
@@ -127,7 +142,13 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
         if (!isPaused) setRecordingTime(t => t + 1);
       }, 1000);
     } catch (err: any) {
-      setError('Microphone access denied. Please grant permission in your browser/device settings.');
+      const isAndroid = /Android/i.test(navigator.userAgent);
+      if (isAndroid && (window as any).MicBridge) {
+        (window as any).MicBridge.requestMicPermission();
+        setError('Requesting microphone permission... Please wait and try again.');
+      } else {
+        setError('Microphone access denied. Please grant permission in your browser settings and reload.');
+      }
     }
   };
 
@@ -228,9 +249,17 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
     } catch {}
   };
 
-  const handleSendToEditor = () => {
+  const handleSendToEditor = async () => {
     if (timedWords.length > 0 && onSendToEditor && audioBlob && audioUrl) {
-      onSendToEditor(timedWords, audioBlob, audioUrl);
+      setIsSending(true);
+      try {
+        await onSendToEditor(timedWords, audioBlob, audioUrl, recordingTime);
+      } catch (err) {
+        console.error('Send to editor error:', err);
+        setError('Failed to send to editor. Please try again.');
+      } finally {
+        setIsSending(false);
+      }
     }
   };
 
@@ -431,8 +460,13 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
               <Download className="w-3 h-3" /> SRT
             </button>
             {timedWords.length > 0 && onSendToEditor && (
-              <button onClick={handleSendToEditor} className="flex items-center gap-1.5 px-3 py-1.5 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors">
-                <Send className="w-3 h-3" /> Send to Editor
+              <button
+                onClick={handleSendToEditor}
+                disabled={isSending}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors disabled:opacity-50"
+              >
+                {isSending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                {isSending ? 'Creating Video...' : 'Send to Editor'}
               </button>
             )}
           </div>
