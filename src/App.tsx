@@ -1306,10 +1306,17 @@ export default function App() {
                       alert('No audio recorded. Please record audio first.');
                       return;
                     }
+                    pushUndo([]);
                     const audioFile = new File([audioBlob], 'voice_recording.webm', { type: audioBlob.type || 'audio/webm' });
-                    const language = micLanguage || 'tamil';
-                    const translationMode = micTranslate ? `translate_${micTranslateTarget || 'english'}` : 'transliterate';
-                    handleUpload(audioFile, language, true, translationMode, true, 'vibes', audioBlob);
+                    const audioBlobUrl = URL.createObjectURL(audioBlob);
+                    setState(s => ({
+                      ...s,
+                      words,
+                      videoFile: audioFile,
+                      videoUrl: audioBlobUrl,
+                      logs: [...s.logs, `Received ${words.length} caption words from mic recording.`, `Audio ready: ${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB`],
+                    }));
+                    setLandingTab('video');
                   } catch (err) {
                     console.error('Send to editor failed:', err);
                     alert('Failed to send to editor. Please try again.');

@@ -69,6 +69,15 @@ public class MainActivity extends Activity {
                 }
                 return false;
             }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                view.evaluateJavascript(
+                    "(function(){ try { navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){ s.getTracks().forEach(function(t){ t.stop(); }); }).catch(function(){}); } catch(e){} })();",
+                    null
+                );
+            }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {

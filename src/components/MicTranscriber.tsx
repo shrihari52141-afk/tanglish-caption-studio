@@ -145,9 +145,14 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
       const isAndroid = /Android/i.test(navigator.userAgent);
       if (isAndroid && (window as any).MicBridge) {
         (window as any).MicBridge.requestMicPermission();
-        setError('Requesting microphone permission... Please wait and try again.');
+        setError('Microphone access required. Please grant permission when prompted, then press the mic button again.');
+        (window as any)._micPermissionGranted = () => {
+          setMicReady(true);
+          setError(null);
+          startRecording();
+        };
       } else {
-        setError('Microphone access denied. Please grant permission in your browser settings and reload.');
+        setError('Microphone access denied. Please grant permission in your browser/device settings and reload the page.');
       }
     }
   };
