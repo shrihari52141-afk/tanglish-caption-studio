@@ -713,13 +713,12 @@ export default function App() {
       setExportLogs(l => [...l, "✓ Frame recording completed. Generating final video package..."]);
       const blob = new Blob(chunks, { type: selectedMimeType });
       
-      const ext = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
       const baseName = state.videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
-      const exportFileName = `${baseName}_${generateRandomSuffix()}.${ext}`;
+      const exportFileName = `${baseName}_${generateRandomSuffix()}.mp4`;
       
       setExportedBlob(blob);
       setExportedFileName(exportFileName);
-      setExportedMimeType(selectedMimeType);
+      setExportedMimeType('video/mp4');
       setExportLogs(l => [...l, "✨ Render complete! Click Save to download."]);
       setExportMode('complete');
     };

@@ -3,12 +3,14 @@ package com.tanglish.captionstudio;
 import android.app.DownloadManager;
 import android.Manifest;
 import android.app.Activity;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.Base64;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
@@ -26,6 +28,8 @@ import android.view.WindowManager;
 import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 
 public class MainActivity extends Activity {
@@ -200,16 +204,49 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void saveFile(String fileName, String base64Data, String mimeType) {
             try {
-                String downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
-                File file = new File(downloadsDir, fileName);
                 byte[] decoded = Base64.decode(base64Data, Base64.DEFAULT);
-                FileOutputStream fos = new FileOutputStream(file);
-                fos.write(decoded);
-                fos.close();
-                final String msg = "Saved: " + fileName;
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show());
+                if (decoded == null || decoded.length == 0) {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: empty file data", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                    values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (uri != null) {
+                        OutputStream os = getContentResolver().openOutputStream(uri);
+                        if (os != null) {
+                            os.write(decoded);
+                            os.flush();
+                            os.close();
+                        }
+                        values.clear();
+                        values.put(MediaStore.Downloads.IS_PENDING, 0);
+                        getContentResolver().update(uri, values, null, null);
+                        final long sizeKB = decoded.length / 1024;
+                        runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved to Downloads: " + fileName + " (" + sizeKB + " KB)", Toast.LENGTH_LONG).show());
+                    } else {
+                        runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: could not create file", Toast.LENGTH_SHORT).show());
+                    }
+                } else {
+                    File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (!downloadsDir.exists()) downloadsDir.mkdirs();
+                    File file = new File(downloadsDir, fileName);
+                    FileOutputStream fos = new FileOutputStream(file);
+                    fos.write(decoded);
+                    fos.flush();
+                    fos.close();
+                    final long sizeKB = decoded.length / 1024;
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved to Downloads: " + fileName + " (" + sizeKB + " KB)", Toast.LENGTH_LONG).show());
+                }
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+                final String err = e.getMessage();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: " + err, Toast.LENGTH_LONG).show());
             }
         }
     }
