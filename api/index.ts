@@ -1,23 +1,23 @@
 // Vercel serverless function entry.
-// Imports the Express app from server.ts and mounts it.
-// On Vercel, server.ts does NOT call app.listen() (guarded by process.env.VERCEL),
-// so we call startServer() here to initialize the app + remote config watcher.
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { startServer, app } from "../server.ts";
+// Uses the built server bundle (dist/server.cjs) to avoid TS ESM resolution issues.
+import serverCjs from "../dist/server.cjs";
+const { startServer, app } = serverCjs as {
+  startServer: () => Promise<void>;
+  app: any;
+};
 
-// Initialize the app once (module-level, reused across warm invocations).
 let ready: Promise<void> | null = null;
 function ensureApp() {
   if (!ready) {
     ready = startServer().then(() => undefined).catch((e) => {
-      ready = null; // allow retry on next request
+      ready = null;
       throw e;
     });
   }
   return ready;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   await ensureApp();
   return app(req, res);
 }
