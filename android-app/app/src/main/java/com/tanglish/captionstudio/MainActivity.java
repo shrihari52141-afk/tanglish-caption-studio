@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -24,7 +25,6 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_REQUEST = 1;
     private static final int PERMISSION_REQUEST = 2;
-    private boolean permissionsAsked = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,6 +64,12 @@ public class MainActivity extends Activity {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                // Grant microphone permission to the WebView
+                request.grant(request.getResources());
+            }
+
+            @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> callback,
                                              FileChooserParams fileChooserParams) {
                 if (filePathCallback != null) {
@@ -71,18 +77,19 @@ public class MainActivity extends Activity {
                 }
                 filePathCallback = callback;
 
+                // Simple approach: accept all files, let the web app handle filtering
                 Intent fileIntent = new Intent(Intent.ACTION_GET_CONTENT);
                 fileIntent.addCategory(Intent.CATEGORY_OPENABLE);
-                fileIntent.setType("video/*");
-                fileIntent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"video/*", "audio/*"});
+                fileIntent.setType("*/*");
                 fileIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
-
-                Intent audioIntent = new Intent(Intent.ACTION_GET_CONTENT);
-                audioIntent.addCategory(Intent.CATEGORY_OPENABLE);
-                audioIntent.setType("audio/*");
+                fileIntent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                    "video/*", "audio/*",
+                    "application/octet-stream",
+                    "application/x-mpegURL",
+                    "application/dash+xml"
+                });
 
                 Intent chooserIntent = Intent.createChooser(fileIntent, "Select Video or Audio File");
-                chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{audioIntent});
                 startActivityForResult(chooserIntent, FILE_CHOOSER_REQUEST);
                 return true;
             }
@@ -130,7 +137,6 @@ public class MainActivity extends Activity {
         }
 
         if (!allGranted) {
-            permissionsAsked = true;
             requestPermissions(perms, PERMISSION_REQUEST);
         }
     }
@@ -150,9 +156,10 @@ public class MainActivity extends Activity {
 
             if (!allGranted) {
                 Toast.makeText(this,
-                    "Permissions are required for this app to work. Please grant all permissions.",
+                    "Microphone and storage permissions are required. Please grant them.",
                     Toast.LENGTH_LONG).show();
-                requestPermissionsLoop();
+                // Retry after 2 seconds
+                webView.postDelayed(() -> requestPermissionsLoop(), 2000);
             }
         }
     }
@@ -166,30 +173,13 @@ public class MainActivity extends Activity {
                 if (resultCode == RESULT_OK && data != null) {
                     String dataString = data.getDataString();
                     if (dataString != null) {
-                        Uri uri = Uri.parse(dataString);
-                        String type = getContentResolver().getType(uri);
-                        if (type != null && (type.startsWith("video/") || type.startsWith("audio/"))) {
-                            results = new Uri[]{uri};
-                        } else {
-                            Toast.makeText(this,
-                                "Only video and audio files are supported.",
-                                Toast.LENGTH_SHORT).show();
-                        }
+                        // Accept the file — let the web app validate the type
+                        results = new Uri[]{Uri.parse(dataString)};
                     } else if (data.getClipData() != null) {
                         int count = data.getClipData().getItemCount();
                         results = new Uri[count];
                         for (int i = 0; i < count; i++) {
-                            Uri uri = data.getClipData().getItemAt(i).getUri();
-                            String type = getContentResolver().getType(uri);
-                            if (type != null && (type.startsWith("video/") || type.startsWith("audio/"))) {
-                                results[i] = uri;
-                            } else {
-                                Toast.makeText(this,
-                                    "Only video and audio files are supported.",
-                                    Toast.LENGTH_SHORT).show();
-                                results = null;
-                                break;
-                            }
+                            results[i] = data.getClipData().getItemAt(i).getUri();
                         }
                     }
                 }
