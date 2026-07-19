@@ -4,7 +4,7 @@ import VideoUploader from './components/VideoUploader';
 import EditorPanel from './components/EditorPanel';
 import MicTranscriber from './components/MicTranscriber';
 import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './types';
-import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Mic } from 'lucide-react';
+import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Mic, Undo2, Redo2, Replace, Languages } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
@@ -248,6 +248,46 @@ export default function App() {
   
   const addVideoInputRef = useRef<HTMLInputElement>(null);
   const newProjectFileInputRef = useRef<HTMLInputElement>(null);
+  const replaceVideoInputRef = useRef<HTMLInputElement>(null);
+
+  // Undo/Redo history
+  const [undoStack, setUndoStack] = useState<CaptionWord[][]>([]);
+  const [redoStack, setRedoStack] = useState<CaptionWord[][]>([]);
+
+  const pushUndo = (currentWords: CaptionWord[]) => {
+    setUndoStack(prev => [...prev.slice(-50), currentWords]);
+    setRedoStack([]);
+  };
+
+  const handleUndo = () => {
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack(s => s.slice(0, -1));
+    setRedoStack(r => [...r, state.words]);
+    setState(s => ({ ...s, words: prev }));
+  };
+
+  const handleRedo = () => {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack(r => r.slice(0, -1));
+    setUndoStack(u => [...u, state.words]);
+    setState(s => ({ ...s, words: next }));
+  };
+
+  // Replace video (keep audio/captions)
+  const handleReplaceVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type.startsWith('video/')) {
+      const newUrl = URL.createObjectURL(file);
+      setState(s => ({
+        ...s,
+        videoFile: file,
+        videoUrl: newUrl,
+        logs: [...s.logs, `Replaced video: ${file.name}`],
+      }));
+    }
+  };
 
   const handleNewProjectFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -343,6 +383,7 @@ export default function App() {
   };
 
   const handleUpdateWords = (updatedWords: CaptionWord[]) => {
+    pushUndo(state.words);
     setState(s => ({ ...s, words: sanitizeCaptionWords(updatedWords) }));
   };
 
@@ -506,7 +547,26 @@ export default function App() {
     setExportLogs(["Initializing 100% local video renderer..."]);
     setLocalProgress(0);
 
-    const videoEl = document.querySelector('video');
+    const isAudioOnly = state.videoFile && (
+      state.videoFile.type.startsWith('audio/') || 
+      state.videoFile.name.endsWith('.mp3') || 
+      state.videoFile.name.endsWith('.wav') || 
+      state.videoFile.name.endsWith('.m4a')
+    );
+
+    let videoEl = document.querySelector('video') as HTMLVideoElement | null;
+
+    if (isAudioOnly && !videoEl) {
+      // Create synthetic video for audio-only with background color
+      videoEl = document.createElement('video');
+      videoEl.muted = true;
+      videoEl.src = state.videoUrl || '';
+      await new Promise<void>((resolve) => {
+        videoEl!.onloadedmetadata = () => resolve();
+        videoEl!.onerror = () => resolve();
+      });
+    }
+
     if (!videoEl) {
       setExportLogs(l => [...l, "Error: Could not find active video player component."]);
       return;
@@ -788,17 +848,7 @@ export default function App() {
       return;
     }
 
-    const isAudioOnly = state.videoFile.type.startsWith('audio/') || 
-                        state.videoFile.name.endsWith('.mp3') || 
-                        state.videoFile.name.endsWith('.wav') || 
-                        state.videoFile.name.endsWith('.m4a');
-
-    if (isAudioOnly) {
-      alert("You uploaded an audio-only file. Captions cannot be burned onto audio files. Please use the 'Offline Subtitle Export' buttons in the Transcript tab to download your SRT, VTT, or ASS files directly!");
-      return;
-    }
-
-    // Set export settings and open Modal
+    // Allow both video and audio-only exports (audio uses color background)
     isCancelledRef.current = false;
     setExportMode('choice');
     setLocalProgress(0);
@@ -1021,6 +1071,7 @@ export default function App() {
   };
 
   const handleUpdateWordText = (id: string, text: string) => {
+    pushUndo(state.words);
     const cleaned = stripASSTags(text);
     setState(s => ({
       ...s,
@@ -1050,20 +1101,52 @@ export default function App() {
             
             <button 
               onClick={handleExport}
-              disabled={!state.videoUrl || isExporting}
+              disabled={state.words.length === 0 || isExporting}
               className="ml-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-3 py-1.5 sm:px-5 sm:py-2 rounded-full font-extrabold text-[11px] sm:text-[14px] border-none cursor-pointer uppercase transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-lg shadow-fuchsia-600/10 shrink-0"
             >
               {isExporting ? "Exporting..." : "Export Video"}
             </button>
 
             {state.videoUrl && (
-              <button 
-                onClick={handleNewProject}
-                className="ml-2 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
-                title="Start a new project / upload another video"
-              >
-                <Plus className="w-5 h-5" />
-              </button>
+              <>
+                <button 
+                  onClick={handleUndo}
+                  disabled={undoStack.length === 0}
+                  className="ml-1 bg-[#222] hover:bg-[#333] text-[#aaa] hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Undo"
+                >
+                  <Undo2 className="w-4 h-4" />
+                </button>
+                <button 
+                  onClick={handleRedo}
+                  disabled={redoStack.length === 0}
+                  className="ml-1 bg-[#222] hover:bg-[#333] text-[#aaa] hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Redo"
+                >
+                  <Redo2 className="w-4 h-4" />
+                </button>
+                <button 
+                  onClick={() => replaceVideoInputRef.current?.click()}
+                  className="ml-1 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
+                  title="Replace video (keep captions & audio)"
+                >
+                  <Replace className="w-4 h-4" />
+                </button>
+                <input
+                  type="file"
+                  accept="video/*"
+                  ref={replaceVideoInputRef}
+                  onChange={handleReplaceVideoChange}
+                  className="hidden"
+                />
+                <button 
+                  onClick={handleNewProject}
+                  className="ml-1 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
+                  title="New project"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </>
             )}
           </div>
           
@@ -1171,7 +1254,17 @@ export default function App() {
                 )}
               </>
             ) : (
-              <MicTranscriber />
+              <MicTranscriber 
+                onSendToEditor={(words) => {
+                  pushUndo([]);
+                  setState(s => ({
+                    ...s,
+                    words,
+                    logs: [...s.logs, `Received ${words.length} caption words from voice recording.`],
+                  }));
+                  setLandingTab('video');
+                }}
+              />
             )}
           </div>
         ) : (

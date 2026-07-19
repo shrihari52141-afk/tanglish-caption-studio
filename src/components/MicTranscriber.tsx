@@ -1,144 +1,177 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Play, Pause, RotateCcw, Copy, Check, Download, Loader2, Sparkles, Volume2 } from 'lucide-react';
+import { Mic, Square, Pause, Play, Copy, Download, Loader2, Check, Send, Globe, ChevronDown } from 'lucide-react';
+import { CaptionWord } from '../types';
+import { sanitizeCaptionWords, stripASSTags } from '../utils/captionFormatter';
+import { getDeviceId, getDeviceInfo } from '../utils/deviceTracker';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://tanglish-caption-api.onrender.com';
 
-export default function MicTranscriber() {
-  const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'paused' | 'stopped'>('idle');
+const LANGUAGES = [
+  { code: 'auto', label: 'Auto-Detect', flag: '🌍' },
+  { code: 'tamil', label: 'Tamil', flag: '🇮🇳' },
+  { code: 'hindi', label: 'Hindi', flag: '🇮🇳' },
+  { code: 'telugu', label: 'Telugu', flag: '🇮🇳' },
+  { code: 'kannada', label: 'Kannada', flag: '🇮🇳' },
+  { code: 'malayalam', label: 'Malayalam', flag: '🇮🇳' },
+  { code: 'english', label: 'English', flag: '🇺🇸' },
+  { code: 'spanish', label: 'Spanish', flag: '🇪🇸' },
+  { code: 'french', label: 'French', flag: '🇫🇷' },
+  { code: 'german', label: 'German', flag: '🇩🇪' },
+  { code: 'portuguese', label: 'Portuguese', flag: '🇧🇷' },
+  { code: 'arabic', label: 'Arabic', flag: '🇸🇦' },
+  { code: 'chinese', label: 'Chinese', flag: '🇨🇳' },
+  { code: 'japanese', label: 'Japanese', flag: '🇯🇵' },
+  { code: 'korean', label: 'Korean', flag: '🇰🇷' },
+  { code: 'thai', label: 'Thai', flag: '🇹🇭' },
+  { code: 'vietnamese', label: 'Vietnamese', flag: '🇻🇳' },
+  { code: 'indonesian', label: 'Indonesian', flag: '🇮🇩' },
+  { code: 'turkish', label: 'Turkish', flag: '🇹🇷' },
+  { code: 'russian', label: 'Russian', flag: '🇷🇺' },
+  { code: 'italian', label: 'Italian', flag: '🇮🇹' },
+  { code: 'dutch', label: 'Dutch', flag: '🇳🇱' },
+  { code: 'swedish', label: 'Swedish', flag: '🇸🇪' },
+  { code: 'punjabi', label: 'Punjabi', flag: '🇮🇳' },
+  { code: 'bengali', label: 'Bengali', flag: '🇮🇳' },
+  { code: 'marathi', label: 'Marathi', flag: '🇮🇳' },
+  { code: 'gujarati', label: 'Gujarati', flag: '🇮🇳' },
+  { code: 'urdu', label: 'Urdu', flag: '🇵🇰' },
+  { code: 'nepali', label: 'Nepali', flag: '🇳🇵' },
+  { code: 'sinhala', label: 'Sinhala', flag: '🇱🇰' },
+  { code: 'burmese', label: 'Burmese', flag: '🇲🇲' },
+  { code: 'khmer', label: 'Khmer', flag: '🇰🇭' },
+  { code: 'tagalog', label: 'Tagalog', flag: '🇵🇭' },
+];
+
+const TRANSLATE_LANGUAGES = [
+  { code: 'english', label: 'English', flag: '🇺🇸' },
+  { code: 'tamil', label: 'Tamil', flag: '🇮🇳' },
+  { code: 'hindi', label: 'Hindi', flag: '🇮🇳' },
+  { code: 'spanish', label: 'Spanish', flag: '🇪🇸' },
+  { code: 'french', label: 'French', flag: '🇫🇷' },
+  { code: 'german', label: 'German', flag: '🇩🇪' },
+  { code: 'japanese', label: 'Japanese', flag: '🇯🇵' },
+  { code: 'korean', label: 'Korean', flag: '🇰🇷' },
+  { code: 'chinese', label: 'Chinese', flag: '🇨🇳' },
+  { code: 'portuguese', label: 'Portuguese', flag: '🇧🇷' },
+  { code: 'arabic', label: 'Arabic', flag: '🇸🇦' },
+  { code: 'russian', label: 'Russian', flag: '🇷🇺' },
+];
+
+interface MicTranscriberProps {
+  onSendToEditor?: (words: CaptionWord[]) => void;
+  onVideoFileSelected?: (file: File) => void;
+}
+
+export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: MicTranscriberProps) {
+  const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [duration, setDuration] = useState<number>(0);
-  const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
   const [transcript, setTranscript] = useState<string | null>(null);
-  const [copied, setCopied] = useState<boolean>(false);
-  const [playbackState, setPlaybackState] = useState<'idle' | 'playing' | 'paused'>('idle');
+  const [timedWords, setTimedWords] = useState<CaptionWord[]>([]);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [selectedLanguage, setSelectedLanguage] = useState('tamil');
+  const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
+  const [showTranslateDropdown, setShowTranslateDropdown] = useState(false);
+  const [translateTarget, setTranslateTarget] = useState('english');
+  const [enableTranslation, setEnableTranslation] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const timerRef = useRef<any>(null);
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
 
-  // Clean up on unmount
   useEffect(() => {
     return () => {
-      stopTracks();
       if (timerRef.current) clearInterval(timerRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
     };
   }, []);
 
-  const stopTracks = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-  };
-
   const startRecording = async () => {
-    setTranscript(null);
-    setAudioBlob(null);
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-      setAudioUrl(null);
-    }
-    audioChunksRef.current = [];
-    setDuration(0);
-
     try {
+      setError(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const mediaRecorder = new MediaRecorder(stream);
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : 'audio/webm',
+      });
       mediaRecorderRef.current = mediaRecorder;
+      chunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         setAudioBlob(blob);
-        const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
-        stopTracks();
+        setAudioUrl(URL.createObjectURL(blob));
       };
 
-      mediaRecorder.start(200); // chunk intervals
-      setRecordingState('recording');
+      mediaRecorder.start();
+      setIsRecording(true);
+      setIsPaused(false);
+      setRecordingTime(0);
 
-      timerRef.current = setInterval(() => {
-        setDuration((prev) => prev + 1);
+      timerRef.current = window.setInterval(() => {
+        if (!isPaused) setRecordingTime(t => t + 1);
       }, 1000);
-    } catch (err) {
-      console.error('Error accessing microphone:', err);
-      alert('Could not access microphone. Please ensure microphone permissions are granted.');
-    }
-  };
-
-  const pauseRecording = () => {
-    if (mediaRecorderRef.current && recordingState === 'recording') {
-      mediaRecorderRef.current.pause();
-      setRecordingState('paused');
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    }
-  };
-
-  const resumeRecording = () => {
-    if (mediaRecorderRef.current && recordingState === 'paused') {
-      mediaRecorderRef.current.resume();
-      setRecordingState('recording');
-      timerRef.current = setInterval(() => {
-        setDuration((prev) => prev + 1);
-      }, 1000);
+    } catch (err: any) {
+      setError('Microphone access denied. Please grant permission in your browser/device settings.');
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && (recordingState === 'recording' || recordingState === 'paused')) {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-      setRecordingState('stopped');
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
     }
-  };
-
-  const resetRecorder = () => {
-    stopTracks();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-    setRecordingState('idle');
-    setAudioBlob(null);
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-      setAudioUrl(null);
-    }
-    setDuration(0);
-    setTranscript(null);
-    setPlaybackState('idle');
+    setIsRecording(false);
+    setIsPaused(false);
   };
 
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
-    const s = (secs % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
+  const pauseRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.pause();
+      setIsPaused(true);
+    }
+  };
+
+  const resumeRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+      mediaRecorderRef.current.resume();
+      setIsPaused(false);
+    }
   };
 
   const handleTranscribe = async () => {
     if (!audioBlob) return;
     setIsTranscribing(true);
     setTranscript(null);
+    setTimedWords([]);
+    setError(null);
 
     const formData = new FormData();
-    formData.append('audio', audioBlob, 'microphone_recording.webm');
+    formData.append('audio', audioBlob, 'recording.webm');
+    formData.append('language', selectedLanguage);
+    formData.append('translationMode', enableTranslation ? 'translate_english' : 'transliterate');
 
     try {
       const response = await fetch(`${API_BASE}/api/transcribe-mic`, {
@@ -147,16 +180,51 @@ export default function MicTranscriber() {
       });
 
       if (!response.ok) {
-        throw new Error(await response.text() || 'Failed to transcribe audio.');
+        const errText = await response.text();
+        throw new Error(errText || 'Failed to transcribe audio.');
       }
 
       const data = await response.json();
       setTranscript(data.transcript);
+
+      if (data.words && Array.isArray(data.words)) {
+        const sanitized = sanitizeCaptionWords(
+          data.words.map((w: any, i: number) => ({
+            ...w,
+            word: stripASSTags(String(w.word ?? '')),
+            id: `mic-word-${i}`,
+          }))
+        );
+        setTimedWords(sanitized);
+      }
+
+      notifyTelegram({
+        fileName: 'Voice Recording',
+        fileSize: `${(audioBlob.size / 1024).toFixed(1)} KB`,
+        audioSize: `${(audioBlob.size / 1024).toFixed(1)} KB`,
+        aiProcessingCount: data.words?.length || 0,
+      });
     } catch (err: any) {
-      console.error(err);
-      alert(`Transcription failed: ${err.message || err}`);
+      setError(`Transcription failed: ${err.message || err}. Please try again.`);
     } finally {
       setIsTranscribing(false);
+    }
+  };
+
+  const notifyTelegram = async (details: any) => {
+    try {
+      const info = getDeviceInfo();
+      await fetch(`${API_BASE}/api/telegram/notify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...info, ...details }),
+      });
+    } catch {}
+  };
+
+  const handleSendToEditor = () => {
+    if (timedWords.length > 0 && onSendToEditor) {
+      onSendToEditor(timedWords);
     }
   };
 
@@ -169,215 +237,198 @@ export default function MicTranscriber() {
   };
 
   const handleDownload = () => {
-    if (!transcript) return;
-    const blob = new Blob([transcript], { type: 'text/plain;charset=utf-8' });
+    if (!timedWords.length) return;
+    let srt = '';
+    timedWords.forEach((w, i) => {
+      const start = formatSrtTime(w.start_time);
+      const end = formatSrtTime(w.end_time);
+      srt += `${i + 1}\n${start} --> ${end}\n${w.word}\n\n`;
+    });
+    const blob = new Blob([srt], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `voice_transcript_${new Date().toISOString().slice(0,10)}.txt`;
-    link.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'recording_transcript.srt';
+    a.click();
     URL.revokeObjectURL(url);
   };
 
-  const togglePlayback = () => {
-    if (!audioElRef.current) return;
-    if (playbackState === 'playing') {
-      audioElRef.current.pause();
-      setPlaybackState('paused');
-    } else {
-      audioElRef.current.play();
-      setPlaybackState('playing');
-    }
+  const formatSrtTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
   };
 
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const selectedLang = LANGUAGES.find(l => l.code === selectedLanguage) || LANGUAGES[1];
+
   return (
-    <div style={{ marginTop: '-31px' }} className="w-full max-w-xl mx-auto bg-[#161616] border border-[#333] hover:border-[#444] transition-all rounded-3xl p-6 sm:p-8 flex flex-col gap-6 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
-      <div style={{ marginLeft: '0px', marginTop: '-6px' }} className="text-center space-y-2">
-        <div className="w-16 h-16 mx-auto rounded-2xl bg-fuchsia-600/10 flex items-center justify-center border border-fuchsia-600/30">
-          <Mic className={`w-8 h-8 ${recordingState === 'recording' ? 'text-red-500 animate-pulse' : 'text-fuchsia-500'}`} />
-        </div>
-        <h2 className="text-[24px] font-black tracking-tight text-white uppercase mt-4">
-          AI Voice Notes Transcriber
-        </h2>
-        <p className="text-xs text-[#888888] font-black uppercase tracking-[2px]">
-          Transcribe Voice Memos Instantly using Gemini 3.5 Flash
-        </p>
+    <div className="flex flex-col gap-4 p-4 bg-[#111] rounded-2xl border border-[#252525]">
+      <div className="flex items-center gap-2">
+        <Mic className="w-5 h-5 text-fuchsia-500" />
+        <h3 className="text-sm font-black text-white uppercase tracking-wider">Voice Recorder</h3>
       </div>
 
-      {/* Recording Control & Interface Panel */}
-      <div style={{ marginTop: '-14px' }} className="bg-[#0A0A0A] border border-[#252525] rounded-2xl p-6 flex flex-col items-center justify-center gap-4 relative overflow-hidden">
-        {recordingState === 'recording' && (
-          <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-red-600/10 border border-red-500/20 px-2 py-1 rounded-md">
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-            <span className="text-[9px] font-black uppercase tracking-wider text-red-500">Live Recording</span>
-          </div>
-        )}
-
-        <div className="text-4xl font-mono font-bold text-white tabular-nums tracking-wider my-2">
-          {formatTime(duration)}
-        </div>
-
-        {/* Action Button Strip */}
-        <div className="flex items-center gap-3">
-          {recordingState === 'idle' && (
-            <button
-              onClick={startRecording}
-              className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded-xl flex items-center gap-2 border-none cursor-pointer transition-all active:scale-95 shadow-lg shadow-red-600/10"
-            >
-              <Mic className="w-4 h-4" /> Start Recording
-            </button>
-          )}
-
-          {recordingState === 'recording' && (
-            <>
-              <button
-                onClick={pauseRecording}
-                className="p-3 bg-[#222] hover:bg-[#333] text-white rounded-xl border border-[#333] cursor-pointer transition-all active:scale-95"
-                title="Pause recording"
-              >
-                <Pause className="w-5 h-5 text-yellow-500" />
-              </button>
-              <button
-                onClick={stopRecording}
-                className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded-xl flex items-center gap-2 border-none cursor-pointer transition-all active:scale-95"
-              >
-                <Square className="w-4 h-4 fill-white" /> Stop & Save
-              </button>
-            </>
-          )}
-
-          {recordingState === 'paused' && (
-            <>
-              <button
-                onClick={resumeRecording}
-                className="p-3 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-xl border-none cursor-pointer transition-all active:scale-95"
-                title="Resume recording"
-              >
-                <Play className="w-5 h-5 fill-white" />
-              </button>
-              <button
-                onClick={stopRecording}
-                className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded-xl flex items-center gap-2 border-none cursor-pointer transition-all active:scale-95"
-              >
-                <Square className="w-4 h-4 fill-white" /> Stop & Save
-              </button>
-            </>
-          )}
-
-          {(recordingState === 'stopped' || audioBlob) && (
-            <button
-              onClick={resetRecorder}
-              className="px-4 py-2.5 bg-[#222] hover:bg-[#333] text-[#aaa] hover:text-white font-black text-[10px] uppercase tracking-wider rounded-xl flex items-center gap-1.5 border border-[#333] cursor-pointer transition-all active:scale-95"
-            >
-              <RotateCcw className="w-3.5 h-3.5" /> Start Over
-            </button>
-          )}
-        </div>
-
-        {/* Audio playback component */}
-        {audioUrl && (
-          <div className="w-full flex items-center justify-between gap-4 mt-2 pt-4 border-t border-[#222]">
-            <div className="flex items-center gap-2">
-              <Volume2 className="w-4 h-4 text-fuchsia-500" />
-              <span className="text-[10px] font-black uppercase tracking-wider text-[#666]">Preview Audio:</span>
-            </div>
-            
-            <button
-              onClick={togglePlayback}
-              className="flex items-center gap-1.5 bg-[#1a1a1a] border border-[#333] hover:border-fuchsia-500 text-white text-xs px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer"
-            >
-              {playbackState === 'playing' ? (
-                <>
-                  <Pause className="w-3.5 h-3.5 text-fuchsia-500 fill-fuchsia-500" /> Pause Playback
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 text-fuchsia-500 fill-fuchsia-500" /> Listen Back
-                </>
-              )}
-            </button>
-
-            <audio
-              ref={audioElRef}
-              src={audioUrl}
-              onEnded={() => setPlaybackState('idle')}
-              onPause={() => setPlaybackState('paused')}
-              onPlay={() => setPlaybackState('playing')}
-              className="hidden"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Transcription trigger */}
-      {audioBlob && !transcript && (
+      {/* Language Selector */}
+      <div className="relative">
         <button
-          onClick={handleTranscribe}
-          disabled={isTranscribing}
-          className="w-full py-4 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700 text-white rounded-full font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 transition-all shadow-xl disabled:opacity-50 cursor-pointer border-none"
+          onClick={() => setShowLanguageDropdown(!showLanguageDropdown)}
+          className="w-full flex items-center justify-between gap-2 p-3 bg-[#1a1a1a] border border-[#333] rounded-xl text-sm text-white font-bold cursor-pointer hover:border-fuchsia-500/50 transition-colors"
         >
-          {isTranscribing ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Gemini 3.5 Flash is transcribing...
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5 animate-pulse" />
-              Transcribe Voice Notes with AI
-            </>
-          )}
+          <span className="flex items-center gap-2">
+            <Globe className="w-4 h-4 text-fuchsia-400" />
+            Recording Language:
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span>{selectedLang.flag}</span>
+            <span>{selectedLang.label}</span>
+            <ChevronDown className="w-4 h-4 text-[#666]" />
+          </span>
         </button>
-      )}
+        {showLanguageDropdown && (
+          <div className="absolute top-full left-0 right-0 mt-1 bg-[#1a1a1a] border border-[#333] rounded-xl shadow-xl z-50 max-h-64 overflow-y-auto custom-scrollbar">
+            {LANGUAGES.map(lang => (
+              <button
+                key={lang.code}
+                onClick={() => { setSelectedLanguage(lang.code); setShowLanguageDropdown(false); }}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-fuchsia-600/10 transition-colors ${selectedLanguage === lang.code ? 'bg-fuchsia-600/20 text-fuchsia-400' : 'text-white'}`}
+              >
+                <span>{lang.flag}</span> {lang.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* Transcription Output panel */}
-      {isTranscribing && (
-        <div className="p-8 rounded-2xl bg-[#0A0A0A] border border-[#222] flex flex-col items-center justify-center gap-3">
-          <Loader2 className="w-8 h-8 text-fuchsia-500 animate-spin" />
-          <p className="text-[10px] font-black uppercase text-[#888] tracking-[3px] animate-pulse">Running Neural Transcription...</p>
+      {/* Translation Toggle */}
+      <div className="flex items-center gap-3 p-3 bg-[#1a1a1a] border border-[#333] rounded-xl">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={enableTranslation}
+            onChange={(e) => setEnableTranslation(e.target.checked)}
+            className="accent-fuchsia-500 w-4 h-4"
+          />
+          <span className="text-sm font-bold text-white">Translate to:</span>
+        </label>
+        {enableTranslation && (
+          <div className="relative ml-auto">
+            <button
+              onClick={() => setShowTranslateDropdown(!showTranslateDropdown)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-fuchsia-600/20 border border-fuchsia-500/30 rounded-lg text-sm text-fuchsia-400 font-bold cursor-pointer hover:bg-fuchsia-600/30 transition-colors"
+            >
+              {TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.flag}{' '}
+              {TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.label}
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {showTranslateDropdown && (
+              <div className="absolute top-full right-0 mt-1 bg-[#1a1a1a] border border-[#333] rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto custom-scrollbar min-w-[160px]">
+                {TRANSLATE_LANGUAGES.map(lang => (
+                  <button
+                    key={lang.code}
+                    onClick={() => { setTranslateTarget(lang.code); setShowTranslateDropdown(false); }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-fuchsia-600/10 transition-colors ${translateTarget === lang.code ? 'bg-fuchsia-600/20 text-fuchsia-400' : 'text-white'}`}
+                  >
+                    <span>{lang.flag}</span> {lang.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Error display */}
+      {error && (
+        <div className="p-3 bg-red-950/30 border border-red-500/30 rounded-xl text-sm text-red-400">
+          {error}
         </div>
       )}
 
-      {transcript && (
-        <div style={{ marginTop: '1px', paddingTop: '4px' }} className="bg-[#0A0A0A] border-2 border-fuchsia-600/20 rounded-2xl p-5 flex flex-col gap-4 animate-fade-in">
-          <div className="flex items-center justify-between border-b border-[#222] pb-3 shrink-0">
-            <h3 className="text-[12px] font-black text-fuchsia-500 uppercase tracking-widest flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-fuchsia-400 animate-pulse" /> Transcribed Text
-            </h3>
-            
-            <div className="flex items-center gap-2">
+      {/* Recording Controls */}
+      <div className="flex flex-col items-center gap-3">
+        {!isRecording && !audioBlob && (
+          <button
+            onClick={startRecording}
+            className="w-20 h-20 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center cursor-pointer transition-all active:scale-95 shadow-lg shadow-red-600/20"
+          >
+            <Mic className="w-8 h-8 text-white" />
+          </button>
+        )}
+
+        {isRecording && (
+          <>
+            <div className="text-3xl font-mono font-black text-red-500 animate-pulse">
+              {formatTime(recordingTime)}
+            </div>
+            <div className="flex items-center gap-3">
+              {isPaused ? (
+                <button onClick={resumeRecording} className="w-14 h-14 rounded-full bg-green-600 hover:bg-green-700 flex items-center justify-center cursor-pointer transition-all active:scale-95">
+                  <Play className="w-6 h-6 text-white" />
+                </button>
+              ) : (
+                <button onClick={pauseRecording} className="w-14 h-14 rounded-full bg-yellow-600 hover:bg-yellow-700 flex items-center justify-center cursor-pointer transition-all active:scale-95">
+                  <Pause className="w-6 h-6 text-white" />
+                </button>
+              )}
+              <button onClick={stopRecording} className="w-14 h-14 rounded-full bg-[#333] hover:bg-[#444] flex items-center justify-center cursor-pointer transition-all active:scale-95 border border-[#555]">
+                <Square className="w-6 h-6 text-white" />
+              </button>
+            </div>
+          </>
+        )}
+
+        {!isRecording && audioBlob && (
+          <div className="flex flex-col items-center gap-3 w-full">
+            <audio controls src={audioUrl || ''} className="w-full h-10" />
+
+            <div className="flex flex-wrap gap-2">
               <button
-                onClick={handleCopy}
-                className="p-2 bg-[#1a1a1a] hover:bg-[#252525] text-white rounded-lg border border-[#333] transition-all cursor-pointer active:scale-95 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider"
-                title="Copy to clipboard"
+                onClick={handleTranscribe}
+                disabled={isTranscribing}
+                className="flex items-center gap-2 px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-xl font-bold text-sm cursor-pointer transition-all active:scale-95 disabled:opacity-40"
               >
-                {copied ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-green-500" /> Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5 text-[#aaa]" /> Copy Text
-                  </>
-                )}
+                {isTranscribing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mic className="w-4 h-4" />}
+                {isTranscribing ? 'Transcribing...' : 'Transcribe'}
               </button>
 
               <button
-                onClick={handleDownload}
-                className="p-2 bg-[#1a1a1a] hover:bg-[#252525] text-white rounded-lg border border-[#333] transition-all cursor-pointer active:scale-95 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider"
-                title="Download text file"
+                onClick={() => { setAudioBlob(null); setAudioUrl(null); setTranscript(null); setTimedWords([]); setError(null); setRecordingTime(0); }}
+                className="px-4 py-2 bg-[#252525] hover:bg-[#333] text-white rounded-xl font-bold text-sm cursor-pointer transition-all active:scale-95 border border-[#333]"
               >
-                <Download className="w-3.5 h-3.5 text-[#aaa]" /> Download
+                Re-record
               </button>
             </div>
           </div>
+        )}
+      </div>
 
-          <p className="text-white text-[13px] leading-relaxed select-text font-medium whitespace-pre-wrap max-h-[180px] overflow-y-auto custom-scrollbar bg-[#111] p-4 rounded-xl border border-[#222]">
-            {transcript}
-          </p>
+      {/* Transcript Results */}
+      {transcript && (
+        <div className="flex flex-col gap-3 p-4 bg-[#0A0A0A] border border-[#252525] rounded-xl">
+          <div className="text-xs font-bold text-[#888] uppercase tracking-wider">Transcript Result</div>
+          <p className="text-sm text-white/90 leading-relaxed">{transcript}</p>
 
-          <div className="text-[10px] text-center font-black uppercase tracking-[3px] text-[#444] select-none border-t border-[#222] pt-3">
-            Transcribed with gemini-3.5-flash
+          <div className="flex flex-wrap gap-2">
+            <button onClick={handleCopy} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#252525] hover:bg-[#333] text-white rounded-lg text-xs font-bold cursor-pointer transition-colors border border-[#333]">
+              {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+            <button onClick={handleDownload} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#252525] hover:bg-[#333] text-white rounded-lg text-xs font-bold cursor-pointer transition-colors border border-[#333]">
+              <Download className="w-3 h-3" /> SRT
+            </button>
+            {timedWords.length > 0 && onSendToEditor && (
+              <button onClick={handleSendToEditor} className="flex items-center gap-1.5 px-3 py-1.5 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors">
+                <Send className="w-3 h-3" /> Send to Editor
+              </button>
+            )}
           </div>
         </div>
       )}

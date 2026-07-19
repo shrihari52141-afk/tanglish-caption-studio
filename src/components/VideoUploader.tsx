@@ -24,6 +24,7 @@ interface VideoUploaderProps {
 }
 
 const LANGUAGES = [
+  { id: 'auto', name: 'Auto-Detect', desc: 'Detects audio automatically', script: 'Translates non-English to English alphabets' },
   { id: 'tamil', name: 'Tamil', desc: 'Select options after selecting this language', script: 'e.g. Tamil to Tanglish or Tamil to English' },
   { id: 'hindi', name: 'Hindi', desc: 'Select options after selecting this language', script: 'e.g. Hinglish or Hindi to English' },
   { id: 'telugu', name: 'Telugu', desc: 'Select options after selecting this language', script: 'e.g. Telugish or Telugu to English' },
@@ -31,8 +32,26 @@ const LANGUAGES = [
   { id: 'malayalam', name: 'Malayalam', desc: 'Select options after selecting this language', script: 'e.g. Manglish or Malayalam to English' },
   { id: 'english', name: 'English', desc: 'Standard English subtitles', script: 'e.g. Awesome!' },
   { id: 'spanish', name: 'Spanish', desc: 'Select options after selecting this language', script: 'e.g. Spanish or Spanish to English' },
+  { id: 'french', name: 'French', desc: 'Select options after selecting this language', script: 'e.g. French or French to English' },
+  { id: 'german', name: 'German', desc: 'Select options after selecting this language', script: 'e.g. German or German to English' },
+  { id: 'portuguese', name: 'Portuguese', desc: 'Select options after selecting this language', script: 'e.g. Portuguese or Portuguese to English' },
   { id: 'italian', name: 'Italian', desc: 'Select options after selecting this language', script: 'e.g. Italian or Italian to English' },
-  { id: 'auto', name: 'Auto-Detect', desc: 'Detects audio automatically with English script', script: 'Translates non-English to English alphabets' },
+  { id: 'arabic', name: 'Arabic', desc: 'Select options after selecting this language', script: 'e.g. Arabic or Arabic to English' },
+  { id: 'chinese', name: 'Chinese', desc: 'Select options after selecting this language', script: 'e.g. Mandarin or Chinese to English' },
+  { id: 'japanese', name: 'Japanese', desc: 'Select options after selecting this language', script: 'e.g. Japanese or Japanese to English' },
+  { id: 'korean', name: 'Korean', desc: 'Select options after selecting this language', script: 'e.g. Korean or Korean to English' },
+  { id: 'thai', name: 'Thai', desc: 'Select options after selecting this language', script: 'e.g. Thai or Thai to English' },
+  { id: 'vietnamese', name: 'Vietnamese', desc: 'Select options after selecting this language', script: 'e.g. Vietnamese or Vietnamese to English' },
+  { id: 'indonesian', name: 'Indonesian', desc: 'Select options after selecting this language', script: 'e.g. Indonesian or Indonesian to English' },
+  { id: 'turkish', name: 'Turkish', desc: 'Select options after selecting this language', script: 'e.g. Turkish or Turkish to English' },
+  { id: 'russian', name: 'Russian', desc: 'Select options after selecting this language', script: 'e.g. Russian or Russian to English' },
+  { id: 'punjabi', name: 'Punjabi', desc: 'Select options after selecting this language', script: 'e.g. Punjabi or Punjabi to English' },
+  { id: 'bengali', name: 'Bengali', desc: 'Select options after selecting this language', script: 'e.g. Bengali or Bengali to English' },
+  { id: 'marathi', name: 'Marathi', desc: 'Select options after selecting this language', script: 'e.g. Marathi or Marathi to English' },
+  { id: 'gujarati', name: 'Gujarati', desc: 'Select options after selecting this language', script: 'e.g. Gujarati or Gujarati to English' },
+  { id: 'urdu', name: 'Urdu', desc: 'Select options after selecting this language', script: 'e.g. Urdu or Urdu to English' },
+  { id: 'dutch', name: 'Dutch', desc: 'Select options after selecting this language', script: 'e.g. Dutch or Dutch to English' },
+  { id: 'swedish', name: 'Swedish', desc: 'Select options after selecting this language', script: 'e.g. Swedish or Swedish to English' },
 ];
 
 export default function VideoUploader({ onUpload, isProcessing, initialFile }: VideoUploaderProps) {
@@ -198,10 +217,14 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
           onClick={() => setSelectedFile(null)}
           className="flex items-center gap-1 text-[11px] font-black uppercase text-[#888888] hover:text-white transition-colors cursor-pointer"
         >
-          <ChevronLeft className="w-4 h-4" /> Change Video
+          <ChevronLeft className="w-4 h-4" /> Replace Video
         </button>
         <div className="flex items-center gap-2 max-w-[320px]">
-          <Video className="w-4 h-4 text-fuchsia-500 shrink-0" />
+          {selectedFile.type.startsWith('audio/') ? (
+            <FileAudio className="w-4 h-4 text-green-500 shrink-0" />
+          ) : (
+            <Video className="w-4 h-4 text-fuchsia-500 shrink-0" />
+          )}
           <span className="text-[12px] font-bold text-white truncate uppercase tracking-tight">
             {selectedFile.name}
           </span>
@@ -217,7 +240,7 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
           <div className="flex items-center gap-2 mb-3">
             <Languages className="w-5 h-5 text-fuchsia-500" />
             <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
-              What's your original video language?
+              {selectedFile.type.startsWith('audio/') ? "What's your original audio language?" : "What's your original video language?"}
             </h3>
           </div>
           <p className="text-[11px] text-[#888888] uppercase font-bold mb-4 tracking-wide">

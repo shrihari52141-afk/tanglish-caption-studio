@@ -1515,10 +1515,55 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
 
       const fileBuffer = fs.readFileSync(req.file.path);
       const mimeType = req.file.mimetype || "audio/webm";
+      const language = req.body.language || "auto";
+      const translationMode = req.body.translationMode || "transliterate";
 
+      let languageInstruction = "";
+      if (translationMode === "translate_english") {
+        languageInstruction = `Translate all non-English speech to polished NATURAL ENGLISH captions. Fix logic errors, brand names, and grammar. Output English only.`;
+      } else {
+        switch (language) {
+          case "tamil":
+            languageInstruction = `Convert Tamil speech to Roman script (Tanglish). Do NOT use Tamil script. Examples: "சும்மா" -> "summa", "மாஸ்" -> "mass".`;
+            break;
+          case "hindi":
+            languageInstruction = `Convert Hindi speech to Roman script (Hinglish). Do NOT use Devanagari script. Examples: "बहुत बढ़िया" -> "bahut badiya".`;
+            break;
+          case "telugu":
+            languageInstruction = `Convert Telugu speech to Roman script (Telugish). Do NOT use Telugu script. Examples: "బాగుంది" -> "bagundi".`;
+            break;
+          case "kannada":
+            languageInstruction = `Convert Kannada speech to Roman script (Kannadish). Do NOT use Kannada script. Examples: "ಚೆನ್ನಾಗಿದೆ" -> "chennagide".`;
+            break;
+          case "malayalam":
+            languageInstruction = `Convert Malayalam speech to Roman script (Manglish). Do NOT use Malayalam script. Examples: "സുഖമാണോ" -> "sukhamano".`;
+            break;
+          case "auto":
+            languageInstruction = `Auto-detect the spoken language. If it is a regional Indian language, provide Romanized transliteration (Tanglish/Hinglish). If English, provide standard English. Also provide an English translation.`;
+            break;
+          default:
+            languageInstruction = `Transcribe in the original language and also provide an English translation.`;
+        }
+      }
+
+      const prompt = `You are a professional, frame-accurate audio transcriber. Transcribe the spoken speech from this microphone recording verbatim.
+
+TIMING IS CRITICAL. Each word must have precise "start_time" and "end_time" in SECONDS.
+Preserve silence between phrases. The first word's start_time should be when speech begins.
+The last word's end_time must reach the end of the audio.
+
+Language instructions: ${languageInstruction}
+
+Return ONLY a JSON object (no markdown, no code fences):
+{
+  "audio_duration": number,
+  "words": [ { "word": string, "start_time": number, "end_time": number } ]
+}`;
+
+      let words: any[] = [];
       let transcript = "";
 
-      const { result } = await callGeminiWithModelFallback<string>(
+      const { result } = await callGeminiWithModelFallback<any>(
         async (ai, modelName) => {
           const geminiRes = await ai.models.generateContent({
             model: modelName,
@@ -1529,23 +1574,50 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
                   mimeType: mimeType
                 }
               },
-              {
-                text: "You are an expert audio transcriber. Transcribe the spoken speech from this microphone recording verbatim, in high quality. Please preserve punctuation and standard formatting. If the language is a regional Indian language (like Tamil, Hindi, Telugu, Kannada, Malayalam, etc.), provide both the Romanised transliteration (e.g. Tanglish/Hinglish) and the English translation so it is incredibly helpful."
-              }
-            ]
+              { text: prompt }
+            ],
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  audio_duration: { type: Type.NUMBER },
+                  words: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        word: { type: Type.STRING },
+                        start_time: { type: Type.NUMBER },
+                        end_time: { type: Type.NUMBER },
+                      },
+                      required: ["word", "start_time", "end_time"],
+                    },
+                  },
+                },
+                required: ["words"],
+              },
+            },
           });
 
-          return geminiRes.text || "Empty transcription received.";
+          const text = geminiRes.text;
+          if (!text) throw new Error("Gemini returned empty transcription text.");
+          const parsed = extractJsonFromResponse(text);
+          words = (parsed.words || []).map((w: any) => ({
+            word: String(w.word || w.text || "").trim(),
+            start_time: Number(w.start_time || w.start || 0),
+            end_time: Number(w.end_time || w.end || 0),
+          })).filter((w: any) => w.word.length > 0);
+          transcript = words.map((w: any) => w.word).join(" ");
+          return { words, transcript };
         },
         undefined
       );
 
-      transcript = result;
-
       // Cleanup
       try { fs.unlinkSync(req.file.path); } catch (e) {}
 
-      res.json({ transcript });
+      res.json({ transcript, words });
     } catch (error: any) {
       console.error("Microphone transcription error:", error);
       res.status(500).json({ error: error.message || "Failed to transcribe microphone audio" });
