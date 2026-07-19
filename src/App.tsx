@@ -8,6 +8,8 @@ import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, 
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'https://tanglish-caption-api.onrender.com';
 import {
   buildTrackerClientMeta,
   probeMediaDuration,
@@ -361,7 +363,7 @@ export default function App() {
     let cancelled = false;
     const pull = async () => {
       try {
-        const res = await fetch("/api/config/public", { cache: "no-store" });
+        const res = await fetch(`${API_BASE}/api/config/public`, { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;
@@ -696,7 +698,7 @@ export default function App() {
     const jobId = Math.random().toString(36).substring(7);
 
     // Subscribe to SSE logs for export
-    const eventSource = new EventSource(`/api/logs?jobId=${jobId}`);
+    const eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.message) {
@@ -728,7 +730,7 @@ export default function App() {
         headers['Authorization'] = `Bearer ${activeToken}`;
       }
 
-      const response = await fetch(`/api/export?jobId=${jobId}`, {
+      const response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
         method: 'POST',
         body: formData,
         headers,
@@ -828,7 +830,7 @@ export default function App() {
     }));
 
     // Subscribe to SSE logs
-    const eventSource = new EventSource(`/api/logs?jobId=${jobId}`);
+    const eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.message) {
@@ -946,7 +948,7 @@ export default function App() {
       }));
     };
 
-    xhr.open('POST', `/api/transcribe?jobId=${jobId}`, true);
+    xhr.open('POST', `${API_BASE}/api/transcribe?jobId=${jobId}`, true);
     const activeToken = token || await getAccessToken();
     if (activeToken) {
       xhr.setRequestHeader('Authorization', `Bearer ${activeToken}`);

@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Mic, Square, Play, Pause, RotateCcw, Copy, Check, Download, Loader2, Sparkles, Volume2 } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'https://tanglish-caption-api.onrender.com';
+
 export default function MicTranscriber() {
   const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'paused' | 'stopped'>('idle');
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
@@ -139,7 +141,7 @@ export default function MicTranscriber() {
     formData.append('audio', audioBlob, 'microphone_recording.webm');
 
     try {
-      const response = await fetch('/api/transcribe-mic', {
+      const response = await fetch(`${API_BASE}/api/transcribe-mic`, {
         method: 'POST',
         body: formData,
       });
