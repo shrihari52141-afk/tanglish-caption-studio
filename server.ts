@@ -44,13 +44,17 @@ const currentDirname = typeof import.meta !== "undefined" && import.meta && impo
   ? path.dirname(currentFilename)
   : (typeof __dirname !== "undefined" ? __dirname : process.cwd());
 
-// Ensure uploads directory exists
+// Ensure uploads directory exists (skip on read-only filesystems like Vercel)
 const uploadsDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch {
+  // Read-only filesystem (e.g. Vercel serverless) — uploads dir not needed
 }
 
-const upload = multer({ dest: "uploads/" });
+const upload = multer({ dest: process.env.VERCEL ? "/tmp" : "uploads/" });
 
 const jobClients = new Map<string, express.Response>();
 
