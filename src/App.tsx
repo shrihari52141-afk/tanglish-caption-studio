@@ -708,36 +708,43 @@ export default function App() {
 
       setExportLogs(l => [...l, "✓ Frame recording completed. Generating final video package..."]);
       const blob = new Blob(chunks, { type: selectedMimeType });
-      const downloadUrl = URL.createObjectURL(blob);
       
       const ext = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
       const baseName = state.videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = `${baseName}_${generateRandomSuffix()}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(downloadUrl);
-
-      setExportLogs(l => [...l, "✨ Subtitled video exported and saved locally!"]);
-      if (state.videoFile) {
-        const ext = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
-        notifyTelegram({
-          fileName: `✅ Exported: ${state.videoFile.name.replace(/\.[^/.]+$/, "")}_${generateRandomSuffix()}.${ext}`,
-          fileSize: `${(blob.size / (1024 * 1024)).toFixed(2)} MB`,
-          audioSize: 'N/A (local GPU burn)',
-          aiProcessingCount: state.words.length,
-          isExport: true,
-          source: isAudioOnlyFile ? 'audio' : 'video',
-          aiModel: 'Gemini 3.5 Flash',
-          exportMethod: 'local',
-          captionWords: state.words.length,
-        });
+      const exportFileName = `${baseName}_${generateRandomSuffix()}.${ext}`;
+      
+      const androidBridge = (window as any).MicBridge;
+      if (androidBridge) {
+        setExportLogs(l => [...l, "Saving via Android native bridge..."]);
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          const base64 = dataUrl.split(',')[1];
+          androidBridge.saveFile(exportFileName, base64, selectedMimeType);
+          setExportLogs(l => [...l, `✨ Video saved as ${exportFileName} in Downloads folder!`]);
+          setTimeout(() => setIsExporting(false), 2000);
+        };
+        reader.onerror = () => {
+          setExportLogs(l => [...l, "Error reading blob, falling back to browser download..."]);
+          fallbackDownload();
+        };
+        reader.readAsDataURL(blob);
+      } else {
+        fallbackDownload();
       }
-      setTimeout(() => {
-        setIsExporting(false);
-      }, 2000);
+      
+      function fallbackDownload() {
+        const downloadUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = exportFileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(downloadUrl);
+        setExportLogs(l => [...l, `✨ Subtitled video exported as ${exportFileName}!`]);
+        setTimeout(() => setIsExporting(false), 2000);
+      }
     };
 
     setExportLogs(l => [...l, "Rewinding source video track to 0.0s..."]);

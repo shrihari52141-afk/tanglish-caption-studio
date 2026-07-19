@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.util.Base64;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -23,6 +24,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Toast;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 
 public class MainActivity extends Activity {
@@ -131,6 +134,9 @@ public class MainActivity extends Activity {
         });
 
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
+            if (url != null && url.startsWith("blob:")) {
+                return;
+            }
             try {
                 DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
                 String cookie = CookieManager.getInstance().getCookie(url);
@@ -189,6 +195,22 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean hasMicPermission() {
             return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        }
+
+        @JavascriptInterface
+        public void saveFile(String fileName, String base64Data, String mimeType) {
+            try {
+                String downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
+                File file = new File(downloadsDir, fileName);
+                byte[] decoded = Base64.decode(base64Data, Base64.DEFAULT);
+                FileOutputStream fos = new FileOutputStream(file);
+                fos.write(decoded);
+                fos.close();
+                final String msg = "Saved: " + fileName;
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+            }
         }
     }
 
