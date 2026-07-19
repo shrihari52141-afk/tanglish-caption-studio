@@ -691,8 +691,9 @@ export default function App() {
 
   const startCloudExport = async () => {
     setExportMode('cloud');
-    setExportLogs(["Initializing cloud render build..."]);
+    setExportLogs(["Waking server and initializing cloud render..."]);
 
+    await wakeServer();
     const jobId = Math.random().toString(36).substring(7);
 
     // Subscribe to SSE logs for export
@@ -1015,17 +1016,24 @@ export default function App() {
           captionWords: wordsWithIds.length,
         });
       } else {
-        console.error("Transcription failed", xhr.responseText);
+        console.error("Transcription failed", xhr.status, xhr.responseText);
         incrementSessionFails();
-        let errorMsg = "Failed to process video. ";
-        try {
-          const errData = JSON.parse(xhr.responseText);
-          if (errData.error) errorMsg += errData.error;
-          else errorMsg += "Unknown server error.";
-        } catch {
-          errorMsg += "Server returned an unexpected response.";
+        let errorMsg = "";
+        if (xhr.status === 413) {
+          errorMsg = "File is too large for the server. Try a shorter video or audio clip (under 50MB).";
+        } else if (xhr.status === 502 || xhr.status === 504) {
+          errorMsg = "Server is starting up or timed out. The server may be spinning up — please try again in 30 seconds.";
+        } else if (xhr.status === 503) {
+          errorMsg = "Server is in maintenance mode. Please try again later.";
+        } else {
+          try {
+            const errData = JSON.parse(xhr.responseText);
+            errorMsg = errData.error || "Unknown server error.";
+          } catch {
+            errorMsg = `Server error (HTTP ${xhr.status}). Please try again in a few seconds.`;
+          }
         }
-        errorMsg += "\n\nTip: If this keeps happening, all AI API keys may be temporarily exhausted. Please try again in a few minutes.";
+        errorMsg += "\n\nIf this keeps happening, try again in a few minutes.";
         setState(s => ({ 
           ...s, 
           hasFailed: true,

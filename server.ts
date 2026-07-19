@@ -54,7 +54,10 @@ try {
   // Read-only filesystem (e.g. Vercel serverless) — uploads dir not needed
 }
 
-const upload = multer({ dest: process.env.VERCEL ? "/tmp" : "uploads/" });
+const upload = multer({ 
+  dest: process.env.VERCEL ? "/tmp" : "uploads/",
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB max
+});
 
 const jobClients = new Map<string, express.Response>();
 
@@ -2091,6 +2094,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  // Global error handler — returns JSON so the client never sees raw HTML
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("[Global Error]", err);
+    const status = err.status || err.statusCode || 500;
+    const msg = err.message || "Internal server error";
+    if (!res.headersSent) {
+      res.status(status).json({ error: msg });
+    }
+  });
 
   // Only bind a TCP port when running as a standalone server (local dev / own host).
   // On serverless platforms (Vercel) the app is mounted by api/index.ts instead.
