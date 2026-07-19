@@ -1152,9 +1152,18 @@ export default function App() {
             <button 
               onClick={handleExport}
               disabled={state.words.length === 0 || isExporting}
-              className="ml-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-3 py-1.5 sm:px-5 sm:py-2 rounded-full font-extrabold text-[11px] sm:text-[14px] border-none cursor-pointer uppercase transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-lg shadow-fuchsia-600/10 shrink-0"
+              className="ml-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-lg shadow-fuchsia-600/10 shrink-0"
+              title="Export Video"
             >
-              {isExporting ? "Exporting..." : "Export Video"}
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+
+            <button 
+              onClick={handleNewProject}
+              className="ml-1 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
+              title="New project"
+            >
+              <Plus className="w-4 h-4" />
             </button>
 
             {state.videoUrl && (
@@ -1189,13 +1198,6 @@ export default function App() {
                   onChange={handleReplaceVideoChange}
                   className="hidden"
                 />
-                <button 
-                  onClick={handleNewProject}
-                  className="ml-1 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
-                  title="New project"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
               </>
             )}
           </div>
