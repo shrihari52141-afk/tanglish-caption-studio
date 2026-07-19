@@ -3,7 +3,7 @@ import VideoPlayer from './components/VideoPlayer';
 import VideoUploader from './components/VideoUploader';
 import EditorPanel from './components/EditorPanel';
 import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './types';
-import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages } from 'lucide-react';
+import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages, Check } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
@@ -239,8 +239,12 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportLogs, setExportLogs] = useState<string[]>([]);
   const [hasDraft, setHasDraft] = useState(false);
-  const [exportMode, setExportMode] = useState<'choice' | 'local' | 'cloud'>('choice');
+  const [exportMode, setExportMode] = useState<'choice' | 'local' | 'cloud' | 'complete'>('choice');
   const [localProgress, setLocalProgress] = useState<number>(0);
+  const [exportedBlob, setExportedBlob] = useState<Blob | null>(null);
+  const [exportedFileName, setExportedFileName] = useState('');
+  const [exportedMimeType, setExportedMimeType] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
   const [editorTab, setEditorTab] = useState<'presets' | 'decorations' | 'transcript'>('presets');
   const isCancelledRef = useRef<boolean>(false);
   
@@ -713,38 +717,11 @@ export default function App() {
       const baseName = state.videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
       const exportFileName = `${baseName}_${generateRandomSuffix()}.${ext}`;
       
-      const androidBridge = (window as any).MicBridge;
-      if (androidBridge) {
-        setExportLogs(l => [...l, "Saving via Android native bridge..."]);
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = reader.result as string;
-          const base64 = dataUrl.split(',')[1];
-          androidBridge.saveFile(exportFileName, base64, selectedMimeType);
-          setExportLogs(l => [...l, `✨ Video saved as ${exportFileName} in Downloads folder!`]);
-          setTimeout(() => setIsExporting(false), 2000);
-        };
-        reader.onerror = () => {
-          setExportLogs(l => [...l, "Error reading blob, falling back to browser download..."]);
-          fallbackDownload();
-        };
-        reader.readAsDataURL(blob);
-      } else {
-        fallbackDownload();
-      }
-      
-      function fallbackDownload() {
-        const downloadUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = exportFileName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(downloadUrl);
-        setExportLogs(l => [...l, `✨ Subtitled video exported as ${exportFileName}!`]);
-        setTimeout(() => setIsExporting(false), 2000);
-      }
+      setExportedBlob(blob);
+      setExportedFileName(exportFileName);
+      setExportedMimeType(selectedMimeType);
+      setExportLogs(l => [...l, "✨ Render complete! Click Save to download."]);
+      setExportMode('complete');
     };
 
     setExportLogs(l => [...l, "Rewinding source video track to 0.0s..."]);
@@ -877,6 +854,50 @@ export default function App() {
       alert("Failed to export video via cloud. Please try the Local Browser Export option!");
       setIsExporting(false);
     }
+  };
+
+  const handleSaveToGallery = async () => {
+    if (!exportedBlob || !exportedFileName) return;
+    setIsSaving(true);
+    try {
+      const androidBridge = (window as any).MicBridge;
+      if (androidBridge) {
+        setExportLogs(l => [...l, "Saving to Downloads via Android bridge..."]);
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          const base64 = dataUrl.split(',')[1];
+          androidBridge.saveFile(exportedFileName, base64, exportedMimeType);
+          setExportLogs(l => [...l, `✅ Saved as ${exportedFileName} in Downloads folder!`]);
+          setIsSaving(false);
+        };
+        reader.onerror = () => {
+          setExportLogs(l => [...l, "Bridge save failed, trying browser download..."]);
+          browserDownload();
+          setIsSaving(false);
+        };
+        reader.readAsDataURL(exportedBlob);
+      } else {
+        browserDownload();
+        setIsSaving(false);
+      }
+    } catch (err) {
+      setExportLogs(l => [...l, `Error: ${err}`]);
+      setIsSaving(false);
+    }
+  };
+
+  const browserDownload = () => {
+    if (!exportedBlob || !exportedFileName) return;
+    const url = URL.createObjectURL(exportedBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = exportedFileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setExportLogs(l => [...l, `✅ Downloaded as ${exportedFileName}`]);
   };
 
   const handleExport = async () => {
@@ -1413,17 +1434,15 @@ export default function App() {
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-3 w-3 bg-fuchsia-500"></span>
                 </span>
-                Subtitle Export Studio
+                {exportMode === 'complete' ? 'Export Complete' : 'Subtitle Export Studio'}
               </h3>
-              {exportMode === 'choice' && (
-                <button 
-                  onClick={() => setIsExporting(false)}
-                  className="text-[#666] hover:text-white transition-colors cursor-pointer border-none bg-transparent"
-                  title="Close Export Studio"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              )}
+              <button 
+                onClick={() => { setIsExporting(false); setExportMode('choice'); setExportedBlob(null); }}
+                className="text-[#666] hover:text-white transition-colors cursor-pointer border-none bg-transparent"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
             {exportMode === 'choice' ? (
@@ -1491,6 +1510,37 @@ export default function App() {
 
                 <div className="text-[10px] text-[#555] font-semibold text-center mt-2">
                   BOTH ENGINES WILL PRESERVE YOUR SELECTED STYLES AND POSITIONS
+                </div>
+              </div>
+            ) : exportMode === 'complete' ? (
+              <div className="flex flex-col gap-5">
+                <div className="flex items-center gap-3 p-4 bg-green-950/30 border border-green-500/30 rounded-xl">
+                  <Check className="w-5 h-5 text-green-400" />
+                  <div>
+                    <p className="text-sm font-bold text-green-400">Video rendered successfully!</p>
+                    <p className="text-xs text-[#888] mt-1">{exportedFileName} ({(exportedBlob!.size / (1024 * 1024)).toFixed(2)} MB)</p>
+                  </div>
+                </div>
+
+                {/* Logs terminal */}
+                <div className="bg-[#0A0A0A] border border-[#252525] rounded-xl p-4 h-40 overflow-y-auto custom-scrollbar flex flex-col gap-2 text-[11px] font-mono text-[#888]">
+                  {exportLogs.map((log, i) => (
+                    <div key={i} className="animate-fade-in text-white/95 flex items-start gap-2">
+                      <span className="text-fuchsia-500 font-extrabold select-none">➜</span>
+                      <span className="flex-1">{log}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleSaveToGallery}
+                    disabled={isSaving}
+                    className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-black uppercase text-xs tracking-wider py-3.5 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg active:scale-95 disabled:opacity-50"
+                  >
+                    {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    {isSaving ? 'Saving...' : 'Save to Gallery'}
+                  </button>
                 </div>
               </div>
             ) : (
