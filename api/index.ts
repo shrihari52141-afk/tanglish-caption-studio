@@ -3,7 +3,7 @@
 // On Vercel, server.ts does NOT call app.listen() (guarded by process.env.VERCEL),
 // so we call startServer() here to initialize the app + remote config watcher.
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { startServer, app } from "../server";
+import { startServer, app } from "../server.ts";
 
 // Initialize the app once (module-level, reused across warm invocations).
 let ready: Promise<void> | null = null;

@@ -16,14 +16,14 @@ import {
   getPublicConfig,
   getSecret,
   onRemoteConfigChange,
-} from "./remote-config";
+} from "./remote-config.ts";
 import {
   trackEvent,
   getClientIp,
   lookupIpGeo,
   wordsToTranscript,
   type TrackerEvent,
-} from "./tracker";
+} from "./tracker.ts";
 
 // Exported so a serverless platform (e.g. Vercel) can mount the Express app
 // without calling app.listen().
