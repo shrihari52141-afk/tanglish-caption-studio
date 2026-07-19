@@ -972,101 +972,102 @@ export default function App() {
       console.warn("Tracker meta collection failed (upload continues):", err);
     }
 
-    const xhr = new XMLHttpRequest();
-    
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percentComplete = Math.round((event.loaded / event.total) * 100);
-        setState(s => ({ ...s, uploadProgress: percentComplete }));
-      }
-    };
-
-    xhr.onload = () => {
-      eventSource.close();
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const data = JSON.parse(xhr.responseText);
-        const wordsWithIds = sanitizeCaptionWords(
-          (data.words || []).map((w: any, i: number) => ({
-            ...w,
-            word: stripASSTags(String(w.word ?? '')),
-            id: `word-${i}`,
-          }))
-        );
-        setState(s => ({ 
-          ...s, 
-          words: wordsWithIds, 
-          serverFilename: data.filename,
-          isProcessing: false 
-        }));
-        const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
-        const fileIsVideo = file.type.startsWith('video/');
-        notifyTelegram({
-          fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
-          fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-          audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
-          aiProcessingCount: wordsWithIds.length,
-          source: fileIsAudio ? 'audio' : 'video',
-          language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
-          translationMode: translationMode || 'transliterate',
-          aiModel: 'Gemini 3.5 Flash',
-          mediaDuration: mediaDurationStr,
-          emojiStyle: emojiStyle,
-          useEmojis: useEmojis,
-          usePunctuation: usePunctuation,
-          captionWords: wordsWithIds.length,
-        });
-      } else {
-        console.error("Transcription failed", xhr.status, xhr.responseText);
-        incrementSessionFails();
-        let errorMsg = "";
-        // Always show raw status + response so user can report the exact error
-        let rawBody = "";
-        try { rawBody = xhr.responseText.substring(0, 300); } catch { rawBody = "(empty)"; }
-        errorMsg = `[HTTP ${xhr.status}] ${rawBody}`;
-        setState(s => ({ 
-          ...s, 
-          hasFailed: true,
-          logs: [...s.logs, `ERROR: ${errorMsg}`]
-        }));
-      }
-    };
-
-    xhr.onerror = () => {
-      eventSource.close();
-      incrementSessionFails();
-      setState(s => ({ 
-        ...s, 
-        hasFailed: true,
-        logs: [...s.logs, "ERROR: xhr.onerror fired — request never reached the server. Check network / DNS."]
-      }));
-    };
-
     const activeToken = token || await getAccessToken();
 
-    const doSend = (attempt: number) => {
+    const doUpload = (attempt: number) => {
       setState(s => ({ 
         ...s, 
-        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt})...` : "Uploading to server..."]
+        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "Uploading to server..."]
       }));
+
       const req = new XMLHttpRequest();
-      req.upload.onprogress = xhr.upload.onprogress;
-      req.onload = xhr.onload;
+
+      req.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          setState(s => ({ ...s, uploadProgress: percentComplete }));
+        }
+      };
+
+      req.onload = () => {
+        eventSource.close();
+        if (req.status >= 200 && req.status < 300) {
+          const data = JSON.parse(req.responseText);
+          const wordsWithIds = sanitizeCaptionWords(
+            (data.words || []).map((w: any, i: number) => ({
+              ...w,
+              word: stripASSTags(String(w.word ?? '')),
+              id: `word-${i}`,
+            }))
+          );
+          setState(s => ({ 
+            ...s, 
+            words: wordsWithIds, 
+            serverFilename: data.filename,
+            isProcessing: false 
+          }));
+          const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
+          const fileIsVideo = file.type.startsWith('video/');
+          notifyTelegram({
+            fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
+            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+            audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
+            aiProcessingCount: wordsWithIds.length,
+            source: fileIsAudio ? 'audio' : 'video',
+            language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
+            translationMode: translationMode || 'transliterate',
+            aiModel: 'Gemini 3.5 Flash',
+            mediaDuration: mediaDurationStr,
+            emojiStyle: emojiStyle,
+            useEmojis: useEmojis,
+            usePunctuation: usePunctuation,
+            captionWords: wordsWithIds.length,
+          });
+        } else {
+          console.error("Transcription failed", req.status, req.responseText);
+          incrementSessionFails();
+          let rawBody = "";
+          try { rawBody = req.responseText.substring(0, 300); } catch { rawBody = "(empty)"; }
+          const errorMsg = `[HTTP ${req.status}] ${rawBody}`;
+          setState(s => ({ 
+            ...s, 
+            hasFailed: true,
+            logs: [...s.logs, `ERROR: ${errorMsg}`]
+          }));
+        }
+      };
+
       req.onerror = () => {
         if (attempt < 3) {
-          // Likely a Render cold-start drop — wake and retry
-          wakeServer().then(() => doSend(attempt + 1));
+          setState(s => ({ ...s, logs: [...s.logs, `⚠ Network error on attempt ${attempt}. Waking server and retrying...`] }));
+          wakeServer().then(() => doUpload(attempt + 1));
         } else {
-          xhr.onerror();
+          eventSource.close();
+          incrementSessionFails();
+          setState(s => ({ 
+            ...s, 
+            hasFailed: true,
+            logs: [...s.logs, `ERROR: xhr.onerror — request never reached server after ${attempt} attempts. Server may be down.`]
+          }));
         }
       };
-      req.timeout = 120000;
+
+      req.timeout = 180000; // 3 minutes for slow Gemini processing
       req.ontimeout = () => {
         if (attempt < 3) {
-          wakeServer().then(() => doSend(attempt + 1));
+          setState(s => ({ ...s, logs: [...s.logs, `⚠ Request timed out on attempt ${attempt}. Waking server and retrying...`] }));
+          wakeServer().then(() => doUpload(attempt + 1));
         } else {
-          xhr.onerror();
+          eventSource.close();
+          incrementSessionFails();
+          setState(s => ({ 
+            ...s, 
+            hasFailed: true,
+            logs: [...s.logs, `ERROR: Request timed out after ${attempt} attempts.`]
+          }));
         }
       };
+
       req.open('POST', `${API_BASE}/api/transcribe?jobId=${jobId}`, true);
       if (activeToken) {
         req.setRequestHeader('Authorization', `Bearer ${activeToken}`);
@@ -1074,7 +1075,7 @@ export default function App() {
       req.send(formData);
     };
 
-    doSend(1);
+    doUpload(1);
   };
 
   const handleRetry = () => {
