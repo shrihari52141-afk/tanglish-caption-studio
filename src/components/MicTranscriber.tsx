@@ -58,7 +58,7 @@ const TRANSLATE_LANGUAGES = [
 ];
 
 interface MicTranscriberProps {
-  onSendToEditor?: (words: CaptionWord[], audioBlob?: Blob, audioUrl?: string, audioDuration?: number) => void;
+  onSendToEditor?: (words: CaptionWord[], audioBlob?: Blob, audioUrl?: string, audioDuration?: number, language?: string, enableTranslation?: boolean, translateTarget?: string) => void;
   onVideoFileSelected?: (file: File) => void;
 }
 
@@ -253,7 +253,7 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
     if (timedWords.length > 0 && onSendToEditor && audioBlob && audioUrl) {
       setIsSending(true);
       try {
-        await onSendToEditor(timedWords, audioBlob, audioUrl, recordingTime);
+        await onSendToEditor(timedWords, audioBlob, audioUrl, recordingTime, selectedLanguage, enableTranslation, translateTarget);
       } catch (err) {
         console.error('Send to editor error:', err);
         setError('Failed to send to editor. Please try again.');

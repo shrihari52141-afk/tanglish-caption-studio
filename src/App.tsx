@@ -541,7 +541,6 @@ export default function App() {
   };
 
   const [exportBgColor, setExportBgColor] = useState('#000000');
-  const [isCreatingVideo, setIsCreatingVideo] = useState(false);
 
   const isAudioOnlyFile = state.videoFile && (
     state.videoFile.type.startsWith('audio/') ||
@@ -1257,22 +1256,7 @@ export default function App() {
           </div>
         )}
         {!state.videoUrl ? (
-          <div style={{ marginLeft: '0px', marginTop: '-30px' }} className="flex-1 flex flex-col items-center justify-start p-4 sm:p-6 pb-16 md:pb-6 gap-6 overflow-y-auto custom-scrollbar relative">
-            
-            {isCreatingVideo && (
-              <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-8">
-                <div className="w-full max-w-sm bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.15)] flex flex-col gap-5 items-center animate-fade-in">
-                  <Loader2 className="w-10 h-10 text-fuchsia-500 animate-spin" />
-                  <h3 className="text-[16px] font-black uppercase text-fuchsia-500 tracking-wider">Creating Video</h3>
-                  <p className="text-[12px] text-[#aaa] text-center leading-relaxed">
-                    Building black video with your audio and captions. This may take a moment...
-                  </p>
-                  <div className="w-full bg-[#0A0A0A] rounded-full h-2 overflow-hidden border border-[#252525]">
-                    <div className="bg-gradient-to-r from-purple-600 to-fuchsia-600 h-full rounded-full animate-pulse" style={{ width: '60%' }} />
-                  </div>
-                </div>
-              </div>
-            )}
+          <div style={{ marginLeft: '0px', marginTop: '-30px' }} className="flex-1 flex flex-col items-center justify-start p-4 sm:p-6 pb-16 md:pb-6 gap-6 overflow-y-auto custom-scrollbar">
             {/* Landing Navigation Tabs */}
             <div className="flex items-center gap-2 bg-[#161616] border border-[#252525] p-1.5 rounded-full mt-4 sm:mt-6 mb-2 shrink-0 self-center shadow-xl">
               <button
@@ -1316,92 +1300,19 @@ export default function App() {
               </>
             ) : (
               <MicTranscriber 
-                onSendToEditor={async (words, audioBlob, audioUrl, audioDuration) => {
+                onSendToEditor={(words, audioBlob, audioUrl, audioDuration, micLanguage, micTranslate, micTranslateTarget) => {
                   try {
-                    pushUndo([]);
-                    setIsCreatingVideo(true);
-
-                    const tempAudio = document.createElement('audio');
-                    tempAudio.src = audioUrl;
-                    await new Promise<void>((resolve, reject) => {
-                      tempAudio.onloadedmetadata = () => resolve();
-                      tempAudio.onerror = () => reject(new Error('Failed to load audio'));
-                    });
-                    const duration = tempAudio.duration || audioDuration || 10;
-
-                    const WIDTH = 1080;
-                    const HEIGHT = 1920;
-                    const canvas = document.createElement('canvas');
-                    canvas.width = WIDTH;
-                    canvas.height = HEIGHT;
-                    const ctx = canvas.getContext('2d')!;
-
-                    ctx.fillStyle = '#000000';
-                    ctx.fillRect(0, 0, WIDTH, HEIGHT);
-
-                    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-                    const audioSource = audioContext.createMediaElementSource(tempAudio);
-                    const dest = audioContext.createMediaStreamDestination();
-                    audioSource.connect(dest);
-                    audioSource.connect(audioContext.destination);
-
-                    const canvasStream = canvas.captureStream(30);
-                    const combinedStream = new MediaStream([
-                      canvasStream.getVideoTracks()[0],
-                      ...dest.stream.getAudioTracks(),
-                    ]);
-
-                    const mimeTypes = [
-                      'video/webm;codecs=vp9,opus',
-                      'video/webm;codecs=vp8,opus',
-                      'video/webm;codecs=h264,opus',
-                      'video/webm',
-                    ];
-                    let selectedMime = '';
-                    for (const mime of mimeTypes) {
-                      if (MediaRecorder.isTypeSupported(mime)) {
-                        selectedMime = mime;
-                        break;
-                      }
+                    if (!audioBlob) {
+                      alert('No audio recorded. Please record audio first.');
+                      return;
                     }
-
-                    const recorder = new MediaRecorder(combinedStream, {
-                      mimeType: selectedMime || undefined,
-                      videoBitsPerSecond: 4000000,
-                    });
-
-                    const videoChunks: Blob[] = [];
-                    recorder.ondataavailable = (e) => {
-                      if (e.data.size > 0) videoChunks.push(e.data);
-                    };
-
-                    await new Promise<void>((resolve) => {
-                      recorder.onstop = () => resolve();
-                      recorder.start();
-                      tempAudio.play();
-                    });
-
-                    tempAudio.pause();
-                    audioSource.disconnect();
-                    audioContext.close();
-
-                    const videoBlob = new Blob(videoChunks, { type: selectedMime || 'video/webm' });
-                    const videoFile = new File([videoBlob], 'voice_recording.mp4', { type: 'video/mp4' });
-                    const videoBlobUrl = URL.createObjectURL(videoBlob);
-
-                    setState(s => ({
-                      ...s,
-                      words,
-                      videoFile: videoFile,
-                      videoUrl: videoBlobUrl,
-                      logs: [...s.logs, `Received ${words.length} caption words from voice recording.`, `Created ${duration.toFixed(1)}s black video with audio.`],
-                    }));
-                    setLandingTab('video');
-                    setIsCreatingVideo(false);
+                    const audioFile = new File([audioBlob], 'voice_recording.webm', { type: audioBlob.type || 'audio/webm' });
+                    const language = micLanguage || 'tamil';
+                    const translationMode = micTranslate ? `translate_${micTranslateTarget || 'english'}` : 'transliterate';
+                    handleUpload(audioFile, language, true, translationMode, true, 'vibes', audioBlob);
                   } catch (err) {
                     console.error('Send to editor failed:', err);
-                    setIsCreatingVideo(false);
-                    alert('Failed to create video. Please try again.');
+                    alert('Failed to send to editor. Please try again.');
                   }
                 }}
               />
