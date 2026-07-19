@@ -633,16 +633,29 @@ export default function App() {
       const headers: Record<string, string> = {};
       if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
 
-      const response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
-        method: 'POST',
-        body: formData,
-        headers,
-      });
+      let response: Response | null = null;
+      let lastErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (attempt > 1) setExportLogs(l => [...l, `↻ Retrying render (attempt ${attempt})...`]);
+          response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
+            method: 'POST',
+            body: formData,
+            headers,
+          });
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < 3) {
+            await wakeServer();
+          }
+        }
+      }
 
       if (eventSource) eventSource.close();
 
-      if (!response.ok) {
-        throw new Error(await response.text() || "Server export failed");
+      if (!response || !response.ok) {
+        throw new Error((response && await response.text()) || lastErr?.message || "Server export failed");
       }
 
       if (isCancelledRef.current) {
@@ -715,16 +728,27 @@ export default function App() {
         headers['Authorization'] = `Bearer ${activeToken}`;
       }
 
-      const response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
-        method: 'POST',
-        body: formData,
-        headers,
-      });
+      let response: Response | null = null;
+      let lastErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (attempt > 1) setExportLogs(l => [...l, `↻ Retrying render (attempt ${attempt})...`]);
+          response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
+            method: 'POST',
+            body: formData,
+            headers,
+          });
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < 3) await wakeServer();
+        }
+      }
 
       eventSource.close();
 
-      if (!response.ok) {
-        throw new Error(await response.text() || "Cloud export failed");
+      if (!response || !response.ok) {
+        throw new Error((response && await response.text()) || lastErr?.message || "Cloud export failed");
       }
 
       setExportLogs(l => [...l, "Downloading finished MP4 with burned captions..."]);
@@ -819,6 +843,19 @@ export default function App() {
     setIsExporting(true);
   };
 
+  // Warm up the Render server (free tier spins down after inactivity).
+  // A quick HEAD/probe prevents the first real request from dying on cold start.
+  const wakeServer = async () => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      await fetch(`${API_BASE}/api/config/public`, { method: 'GET', signal: ctrl.signal });
+      clearTimeout(t);
+    } catch {
+      // ignore — server may still be waking; the real request will retry
+    }
+  };
+
   const handleUpload = async (
     file: File, 
     language: string, 
@@ -831,6 +868,7 @@ export default function App() {
     const videoUrl = URL.createObjectURL(file);
     const jobId = Math.random().toString(36).substring(7);
     
+    await wakeServer();
     setState(s => ({ 
       ...s, 
       videoFile: file, 
@@ -1006,12 +1044,40 @@ export default function App() {
       }));
     };
 
-    xhr.open('POST', `${API_BASE}/api/transcribe?jobId=${jobId}`, true);
     const activeToken = token || await getAccessToken();
-    if (activeToken) {
-      xhr.setRequestHeader('Authorization', `Bearer ${activeToken}`);
-    }
-    xhr.send(formData);
+
+    const doSend = (attempt: number) => {
+      setState(s => ({ 
+        ...s, 
+        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt})...` : "Uploading to server..."]
+      }));
+      const req = new XMLHttpRequest();
+      req.upload.onprogress = xhr.upload.onprogress;
+      req.onload = xhr.onload;
+      req.onerror = () => {
+        if (attempt < 3) {
+          // Likely a Render cold-start drop — wake and retry
+          wakeServer().then(() => doSend(attempt + 1));
+        } else {
+          xhr.onerror();
+        }
+      };
+      req.timeout = 120000;
+      req.ontimeout = () => {
+        if (attempt < 3) {
+          wakeServer().then(() => doSend(attempt + 1));
+        } else {
+          xhr.onerror();
+        }
+      };
+      req.open('POST', `${API_BASE}/api/transcribe?jobId=${jobId}`, true);
+      if (activeToken) {
+        req.setRequestHeader('Authorization', `Bearer ${activeToken}`);
+      }
+      req.send(formData);
+    };
+
+    doSend(1);
   };
 
   const handleRetry = () => {
