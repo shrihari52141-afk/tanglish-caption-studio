@@ -1,6 +1,13 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Upload, Loader2, Sparkles, Languages, Smile, ChevronLeft, Check, Video } from 'lucide-react';
+import { Upload, Loader2, Sparkles, Languages, Smile, ChevronLeft, Check, Video, FileAudio } from 'lucide-react';
 import { extractAudioTrack } from '../utils/audioExtractor';
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
 
 interface VideoUploaderProps {
   onUpload: (
@@ -78,13 +85,15 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
   const [showEmojiModal, setShowEmojiModal] = useState<boolean>(false);
   const [extractedAudioBlob, setExtractedAudioBlob] = useState<Blob | null>(null);
   const [extractionStatus, setExtractionStatus] = useState<string>('');
+  const [extractedAudioSize, setExtractedAudioSize] = useState<string>('');
 
   useEffect(() => {
     let active = true;
     if (selectedFile) {
       const startBackgroundExtraction = async (file: File) => {
-        setExtractedAudioBlob(null);
-        setExtractionStatus('Initializing background audio extractor...');
+      setExtractedAudioBlob(null);
+      setExtractedAudioSize('');
+      setExtractionStatus('Initializing background audio extractor...');
         try {
           const blob = await extractAudioTrack(file, (msg) => {
             if (active) {
@@ -93,6 +102,7 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
           });
           if (active) {
             setExtractedAudioBlob(blob);
+            setExtractedAudioSize(formatFileSize(blob.size));
             setExtractionStatus('Audio pre-extracted successfully! Ready to generate. ✨');
           }
         } catch (err) {
@@ -106,6 +116,7 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
       startBackgroundExtraction(selectedFile);
     } else {
       setExtractedAudioBlob(null);
+      setExtractedAudioSize('');
       setExtractionStatus('');
     }
     return () => {
@@ -189,10 +200,13 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
         >
           <ChevronLeft className="w-4 h-4" /> Change Video
         </button>
-        <div className="flex items-center gap-2 max-w-[280px]">
+        <div className="flex items-center gap-2 max-w-[320px]">
           <Video className="w-4 h-4 text-fuchsia-500 shrink-0" />
           <span className="text-[12px] font-bold text-white truncate uppercase tracking-tight">
             {selectedFile.name}
+          </span>
+          <span className="text-[10px] font-mono text-fuchsia-400/70 shrink-0">
+            {formatFileSize(selectedFile.size)}
           </span>
         </div>
       </div>
@@ -486,10 +500,38 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
 
       {/* Footer containing Background Extraction status and Generate Button (shrink-0) */}
       <div style={{ marginTop: '1px', paddingTop: '4px' }} className="p-4 sm:p-5 bg-[#0E0E0E] border-t border-[#252525] shrink-0 flex flex-col gap-3">
-        <div className="flex items-center justify-center gap-2 bg-[#161616] border border-[#222] px-3.5 py-2.5 rounded-xl text-[11px] font-mono text-[#aaa]">
-          <span className="w-2 h-2 rounded-full shrink-0 bg-red-500 animate-pulse" />
-          <span className="truncate font-bold uppercase tracking-wider text-[#aaa]">made by Batman ❤️</span>
-        </div>
+        {extractionStatus && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-center gap-2 bg-[#161616] border border-[#222] px-3.5 py-2.5 rounded-xl text-[10px] font-mono text-[#aaa]">
+              {extractedAudioBlob ? (
+                <span className="w-2 h-2 rounded-full shrink-0 bg-green-500" />
+              ) : (
+                <span className="w-2 h-2 rounded-full shrink-0 bg-red-500 animate-pulse" />
+              )}
+              <span className="truncate font-bold uppercase tracking-wider text-[#aaa]">{extractionStatus}</span>
+            </div>
+            <div className="flex items-center justify-center gap-4 text-[10px] font-mono">
+              <span className="flex items-center gap-1.5 text-[#888]">
+                <Video className="w-3 h-3 text-fuchsia-500" />
+                <span className="text-white font-bold">{formatFileSize(selectedFile.size)}</span>
+                <span className="uppercase">Video</span>
+              </span>
+              {extractedAudioBlob && (
+                <span className="flex items-center gap-1.5 text-[#888]">
+                  <FileAudio className="w-3 h-3 text-green-500" />
+                  <span className="text-green-400 font-bold">{extractedAudioSize}</span>
+                  <span className="uppercase">Audio</span>
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        {!extractionStatus && (
+          <div className="flex items-center justify-center gap-2 bg-[#161616] border border-[#222] px-3.5 py-2.5 rounded-xl text-[11px] font-mono text-[#aaa]">
+            <span className="w-2 h-2 rounded-full shrink-0 bg-red-500 animate-pulse" />
+            <span className="truncate font-bold uppercase tracking-wider text-[#aaa]">made by Batman ❤️</span>
+          </div>
+        )}
 
         <button
           onClick={handleGenerate}

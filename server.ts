@@ -156,7 +156,7 @@ export async function startServer() {
   // Model priority: try the newest Gemini 3.5 Flash first, silently fall back to
   // Gemini 2.5 Flash on any failure. No user interaction required.
   const GEMINI_PRIMARY_MODEL = "gemini-3.5-flash";
-  const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-3.1-flash-lite"];
+  const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash"];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
   }
