@@ -560,14 +560,16 @@ export default function App() {
   };
 
   const startLocalExport = async () => {
+    // Server-side render guarantees a real .mp4 (browser MediaRecorder only
+    // produces webm and fails on Android WebView -> 0KB files).
     setExportMode('local');
-    setExportLogs(["Initializing 100% local video renderer..."]);
+    setExportLogs(["Initializing server-side MP4 renderer..."]);
     setLocalProgress(0);
 
     const isAudioOnly = state.videoFile && (
-      state.videoFile.type.startsWith('audio/') || 
-      state.videoFile.name.endsWith('.mp3') || 
-      state.videoFile.name.endsWith('.wav') || 
+      state.videoFile.type.startsWith('audio/') ||
+      state.videoFile.name.endsWith('.mp3') ||
+      state.videoFile.name.endsWith('.wav') ||
       state.videoFile.name.endsWith('.m4a')
     );
 
@@ -592,182 +594,86 @@ export default function App() {
     // Store original player state to restore later
     const originalTime = videoEl.currentTime;
     const originalMuted = videoEl.muted;
-    const originalVolume = videoEl.volume;
-    const originalPlaybackRate = videoEl.playbackRate;
     const originalPaused = videoEl.paused;
 
     videoEl.pause();
 
-    setExportLogs(l => [...l, "Extracting audio track internally..."]);
-
-    let audioTrack: MediaStreamTrack | null = null;
-    let audioCtx: AudioContext | null = null;
-    let source: MediaElementAudioSourceNode | null = null;
-
     try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      audioCtx = new AudioContextClass();
-      source = audioCtx.createMediaElementSource(videoEl);
-      const dest = audioCtx.createMediaStreamDestination();
-      source.connect(dest);
-      audioTrack = dest.stream.getAudioTracks()[0];
-      setExportLogs(l => [...l, "✓ Audio track captured silently from video decoder."]);
-    } catch (err) {
-      console.warn("Web Audio API capture failed, using standard stream fallback:", err);
-      setExportLogs(l => [...l, "⚠ Speaker muting unavailable. Capturing audio via normal playback stream."]);
-      
+      const width = videoEl.videoWidth || 1080;
+      const height = videoEl.videoHeight || 1920;
+      const displayWidth = videoEl.clientWidth || 340;
+      const displayHeight = videoEl.clientHeight || 604;
+
+      const jobId = Math.random().toString(36).substring(7);
+
+      // Subscribe to SSE logs so the user sees server-side progress
+      let eventSource: EventSource | null = null;
       try {
-        const videoStream = (videoEl as any).captureStream ? (videoEl as any).captureStream() : ((videoEl as any).mozCaptureStream ? (videoEl as any).mozCaptureStream() : null);
-        if (videoStream) {
-          const tracks = videoStream.getAudioTracks();
-          if (tracks.length > 0) {
-            audioTrack = tracks[0];
-          }
-        }
-      } catch (e) {
-        console.warn("captureStream fallback failed:", e);
-      }
-    }
+        eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.message) setExportLogs(l => [...l, data.message]);
+          } catch { /* ignore */ }
+        };
+      } catch { /* SSE optional */ }
 
-    setExportLogs(l => [...l, `Creating canvas surface (${videoEl.videoWidth}x${videoEl.videoHeight})...`]);
+      setExportLogs(l => [...l, "Uploading source to render server (true MP4 encode)..."]);
 
-    const canvas = document.createElement('canvas');
-    canvas.width = videoEl.videoWidth || 1080;
-    canvas.height = videoEl.videoHeight || 1920;
-    const ctx = canvas.getContext('2d');
+      const formData = new FormData();
+      formData.append('video', state.videoFile!);
+      formData.append('words', JSON.stringify(state.words));
+      formData.append('styleSettings', JSON.stringify({ ...state.styleSettings, background: isAudioOnly ? exportBgColor : undefined }));
+      formData.append('videoWidth', width.toString());
+      formData.append('videoHeight', height.toString());
+      formData.append('displayWidth', displayWidth.toString());
+      formData.append('displayHeight', displayHeight.toString());
 
-    if (!ctx) {
-      setExportLogs(l => [...l, "Error: Canvas 2D engine failed to initialize."]);
-      return;
-    }
+      const activeToken = token || await getAccessToken();
+      const headers: Record<string, string> = {};
+      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
 
-    // Draw first frame
-    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+      const response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
+        method: 'POST',
+        body: formData,
+        headers,
+      });
 
-    const canvasStream = canvas.captureStream(30); // Capture at 30 FPS
-    const canvasVideoTrack = canvasStream.getVideoTracks()[0];
+      if (eventSource) eventSource.close();
 
-    const combinedStream = new MediaStream();
-    combinedStream.addTrack(canvasVideoTrack);
-    if (audioTrack) {
-      combinedStream.addTrack(audioTrack);
-    }
-
-    const mimeTypes = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=h264,opus',
-      'video/webm',
-      'video/mp4;codecs=h264',
-      'video/mp4'
-    ];
-
-    let selectedMimeType = '';
-    for (const mime of mimeTypes) {
-      if (MediaRecorder.isTypeSupported(mime)) {
-        selectedMimeType = mime;
-        break;
-      }
-    }
-
-    setExportLogs(l => [...l, `Configuring browser-native encoder (${selectedMimeType || "Default Rec"})...`]);
-
-    const recorder = new MediaRecorder(combinedStream, {
-      mimeType: selectedMimeType || undefined,
-      videoBitsPerSecond: 8000000 // 8 Mbps high-quality
-    });
-
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        chunks.push(e.data);
-      }
-    };
-
-    recorder.onstop = () => {
-      // Restore video state
-      videoEl.currentTime = originalTime;
-      videoEl.muted = originalMuted;
-      videoEl.volume = originalVolume;
-      videoEl.playbackRate = originalPlaybackRate;
-      if (!originalPaused) {
-        videoEl.play();
-      }
-
-      // Reconnect audio to speakers
-      if (source && audioCtx) {
-        try {
-          source.disconnect();
-          source.connect(audioCtx.destination);
-        } catch (e) {
-          console.warn("Could not reconnect audio source:", e);
-        }
+      if (!response.ok) {
+        throw new Error(await response.text() || "Server export failed");
       }
 
       if (isCancelledRef.current) {
-        setExportLogs(l => [...l, "✖ Export process cancelled by user."]);
-        setTimeout(() => setIsExporting(false), 1500);
+        setExportLogs(l => [...l, "✖ Export cancelled."]);
+        setTimeout(() => setIsExporting(false), 1000);
         return;
       }
 
-      setExportLogs(l => [...l, "✓ Frame recording completed. Generating final video package..."]);
-      const blob = new Blob(chunks, { type: selectedMimeType });
-      
+      setExportLogs(l => [...l, "✓ Encoding complete. Preparing MP4 package..."]);
+      const blob = await response.blob();
+
       const baseName = state.videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
       const exportFileName = `${baseName}_${generateRandomSuffix()}.mp4`;
-      
+
       setExportedBlob(blob);
       setExportedFileName(exportFileName);
       setExportedMimeType('video/mp4');
-      setExportLogs(l => [...l, "✨ Render complete! Click Save to download."]);
+      setExportLogs(l => [...l, `✨ Render complete! (${(blob.size / (1024 * 1024)).toFixed(2)} MB) Click Save to download.`]);
       setExportMode('complete');
-    };
-
-    setExportLogs(l => [...l, "Rewinding source video track to 0.0s..."]);
-    videoEl.currentTime = 0;
-
-    const onSeeked = () => {
-      videoEl.removeEventListener('seeked', onSeeked);
-      setExportLogs(l => [...l, "🚀 Live burner active! Playing video and compositing subtitles..."]);
-
-      recorder.start();
-      videoEl.play();
-
-      const renderFrame = () => {
-        if (isCancelledRef.current) {
-          recorder.stop();
-          return;
-        }
-
-        if (videoEl.paused || videoEl.ended) {
-          if (videoEl.ended) {
-            recorder.stop();
-          }
-          return;
-        }
-
-        // Fill background color (for audio-only exports or visual style)
-        if (exportBgColor && exportBgColor !== 'transparent') {
-          ctx.fillStyle = exportBgColor;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        // Draw video frame
-        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-
-        // Draw subtitles on top
-        drawSubtitlesOnCanvas(ctx, canvas.width, canvas.height, videoEl.currentTime, state.words, state.styleSettings, videoEl);
-
-        // Update progress percentage
-        const progress = Math.min(100, (videoEl.currentTime / videoEl.duration) * 100);
-        setLocalProgress(progress);
-
-        requestAnimationFrame(renderFrame);
-      };
-
-      requestAnimationFrame(renderFrame);
-    };
-
-    videoEl.addEventListener('seeked', onSeeked);
+    } catch (err: any) {
+      console.error(err);
+      setExportLogs(l => [...l, `Error: ${err?.message || err}`]);
+      alert("Failed to render MP4 on server. Please try the Cloud Export option!");
+    } finally {
+      // Restore video state
+      try {
+        videoEl.currentTime = originalTime;
+        videoEl.muted = originalMuted;
+        if (!originalPaused) videoEl.play();
+      } catch { /* ignore */ }
+    }
   };
 
   const startCloudExport = async () => {

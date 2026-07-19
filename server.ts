@@ -1802,16 +1802,44 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
       outputPath = `${videoPath}_exported.mp4`;
       sendLog(jobId, "Starting FFmpeg burning filter with ultrafast speed profile...");
-      
+
       const relFile = path.relative(process.cwd(), videoPath).replace(/\\/g, "/");
       const relAss = path.relative(process.cwd(), assPath).replace(/\\/g, "/");
       const relOutput = path.relative(process.cwd(), outputPath).replace(/\\/g, "/");
 
       // Prefer `ass` filter (native ASS/libass). Escape only characters that break the filtergraph.
       const assFilterPath = relAss.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
-      await execAsync(
-        `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset ultrafast -c:v libx264 -crf 10 -c:a copy -threads 0 "${relOutput}"`
-      );
+
+      // Audio-only sources have no video track -> synthesize a solid-color canvas
+      // using the chosen background color, then burn subtitles on top.
+      const styleBg = (styleSettings as any)?.background as string | undefined;
+      const hasVideoStream = await (async () => {
+        try {
+          const { stdout } = await execAsync(
+            `ffprobe -v error -select_streams v:0 -show_entries stream=index -of csv=p=0 "${relFile}"`
+          );
+          return stdout.trim().length > 0;
+        } catch {
+          return false;
+        }
+      })();
+
+      if (!hasVideoStream && styleBg) {
+        const hex = styleBg.replace('#', '');
+        const r = parseInt(hex.substring(0, 2), 16);
+        const g = parseInt(hex.substring(2, 4), 16);
+        const b = parseInt(hex.substring(4, 6), 16);
+        const colorExpr = `0x${hex}`;
+        sendLog(jobId, "Audio-only detected: generating colored background canvas...");
+        await execAsync(
+          `ffmpeg -y -f lavfi -i "color=c=${colorExpr}:s=${width}x${height}:r=30" -i "${relFile}" ` +
+          `-shortest -vf "ass='${assFilterPath}'" -preset ultrafast -c:v libx264 -crf 10 -pix_fmt yuv420p -c:a aac -threads 0 "${relOutput}"`
+        );
+      } else {
+        await execAsync(
+          `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset ultrafast -c:v libx264 -crf 10 -c:a copy -threads 0 "${relOutput}"`
+        );
+      }
       
       sendLog(jobId, "FFmpeg video export complete!");
 
