@@ -1862,7 +1862,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
   // ---- TELEGRAM BOT LOGGING ----
   const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8776737859:AAFgr2jY5VEaD8ksC5fOspR1KquPnw65KxU";
-  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "6076329360";
 
   async function sendToTelegram(message: string) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
