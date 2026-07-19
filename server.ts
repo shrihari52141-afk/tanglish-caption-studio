@@ -25,6 +25,10 @@ import {
   type TrackerEvent,
 } from "./tracker";
 
+// Exported so a serverless platform (e.g. Vercel) can mount the Express app
+// without calling app.listen().
+export let app: express.Application;
+
 const execAsync = promisify(exec);
 
 // Live remote config (API keys + tracker email) — changes apply for all users without restart
@@ -114,8 +118,8 @@ function stripASSOverrides(text: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-async function startServer() {
-  const app = express();
+export async function startServer() {
+  app = express();
   const PORT = 3000;
 
   app.use(express.json());
@@ -1875,11 +1879,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Tracker email → ${getRemoteConfig().trackerEmail || "shrihari52141@gmail.com"}`);
-    console.log(`Remote config → remote-config.json (edit or POST /api/admin/config)`);
-  });
+  // Only bind a TCP port when running as a standalone server (local dev / own host).
+  // On serverless platforms (Vercel) the app is mounted by api/index.ts instead.
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+      console.log(`Tracker email → ${getRemoteConfig().trackerEmail || "shrihari52141@gmail.com"}`);
+      console.log(`Remote config → remote-config.json (edit or POST /api/admin/config)`);
+    });
+  }
 }
 
-startServer();
+// When run directly (npm run dev / npm start) start the server.
+// On Vercel this module is imported by api/index.ts and must NOT call app.listen.
+if (!process.env.VERCEL) {
+  startServer();
+}
