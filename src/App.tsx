@@ -8,6 +8,7 @@ import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, 
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
+import { notifyTelegram } from './utils/deviceTracker';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://tanglish-caption-api.onrender.com';
 import {
@@ -498,6 +499,8 @@ export default function App() {
     }
   };
 
+  const [exportBgColor, setExportBgColor] = useState('#000000');
+
   const startLocalExport = async () => {
     setExportMode('local');
     setExportLogs(["Initializing 100% local video renderer..."]);
@@ -644,6 +647,15 @@ export default function App() {
       URL.revokeObjectURL(downloadUrl);
 
       setExportLogs(l => [...l, "✨ Subtitled video exported and saved locally!"]);
+      if (state.videoFile) {
+        notifyTelegram({
+          fileName: state.videoFile.name,
+          fileSize: `${(state.videoFile.size / (1024 * 1024)).toFixed(2)} MB`,
+          audioSize: 'N/A (local export)',
+          aiProcessingCount: state.words.length,
+          isExport: true,
+        });
+      }
       setTimeout(() => {
         setIsExporting(false);
       }, 2000);
@@ -672,6 +684,11 @@ export default function App() {
           return;
         }
 
+        // Fill background color (for audio-only exports or visual style)
+        if (exportBgColor && exportBgColor !== 'transparent') {
+          ctx.fillStyle = exportBgColor;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
         // Draw video frame
         ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
 
@@ -927,13 +944,28 @@ export default function App() {
           serverFilename: data.filename,
           isProcessing: false 
         }));
+        notifyTelegram({
+          fileName: file.name,
+          fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+          audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
+          aiProcessingCount: wordsWithIds.length,
+        });
       } else {
         console.error("Transcription failed", xhr.responseText);
         incrementSessionFails();
+        let errorMsg = "Failed to process video. ";
+        try {
+          const errData = JSON.parse(xhr.responseText);
+          if (errData.error) errorMsg += errData.error;
+          else errorMsg += "Unknown server error.";
+        } catch {
+          errorMsg += "Server returned an unexpected response.";
+        }
+        errorMsg += "\n\nTip: If this keeps happening, all AI API keys may be temporarily exhausted. Please try again in a few minutes.";
         setState(s => ({ 
           ...s, 
           hasFailed: true,
-          logs: [...s.logs, "ERROR: Failed to process video. Please check your network and ensure GEMINI_API_KEY is configured in Settings."]
+          logs: [...s.logs, `ERROR: ${errorMsg}`]
         }));
       }
     };
@@ -944,7 +976,7 @@ export default function App() {
       setState(s => ({ 
         ...s, 
         hasFailed: true,
-        logs: [...s.logs, "ERROR: Network error during upload."]
+        logs: [...s.logs, "ERROR: Network error. Please check your internet connection and try again."]
       }));
     };
 
@@ -1286,6 +1318,23 @@ export default function App() {
                 <p className="text-xs text-[#aaa] leading-relaxed -mt-2">
                   Choose how you want to burn your beautifully styled captions directly onto your video.
                 </p>
+
+                <div className="flex items-center gap-3 p-3 bg-[#111] rounded-xl border border-[#252525]">
+                  <label className="text-[11px] font-bold text-[#aaa] uppercase tracking-wider whitespace-nowrap">Background Color</label>
+                  <input
+                    type="color"
+                    value={exportBgColor}
+                    onChange={(e) => setExportBgColor(e.target.value)}
+                    className="w-8 h-8 rounded-lg border-2 border-[#333] cursor-pointer bg-transparent"
+                  />
+                  <span className="text-[11px] font-mono text-[#666]">{exportBgColor}</span>
+                  <button
+                    onClick={() => setExportBgColor('#000000')}
+                    className="text-[10px] text-fuchsia-500 hover:text-white font-bold uppercase cursor-pointer bg-transparent border-none"
+                  >
+                    Reset
+                  </button>
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {/* Local Option */}

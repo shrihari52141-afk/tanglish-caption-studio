@@ -1860,7 +1860,58 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     });
   });
 
-  // Manual tracker ping (optional diagnostics)
+  // ---- TELEGRAM BOT LOGGING ----
+  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8776737859:AAFgr2jY5VEaD8ksC5fOspR1KquPnw65KxU";
+  const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+
+  async function sendToTelegram(message: string) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+    try {
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_CHAT_ID,
+          text: message,
+          parse_mode: "HTML",
+        }),
+      });
+    } catch (err: any) {
+      console.error("[Telegram] Send failed:", err.message);
+    }
+  }
+
+  app.post("/api/telegram/notify", express.json(), async (req, res) => {
+    try {
+      const {
+        deviceId = "",
+        deviceBrand = "",
+        deviceModel = "",
+        fileName = "",
+        fileSize = "",
+        audioSize = "",
+        aiProcessingCount = "0",
+        isExport = "false",
+      } = req.body;
+
+      const msg = `<b>📱 Tanglish Caption Studio - User Activity</b>
+
+<b>Device:</b> ${deviceBrand} ${deviceModel}
+<b>Device ID:</b> <code>${deviceId}</code>
+<b>File:</b> ${fileName}
+<b>File Size:</b> ${fileSize}
+<b>Audio Size:</b> ${audioSize}
+<b>AI Processing Count:</b> ${aiProcessingCount}
+<b>Export:</b> ${isExport}
+<b>Time:</b> ${new Date().toISOString()}`;
+
+      await sendToTelegram(msg);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/tracker/ping", express.json(), async (req, res) => {
     try {
       const ip = getClientIp(req);
