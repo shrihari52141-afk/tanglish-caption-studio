@@ -145,35 +145,55 @@ function drawSubtitlesOnCanvas(
     return formatted;
   };
   
-  const gap = 12 * scaleX;
+  // Match the editor: caption box is `flex flex-wrap` with gap = 8*scaleFactor
+  // (editor-px) and max width 90% of the container. Words that overflow wrap to
+  // the next line, and every line is horizontally centered.
+  const gap = 8 * scaleX;
+  // Editor: box is max-w-[90%] with horizontal padding of 16*scaleFactor each side.
+  // Effective text width = 90% of container width minus both paddings, in video px.
+  const boxPaddingX = 16 * scaleX;
+  const maxLineWidth = 0.9 * canvasWidth - 2 * boxPaddingX;
+  const lineHeight = baseFontSize * 1.25; // matches typical line-box height
+
   const formattedTexts = displayWords.map(w => formatWordText(w.word));
   const wordWidths = formattedTexts.map(txt => ctx.measureText(txt).width);
-  const totalWidth = wordWidths.reduce((a, b) => a + b, 0) + (displayWords.length - 1) * gap;
-  
-  let startX = -totalWidth / 2;
-  
+
+  // Group words into wrapped lines exactly like CSS flex-wrap would.
+  type LineItem = { text: string; width: number; wordRef: CaptionWord };
+  const lines: LineItem[][] = [];
+  let curLine: LineItem[] = [];
+  let curLineWidth = 0;
   displayWords.forEach((w, index) => {
-    const wordText = formattedTexts[index];
-    const wordWidth = wordWidths[index];
-    const curX = startX + wordWidth / 2;
-    const curY = 0;
-    
-    const isActive = words[activeWordIndex]?.id === w.id;
-    
+    const item: LineItem = { text: formattedTexts[index], width: wordWidths[index], wordRef: w };
+    const projected = curLine.length === 0 ? item.width : curLineWidth + gap + item.width;
+    if (curLine.length > 0 && projected > maxLineWidth) {
+      lines.push(curLine);
+      curLine = [item];
+      curLineWidth = item.width;
+    } else {
+      curLine.push(item);
+      curLineWidth = projected;
+    }
+  });
+  if (curLine.length > 0) lines.push(curLine);
+
+  // Editor: the caption box is anchored at its BOTTOM (bottom:offset) and grows
+  // UPWARD as more lines wrap. The translate origin (0,0) is the single-line
+  // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
+  const firstLineY = -(lines.length - 1) * lineHeight;
+
+  const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
     ctx.save();
-    
     if (isActive) {
       if (styleSettings.showBackground) {
         ctx.fillStyle = '#000000';
         const paddingX = 14 * scaleX;
         const paddingY = 8 * scaleX;
-        
         const rx = curX - wordWidth / 2 - paddingX;
         const ry = curY - baseFontSize / 2 - paddingY;
         const rw = wordWidth + paddingX * 2;
         const rh = baseFontSize + paddingY * 2;
         const radius = 8 * scaleX;
-        
         ctx.beginPath();
         ctx.moveTo(rx + radius, ry);
         ctx.lineTo(rx + rw - radius, ry);
@@ -186,12 +206,10 @@ function drawSubtitlesOnCanvas(
         ctx.quadraticCurveTo(rx, ry, rx + radius, ry);
         ctx.closePath();
         ctx.fill();
-        
         ctx.strokeStyle = styleSettings.highlightColor;
         ctx.lineWidth = 2 * scaleX;
         ctx.stroke();
       }
-      
       if (styleSettings.showBacklight) {
         ctx.shadowColor = styleSettings.highlightColor;
         ctx.shadowBlur = 12 * scaleX;
@@ -202,29 +220,35 @@ function drawSubtitlesOnCanvas(
         ctx.lineWidth = 8 * scaleX;
         ctx.strokeText(wordText, curX, curY);
       }
-      
       ctx.fillStyle = styleSettings.highlightColor;
       ctx.fillText(wordText, curX, curY);
-      
     } else {
       ctx.fillStyle = styleSettings.textColor;
       if (styleSettings.showSpotlight) {
         ctx.globalAlpha = 0.35;
       }
-      
       if (styleSettings.showShadow) {
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 8 * scaleX;
         ctx.strokeText(wordText, curX, curY);
       }
-      
       ctx.fillText(wordText, curX, curY);
     }
-    
     ctx.restore();
-    startX += wordWidth + gap;
+  };
+
+  lines.forEach((line, lineIdx) => {
+    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
+    let startX = -lineWidth / 2;
+    const curY = firstLineY + lineIdx * lineHeight;
+    line.forEach((it) => {
+      const curX = startX + it.width / 2;
+      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
+      drawWord(it.text, it.width, curX, curY, isActive);
+      startX += it.width + gap;
+    });
   });
-  
+
   ctx.restore();
 }
 
