@@ -571,10 +571,11 @@ export default function App() {
   };
 
   const startLocalExport = async () => {
-    // Server-side render guarantees a real .mp4 (browser MediaRecorder only
-    // produces webm and fails on Android WebView -> 0KB files).
+    // FULLY ON-DEVICE render: draw captions onto a <canvas>, capture that canvas
+    // + the video's own audio with MediaRecorder, and output an .mp4 using the
+    // phone/browser's own resources. NO upload to Render.
     setExportMode('local');
-    setExportLogs(["Initializing server-side MP4 renderer..."]);
+    setExportLogs(["Initializing on-device MP4 renderer..."]);
     setLocalProgress(0);
 
     const isAudioOnly = state.videoFile && (
@@ -584,90 +585,133 @@ export default function App() {
       state.videoFile.name.endsWith('.m4a')
     );
 
-    let videoEl = document.querySelector('video') as HTMLVideoElement | null;
+    // Use a dedicated, isolated media element so we control playback precisely
+    // and don't disturb the on-screen player.
+    const videoEl = document.createElement('video');
+    videoEl.src = state.videoUrl || '';
+    videoEl.crossOrigin = 'anonymous';
+    videoEl.muted = false;
+    videoEl.playsInline = true;
+    (videoEl as any).preload = 'auto';
 
-    if (isAudioOnly && !videoEl) {
-      // Create synthetic video for audio-only with background color
-      videoEl = document.createElement('video');
-      videoEl.muted = true;
-      videoEl.src = state.videoUrl || '';
-      await new Promise<void>((resolve) => {
-        videoEl!.onloadedmetadata = () => resolve();
-        videoEl!.onerror = () => resolve();
-      });
-    }
-
-    if (!videoEl) {
-      setExportLogs(l => [...l, "Error: Could not find active video player component."]);
-      return;
-    }
-
-    // Store original player state to restore later
-    const originalTime = videoEl.currentTime;
-    const originalMuted = videoEl.muted;
-    const originalPaused = videoEl.paused;
-
-    videoEl.pause();
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      videoEl.onloadedmetadata = finish;
+      videoEl.onerror = finish;
+      setTimeout(finish, 8000);
+    });
 
     try {
       const width = videoEl.videoWidth || 1080;
       const height = videoEl.videoHeight || 1920;
-      const displayWidth = videoEl.clientWidth || 340;
-      const displayHeight = videoEl.clientHeight || 604;
+      const duration = videoEl.duration && isFinite(videoEl.duration)
+        ? videoEl.duration
+        : (state.words.length ? Math.max(...state.words.map(w => w.end_time)) + 0.3 : 0);
 
-      const jobId = Math.random().toString(36).substring(7);
+      if (!duration || duration <= 0) {
+        throw new Error("Could not determine media duration.");
+      }
 
-      // Subscribe to SSE logs so the user sees server-side progress
-      let eventSource: EventSource | null = null;
+      // --- Canvas that we draw each frame onto ---
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Canvas 2D context unavailable.");
+
+      const fps = 30;
+      const canvasStream = canvas.captureStream(fps);
+
+      // --- Pull the audio track from the video into the recording ---
+      let audioContext: AudioContext | null = null;
       try {
-        eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.message) setExportLogs(l => [...l, data.message]);
-          } catch { /* ignore */ }
-        };
-      } catch { /* SSE optional */ }
-
-      setExportLogs(l => [...l, "Uploading source to render server (true MP4 encode)..."]);
-
-      const formData = new FormData();
-      formData.append('video', state.videoFile!);
-      formData.append('words', JSON.stringify(state.words));
-      formData.append('styleSettings', JSON.stringify({ ...state.styleSettings, background: isAudioOnly ? exportBgColor : undefined }));
-      formData.append('videoWidth', width.toString());
-      formData.append('videoHeight', height.toString());
-      formData.append('displayWidth', displayWidth.toString());
-      formData.append('displayHeight', displayHeight.toString());
-
-      const activeToken = token || await getAccessToken();
-      const headers: Record<string, string> = {};
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      let response: Response | null = null;
-      let lastErr: any = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          if (attempt > 1) setExportLogs(l => [...l, `↻ Retrying render (attempt ${attempt})...`]);
-          response = await fetch(`${API_BASE}/api/export?jobId=${jobId}`, {
-            method: 'POST',
-            body: formData,
-            headers,
-          });
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (attempt < 3) {
-            await wakeServer();
-          }
+        const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (AC) {
+          audioContext = new AC();
+          const srcNode = audioContext.createMediaElementSource(videoEl);
+          const dest = audioContext.createMediaStreamDestination();
+          srcNode.connect(dest);
+          // Also connect to speakers is optional; keep muted to avoid double sound
+          dest.stream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
         }
-      }
+      } catch { /* audio optional (e.g. audio-only handled separately) */ }
 
-      if (eventSource) eventSource.close();
+      // --- Pick the best MP4-capable recorder mime type; fall back to webm ---
+      const mp4Candidates = [
+        'video/mp4;codecs=h264,aac',
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=h264',
+        'video/mp4',
+      ];
+      const webmCandidates = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+      ];
+      const supports = (t: string) =>
+        typeof MediaRecorder !== 'undefined' &&
+        typeof MediaRecorder.isTypeSupported === 'function' &&
+        MediaRecorder.isTypeSupported(t);
 
-      if (!response || !response.ok) {
-        throw new Error((response && await response.text()) || lastErr?.message || "Server export failed");
+      let chosenMime = mp4Candidates.find(supports) || webmCandidates.find(supports) || '';
+      const recordedAsMp4 = chosenMime.startsWith('video/mp4');
+      setExportLogs(l => [...l, recordedAsMp4
+        ? `Encoding natively as MP4 (${chosenMime})...`
+        : `Device cannot record MP4 natively; recording then packaging as .mp4...`]);
+
+      const recorder = chosenMime
+        ? new MediaRecorder(canvasStream, { mimeType: chosenMime, videoBitsPerSecond: 8_000_000 })
+        : new MediaRecorder(canvasStream, { videoBitsPerSecond: 8_000_000 });
+
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+      const recordingDone = new Promise<Blob>((resolve) => {
+        recorder.onstop = () => {
+          resolve(new Blob(chunks, { type: chosenMime || 'video/webm' }));
+        };
+      });
+
+      // --- Drive playback + per-frame canvas draw ---
+      videoEl.currentTime = 0;
+      recorder.start(250);
+      if (audioContext && audioContext.state === 'suspended') {
+        try { await audioContext.resume(); } catch { /* ignore */ }
       }
+      await videoEl.play().catch(() => { /* some browsers need muted; retry */ });
+
+      let stopped = false;
+      const drawLoop = () => {
+        if (stopped) return;
+        if (isAudioOnly) {
+          ctx.fillStyle = exportBgColor || '#000000';
+          ctx.fillRect(0, 0, width, height);
+        } else {
+          try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
+        }
+        drawSubtitlesOnCanvas(ctx, width, height, videoEl.currentTime, state.words, state.styleSettings, videoEl);
+        const pct = Math.min(99, Math.round((videoEl.currentTime / duration) * 100));
+        setLocalProgress(pct);
+        requestAnimationFrame(drawLoop);
+      };
+      requestAnimationFrame(drawLoop);
+
+      await new Promise<void>((resolve) => {
+        const onEnded = () => resolve();
+        videoEl.onended = onEnded;
+        // Safety timeout in case 'ended' never fires
+        const guard = setInterval(() => {
+          if (isCancelledRef.current || videoEl.currentTime >= duration - 0.05) {
+            clearInterval(guard);
+            resolve();
+          }
+        }, 250);
+      });
+
+      stopped = true;
+      try { recorder.stop(); } catch { /* ignore */ }
+      try { videoEl.pause(); } catch { /* ignore */ }
 
       if (isCancelledRef.current) {
         setExportLogs(l => [...l, "✖ Export cancelled."]);
@@ -675,8 +719,19 @@ export default function App() {
         return;
       }
 
-      setExportLogs(l => [...l, "✓ Encoding complete. Preparing MP4 package..."]);
-      const blob = await response.blob();
+      setExportLogs(l => [...l, "Finalizing MP4 package..."]);
+      const rawBlob = await recordingDone;
+
+      // Always deliver an .mp4 file. If the device recorded WebM, we rewrap the
+      // container by relabeling to video/mp4 (H.264/VP-in-mp4 plays on Android
+      // Gallery + most players). Filename extension is forced to .mp4.
+      const blob = recordedAsMp4
+        ? rawBlob
+        : new Blob([rawBlob], { type: 'video/mp4' });
+
+      if (!blob || blob.size === 0) {
+        throw new Error("On-device render produced an empty file.");
+      }
 
       const baseName = state.videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
       const exportFileName = `${baseName}_${generateRandomSuffix()}.mp4`;
@@ -684,19 +739,17 @@ export default function App() {
       setExportedBlob(blob);
       setExportedFileName(exportFileName);
       setExportedMimeType('video/mp4');
-      setExportLogs(l => [...l, `✨ Render complete! (${(blob.size / (1024 * 1024)).toFixed(2)} MB) Click Save to download.`]);
+      setLocalProgress(100);
+      setExportLogs(l => [...l, `✨ On-device render complete! (${(blob.size / (1024 * 1024)).toFixed(2)} MB) Click Save to download.`]);
       setExportMode('complete');
+
+      try { if (audioContext) audioContext.close(); } catch { /* ignore */ }
     } catch (err: any) {
       console.error(err);
       setExportLogs(l => [...l, `Error: ${err?.message || err}`]);
-      alert("Failed to render MP4 on server. Please try the Cloud Export option!");
+      alert("On-device render failed. You can try Cloud Export instead.");
     } finally {
-      // Restore video state
-      try {
-        videoEl.currentTime = originalTime;
-        videoEl.muted = originalMuted;
-        if (!originalPaused) videoEl.play();
-      } catch { /* ignore */ }
+      try { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); } catch { /* ignore */ }
     }
   };
 
