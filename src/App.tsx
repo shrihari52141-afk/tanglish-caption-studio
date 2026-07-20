@@ -7,7 +7,7 @@ import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, 
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
-import { notifyTelegram } from './utils/deviceTracker';
+import { notifyTelegram, notifyTelegramError } from './utils/deviceTracker';
 
 const RENDER_API = 'https://tanglish-caption-api.onrender.com';
 const _envApi = (import.meta.env.VITE_API_URL || '').trim();
@@ -87,13 +87,11 @@ function drawSubtitlesOnCanvas(
   const scaleX = canvasWidth / REF;   // video-px per editor-base unit
   const scaleY = scaleX;              // uniform scaling (no distortion)
 
-  // Convert editor-display pixels (positionX/Y are stored in editor px) into
-  // video-resolution pixels.
-  const dispW = editorDisplayWidth && editorDisplayWidth > 0 ? editorDisplayWidth : canvasWidth;
-  const dispH = editorDisplayHeight && editorDisplayHeight > 0 ? editorDisplayHeight : canvasHeight;
-  const pxX = canvasWidth / dispW;    // video-px per editor-display-px (X)
-  const pxY = canvasHeight / dispH;   // video-px per editor-display-px (Y)
-
+  // positionX/Y are stored in resolution-independent base-340 units (the editor
+  // applies them as positionX * scaleFactor, scaleFactor = containerWidth/340).
+  // Because the editor container ALWAYS matches the video aspect ratio, the same
+  // units map to video pixels via scaleX (= canvasWidth/340) for BOTH axes, so
+  // the exported caption sits exactly where the preview shows it — at any size.
   const baseFontSize = 32 * styleSettings.fontSize * scaleX;
   
   let fontName = 'sans-serif';
@@ -123,9 +121,8 @@ function drawSubtitlesOnCanvas(
   
   // Editor: caption is horizontally centered (inset-x-0 mx-auto), sits at
   // bottom:(96*scaleFactor) editor-px, and is translated by (positionX, -positionY).
-  const bottomOffsetEditorPx = 96 * (dispW / REF);
-  const baseX = (canvasWidth / 2) + (styleSettings.positionX * pxX);
-  const baseY = (canvasHeight - bottomOffsetEditorPx * pxY) - (styleSettings.positionY * pxY);
+  const baseX = (canvasWidth / 2) + (styleSettings.positionX * scaleX);
+  const baseY = (canvasHeight - 96 * scaleX) - (styleSettings.positionY * scaleX);
 
   ctx.translate(baseX, baseY);
   ctx.rotate((styleSettings.rotation * Math.PI) / 180);
@@ -1169,6 +1166,11 @@ export default function App() {
             hasFailed: true,
             logs: [...s.logs, `ERROR: ${errorMsg}`]
           }));
+          notifyTelegramError(errorMsg, `Transcription (HTTP ${req.status})`, {
+            fileName: file.name,
+            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+            source: file.type.startsWith('video/') ? 'video' : 'audio',
+          });
         }
       };
 
@@ -1179,11 +1181,17 @@ export default function App() {
         } else {
           eventSource.close();
           incrementSessionFails();
+          const em = `xhr.onerror — request never reached server after ${attempt} attempts. Server may be down.`;
           setState(s => ({ 
             ...s, 
             hasFailed: true,
-            logs: [...s.logs, `ERROR: xhr.onerror — request never reached server after ${attempt} attempts. Server may be down.`]
+            logs: [...s.logs, `ERROR: ${em}`]
           }));
+          notifyTelegramError(em, 'Transcription (network)', {
+            fileName: file.name,
+            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+            source: file.type.startsWith('video/') ? 'video' : 'audio',
+          });
         }
       };
 
@@ -1195,11 +1203,17 @@ export default function App() {
         } else {
           eventSource.close();
           incrementSessionFails();
+          const em = `Request timed out after ${attempt} attempts.`;
           setState(s => ({ 
             ...s, 
             hasFailed: true,
-            logs: [...s.logs, `ERROR: Request timed out after ${attempt} attempts.`]
+            logs: [...s.logs, `ERROR: ${em}`]
           }));
+          notifyTelegramError(em, 'Transcription (timeout)', {
+            fileName: file.name,
+            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+            source: file.type.startsWith('video/') ? 'video' : 'audio',
+          });
         }
       };
 
@@ -1590,24 +1604,6 @@ export default function App() {
                       </h4>
                       <p className="text-[11px] text-[#aaa] leading-relaxed">
                         100% private & instant. Renders directly in your browser using GPU acceleration. <strong>No video uploads required!</strong>
-                      </p>
-                    </div>
-                  </button>
-
-                  {/* Cloud Option */}
-                  <button
-                    onClick={startCloudExport}
-                    className="p-5 rounded-2xl border-2 border-[#2c2c2c] hover:border-purple-500 bg-[#121212] hover:bg-purple-600/5 text-left transition-all flex flex-col gap-3 group cursor-pointer"
-                  >
-                    <div className="p-2 bg-purple-600/20 rounded-xl w-max text-purple-400 group-hover:scale-110 transition-transform">
-                      <Cloud className="w-6 h-6" />
-                    </div>
-                    <div>
-                      <h4 className="text-[14px] font-black text-white uppercase tracking-wider mb-1">
-                        Cloud Renderer
-                      </h4>
-                      <p className="text-[11px] text-[#888] leading-relaxed">
-                        Processes the video on our high-speed render cluster. <strong>Requires uploading original video file.</strong>
                       </p>
                     </div>
                   </button>

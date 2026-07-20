@@ -2260,10 +2260,41 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         usePunctuation,
         captionWords = 0,
         exportMethod = "",
+        isError = false,
+        errorMessage = "",
+        errorStage = "",
       } = req.body;
+
+      const esc = (s: string) =>
+        String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
       const sourceEmoji = source === 'mic' ? '🎙️' : source === 'audio' ? '🎵' : source === 'video' ? '🎬' : '📎';
       const sourceLabel = source === 'mic' ? 'Microphone Recording' : source === 'audio' ? 'Audio File' : source === 'video' ? 'Video File' : 'Unknown';
+
+      if (isError) {
+        const errLines = [
+          `<b>🚨 Tanglish Caption Studio — ERROR</b>`,
+          ``,
+          `<b>━━━ Device ━━━</b>`,
+          `📱 <b>Device:</b> ${esc(brand)} ${esc(model)}`,
+          `🆔 <b>ID:</b> <code>${esc(deviceId)}</code>`,
+          `💻 <b>OS:</b> ${esc(osVersion)}`,
+          ``,
+          `<b>━━━ File ━━━</b>`,
+          `${sourceEmoji} <b>Source:</b> ${sourceLabel}`,
+          `📄 <b>File:</b> ${esc(fileName)}`,
+          `📦 <b>File Size:</b> ${esc(fileSize)}`,
+          ``,
+          `<b>━━━ Error ━━━</b>`,
+          `⚠️ <b>Stage:</b> ${esc(errorStage) || 'N/A'}`,
+          `❌ <b>Detail:</b>`,
+          `<code>${esc(errorMessage).slice(0, 800) || 'Unknown error'}</code>`,
+          ``,
+          `⏰ <b>Time:</b> ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
+        ];
+        await sendToTelegram(errLines.join('\n'));
+        return res.json({ ok: true });
+      }
 
       const lines = [
         `<b>📱 Tanglish Caption Studio</b>`,
