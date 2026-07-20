@@ -1499,7 +1499,7 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         /* ignore tracker errors */
       }
 
-      res.status(500).json({ error: "Failed to transcribe video" });
+      res.status(500).json({ error: error.message || "Failed to transcribe video" });
       
       if (req.file && fs.existsSync(req.file.path)) {
         try { fs.unlinkSync(req.file.path); } catch (e) {}
