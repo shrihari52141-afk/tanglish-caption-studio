@@ -14,6 +14,7 @@ interface VideoPlayerProps {
   seekTime: number | null;
   onSeekComplete: () => void;
   onCaptionClick?: () => void;
+  onDisplaySizeChange?: (size: { width: number; height: number }) => void;
 }
 
 export default function VideoPlayer({ 
@@ -26,7 +27,8 @@ export default function VideoPlayer({
   onUpdateWordText,
   seekTime,
   onSeekComplete,
-  onCaptionClick
+  onCaptionClick,
+  onDisplaySizeChange
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -45,7 +47,9 @@ export default function VideoPlayer({
   const [containerWidth, setContainerWidth] = useState<number>(340);
 
   const scaleFactor = containerWidth / 340;
-  const bottomOffset = Math.max(20, Math.min(120, 96 * scaleFactor));
+  // Purely proportional so the export renderer can reproduce it EXACTLY at any
+  // resolution (no clamp — a clamp would break editor/export parity).
+  const bottomOffset = 96 * scaleFactor;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -55,6 +59,10 @@ export default function VideoPlayer({
       for (const entry of entries) {
         if (entry.contentRect.width) {
           setContainerWidth(entry.contentRect.width);
+          onDisplaySizeChange?.({
+            width: entry.contentRect.width,
+            height: entry.contentRect.height,
+          });
         }
       }
     });
@@ -63,7 +71,7 @@ export default function VideoPlayer({
     return () => {
       observer.unobserve(container);
     };
-  }, []);
+  }, [onDisplaySizeChange]);
 
   const formatTime = (seconds: number): string => {
     if (isNaN(seconds)) return "0:00";

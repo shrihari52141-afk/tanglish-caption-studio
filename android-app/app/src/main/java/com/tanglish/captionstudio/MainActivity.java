@@ -203,46 +203,85 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void saveFile(String fileName, String base64Data, String mimeType) {
+            // Do the heavy Base64 decode + large-file write on a background thread
+            // so big videos never block the WebView / cause an ANR or silent failure.
+            new Thread(() -> saveFileInternal(fileName, base64Data, mimeType)).start();
+        }
+
+        private void saveFileInternal(String fileName, String base64Data, String mimeType) {
             try {
+                // Strip a data URI prefix if present ("data:video/mp4;base64,....")
+                if (base64Data != null && base64Data.contains(",")) {
+                    base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
+                }
+
                 byte[] decoded = Base64.decode(base64Data, Base64.DEFAULT);
                 if (decoded == null || decoded.length == 0) {
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: empty file data", Toast.LENGTH_SHORT).show());
                     return;
                 }
 
+                final long sizeKB = decoded.length / 1024;
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues values = new ContentValues();
-                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
-                    values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                    values.put(MediaStore.Downloads.IS_PENDING, 1);
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
 
-                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    Uri collectionUri;
+                    // Route video -> Movies (Gallery), image -> Pictures, else Downloads.
+                    if (mimeType != null && mimeType.startsWith("video/")) {
+                        values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES);
+                        collectionUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+                    } else if (mimeType != null && mimeType.startsWith("image/")) {
+                        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
+                        collectionUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                    } else {
+                        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                        collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                    }
+
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+                    Uri uri = getContentResolver().insert(collectionUri, values);
                     if (uri != null) {
-                        OutputStream os = getContentResolver().openOutputStream(uri);
-                        if (os != null) {
-                            os.write(decoded);
-                            os.flush();
-                            os.close();
+                        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                            if (os != null) {
+                                os.write(decoded);
+                                os.flush();
+                            }
                         }
                         values.clear();
-                        values.put(MediaStore.Downloads.IS_PENDING, 0);
+                        values.put(MediaStore.MediaColumns.IS_PENDING, 0);
                         getContentResolver().update(uri, values, null, null);
-                        final long sizeKB = decoded.length / 1024;
-                        runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved to Downloads: " + fileName + " (" + sizeKB + " KB)", Toast.LENGTH_LONG).show());
+                        runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved: " + fileName + " (" + sizeKB + " KB)", Toast.LENGTH_LONG).show());
                     } else {
                         runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: could not create file", Toast.LENGTH_SHORT).show());
                     }
                 } else {
-                    File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                    if (!downloadsDir.exists()) downloadsDir.mkdirs();
-                    File file = new File(downloadsDir, fileName);
-                    FileOutputStream fos = new FileOutputStream(file);
-                    fos.write(decoded);
-                    fos.flush();
-                    fos.close();
-                    final long sizeKB = decoded.length / 1024;
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved to Downloads: " + fileName + " (" + sizeKB + " KB)", Toast.LENGTH_LONG).show());
+                    File targetDir;
+                    if (mimeType != null && mimeType.startsWith("video/")) {
+                        targetDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+                    } else if (mimeType != null && mimeType.startsWith("image/")) {
+                        targetDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
+                    } else {
+                        targetDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    }
+                    if (!targetDir.exists()) targetDir.mkdirs();
+
+                    File file = new File(targetDir, fileName);
+                    try (FileOutputStream fos = new FileOutputStream(file)) {
+                        fos.write(decoded);
+                        fos.flush();
+                    }
+
+                    android.media.MediaScannerConnection.scanFile(
+                            MainActivity.this,
+                            new String[]{file.getAbsolutePath()},
+                            new String[]{mimeType},
+                            (path, uri) -> { /* indexed into Gallery */ }
+                    );
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved: " + fileName + " (" + sizeKB + " KB)", Toast.LENGTH_LONG).show());
                 }
             } catch (Exception e) {
                 final String err = e.getMessage();

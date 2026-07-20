@@ -35,7 +35,9 @@ function drawSubtitlesOnCanvas(
   time: number,
   words: CaptionWord[],
   styleSettings: SubtitleStyleSettings,
-  videoEl: HTMLVideoElement
+  videoEl: HTMLVideoElement,
+  editorDisplayWidth?: number,
+  editorDisplayHeight?: number
 ) {
   if (words.length === 0) return;
 
@@ -75,13 +77,23 @@ function drawSubtitlesOnCanvas(
 
   if (displayWords.length === 0) return;
 
-  const isLandscape = canvasWidth > canvasHeight;
-  const refWidth = isLandscape ? 604 : 340;
-  const refHeight = isLandscape ? 340 : 604;
-  
-  const scaleX = canvasWidth / refWidth;
-  const scaleY = canvasHeight / refHeight;
-  
+  // ---- EDITOR-MATCHED SCALING ----
+  // The editor sizes captions with: scaleFactor = containerWidth / 340, and the
+  // container ALWAYS has the video's aspect ratio (video fills it, object-contain).
+  // So font/size at video resolution = 32 * fontSize * (canvasWidth / 340) — this
+  // is resolution-independent and matches the preview exactly for both portrait
+  // and landscape (landscape just has a larger canvasWidth).
+  const REF = 340;
+  const scaleX = canvasWidth / REF;   // video-px per editor-base unit
+  const scaleY = scaleX;              // uniform scaling (no distortion)
+
+  // Convert editor-display pixels (positionX/Y are stored in editor px) into
+  // video-resolution pixels.
+  const dispW = editorDisplayWidth && editorDisplayWidth > 0 ? editorDisplayWidth : canvasWidth;
+  const dispH = editorDisplayHeight && editorDisplayHeight > 0 ? editorDisplayHeight : canvasHeight;
+  const pxX = canvasWidth / dispW;    // video-px per editor-display-px (X)
+  const pxY = canvasHeight / dispH;   // video-px per editor-display-px (Y)
+
   const baseFontSize = 32 * styleSettings.fontSize * scaleX;
   
   let fontName = 'sans-serif';
@@ -109,9 +121,12 @@ function drawSubtitlesOnCanvas(
   
   ctx.save();
   
-  const baseX = (canvasWidth / 2) + (styleSettings.positionX * scaleX);
-  const baseY = (canvasHeight - (96 * scaleY)) - (styleSettings.positionY * scaleY);
-  
+  // Editor: caption is horizontally centered (inset-x-0 mx-auto), sits at
+  // bottom:(96*scaleFactor) editor-px, and is translated by (positionX, -positionY).
+  const bottomOffsetEditorPx = 96 * (dispW / REF);
+  const baseX = (canvasWidth / 2) + (styleSettings.positionX * pxX);
+  const baseY = (canvasHeight - bottomOffsetEditorPx * pxY) - (styleSettings.positionY * pxY);
+
   ctx.translate(baseX, baseY);
   ctx.rotate((styleSettings.rotation * Math.PI) / 180);
   
@@ -258,6 +273,9 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [editorTab, setEditorTab] = useState<'presets' | 'decorations' | 'transcript'>('presets');
   const isCancelledRef = useRef<boolean>(false);
+  // Live editor display box (container) size — used so the exported video's
+  // captions match the on-screen preview EXACTLY at the real video resolution.
+  const editorDisplayRef = useRef<{ width: number; height: number }>({ width: 340, height: 604 });
   
   const addVideoInputRef = useRef<HTMLInputElement>(null);
   const newProjectFileInputRef = useRef<HTMLInputElement>(null);
@@ -660,9 +678,18 @@ export default function App() {
         ? `Encoding natively as MP4 (${chosenMime})...`
         : `Device cannot record MP4 natively; recording then packaging as .mp4...`]);
 
-      const recorder = chosenMime
-        ? new MediaRecorder(canvasStream, { mimeType: chosenMime, videoBitsPerSecond: 8_000_000 })
-        : new MediaRecorder(canvasStream, { videoBitsPerSecond: 8_000_000 });
+      // High bitrate scaled to resolution so exports aren't visibly compressed
+      // (roughly 0.15 bits/pixel/frame; clamped to a sane 8–40 Mbps range).
+      const targetBitrate = Math.min(
+        40_000_000,
+        Math.max(8_000_000, Math.round(width * height * fps * 0.15))
+      );
+      const recorderOpts: MediaRecorderOptions = {
+        videoBitsPerSecond: targetBitrate,
+        audioBitsPerSecond: 192_000,
+      };
+      if (chosenMime) recorderOpts.mimeType = chosenMime;
+      const recorder = new MediaRecorder(canvasStream, recorderOpts);
 
       const chunks: Blob[] = [];
       recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -690,7 +717,7 @@ export default function App() {
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, videoEl.currentTime, state.words, state.styleSettings, videoEl);
+        drawSubtitlesOnCanvas(ctx, width, height, videoEl.currentTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height);
         const pct = Math.min(99, Math.round((videoEl.currentTime / duration) * 100));
         setLocalProgress(pct);
         requestAnimationFrame(drawLoop);
@@ -856,13 +883,13 @@ export default function App() {
     try {
       const androidBridge = (window as any).MicBridge;
       if (androidBridge) {
-        setExportLogs(l => [...l, "Saving to Downloads via Android bridge..."]);
+        setExportLogs(l => [...l, "Saving to Gallery via Android bridge..."]);
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = reader.result as string;
           const base64 = dataUrl.split(',')[1];
           androidBridge.saveFile(exportedFileName, base64, exportedMimeType);
-          setExportLogs(l => [...l, `✅ Saved as ${exportedFileName} in Downloads folder!`]);
+          setExportLogs(l => [...l, `✅ Saving ${exportedFileName} to your Gallery (Movies)...`]);
           setIsSaving(false);
         };
         reader.onerror = () => {
@@ -1355,6 +1382,7 @@ export default function App() {
                 seekTime={seekTime}
                 onSeekComplete={handleSeekComplete}
                 onCaptionClick={() => setEditorTab('decorations')}
+                onDisplaySizeChange={(size) => { editorDisplayRef.current = size; }}
               />
               {state.isProcessing && (
                 <div className="absolute inset-0 bg-black/85 backdrop-blur-md z-20 flex flex-col items-center justify-center p-8">
