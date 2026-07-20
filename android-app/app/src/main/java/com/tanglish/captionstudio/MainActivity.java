@@ -201,10 +201,32 @@ public class MainActivity extends Activity {
             return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
         }
 
+        // Accumulates base64 text across many small bridge calls to avoid the
+        // WebView JavaScript-interface single-argument size limit that corrupts
+        // large strings ("bad base-64").
+        private final StringBuilder chunkBuffer = new StringBuilder();
+
+        @JavascriptInterface
+        public void saveFileBegin() {
+            synchronized (chunkBuffer) { chunkBuffer.setLength(0); }
+        }
+
+        @JavascriptInterface
+        public void saveFileChunk(String base64Chunk) {
+            if (base64Chunk == null) return;
+            synchronized (chunkBuffer) { chunkBuffer.append(base64Chunk); }
+        }
+
+        @JavascriptInterface
+        public void saveFileEnd(String fileName, String mimeType) {
+            final String data;
+            synchronized (chunkBuffer) { data = chunkBuffer.toString(); chunkBuffer.setLength(0); }
+            new Thread(() -> saveFileInternal(fileName, data, mimeType)).start();
+        }
+
         @JavascriptInterface
         public void saveFile(String fileName, String base64Data, String mimeType) {
-            // Do the heavy Base64 decode + large-file write on a background thread
-            // so big videos never block the WebView / cause an ANR or silent failure.
+            // Legacy single-shot path (kept for small files / fallback).
             new Thread(() -> saveFileInternal(fileName, base64Data, mimeType)).start();
         }
 
@@ -214,8 +236,18 @@ public class MainActivity extends Activity {
                 if (base64Data != null && base64Data.contains(",")) {
                     base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
                 }
+                // Remove any stray whitespace/newlines that would break strict decoding.
+                if (base64Data != null) {
+                    base64Data = base64Data.replaceAll("\\s+", "");
+                }
 
-                byte[] decoded = Base64.decode(base64Data, Base64.DEFAULT);
+                byte[] decoded;
+                try {
+                    decoded = Base64.decode(base64Data, Base64.NO_WRAP);
+                } catch (IllegalArgumentException iae) {
+                    // Fall back to the most lenient decoding path.
+                    decoded = Base64.decode(base64Data, Base64.DEFAULT);
+                }
                 if (decoded == null || decoded.length == 0) {
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: empty file data", Toast.LENGTH_SHORT).show());
                     return;

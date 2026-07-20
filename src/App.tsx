@@ -911,9 +911,29 @@ export default function App() {
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = reader.result as string;
-          const base64 = dataUrl.split(',')[1];
-          androidBridge.saveFile(exportedFileName, base64, exportedMimeType);
-          setExportLogs(l => [...l, `✅ Saving ${exportedFileName} to your Gallery (Movies)...`]);
+          const base64 = dataUrl.split(',')[1] || '';
+          try {
+            // Prefer chunked transfer (avoids WebView's giant-string corruption →
+            // "bad base-64"). Chunks MUST be aligned to 4-char base64 boundaries.
+            if (
+              typeof androidBridge.saveFileBegin === 'function' &&
+              typeof androidBridge.saveFileChunk === 'function' &&
+              typeof androidBridge.saveFileEnd === 'function'
+            ) {
+              const CHUNK = 262144; // 256KB, multiple of 4
+              androidBridge.saveFileBegin();
+              for (let i = 0; i < base64.length; i += CHUNK) {
+                androidBridge.saveFileChunk(base64.substring(i, i + CHUNK));
+              }
+              androidBridge.saveFileEnd(exportedFileName, exportedMimeType);
+            } else {
+              androidBridge.saveFile(exportedFileName, base64, exportedMimeType);
+            }
+            setExportLogs(l => [...l, `✅ Saving ${exportedFileName} to your Gallery (Movies)...`]);
+          } catch (bridgeErr) {
+            setExportLogs(l => [...l, `Bridge save error: ${bridgeErr}. Trying browser download...`]);
+            browserDownload();
+          }
           setIsSaving(false);
         };
         reader.onerror = () => {
