@@ -37,8 +37,24 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_REQUEST = 1;
     private static final int PERMISSION_REQUEST = 2;
+    private static final int SAVE_DOC_REQUEST = 3;
     private PermissionRequest pendingPermissionRequest;
     private boolean micPermissionAsked = false;
+    private File pendingSaveTemp;
+    private String pendingSaveName;
+    private String pendingSaveMime;
+
+    private byte[] readAll(File f) {
+        try (InputStream is = new java.io.FileInputStream(f);
+             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -221,7 +237,55 @@ public class MainActivity extends Activity {
         public void saveFileEnd(String fileName, String mimeType) {
             final String data;
             synchronized (chunkBuffer) { data = chunkBuffer.toString(); chunkBuffer.setLength(0); }
-            new Thread(() -> saveFileInternal(fileName, data, mimeType)).start();
+            // Decode to a temp file, then open the system file manager (SAF) so the
+            // user picks where to save. Avoids any Gallery/MediaStore quirks.
+            new Thread(() -> prepareAndPickLocation(fileName, data, mimeType)).start();
+        }
+
+        private void prepareAndPickLocation(String fileName, String base64Data, String mimeType) {
+            try {
+                if (base64Data != null && base64Data.contains(",")) {
+                    base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
+                }
+                if (base64Data != null) {
+                    base64Data = base64Data.replaceAll("\\s+", "");
+                }
+                byte[] decoded;
+                try {
+                    decoded = Base64.decode(base64Data, Base64.NO_WRAP);
+                } catch (IllegalArgumentException iae) {
+                    decoded = Base64.decode(base64Data, Base64.DEFAULT);
+                }
+                if (decoded == null || decoded.length == 0) {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: empty file data", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                File tmp = new File(getCacheDir(), "export_" + System.currentTimeMillis());
+                try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                    fos.write(decoded);
+                    fos.flush();
+                }
+                pendingSaveTemp = tmp;
+                pendingSaveName = fileName;
+                pendingSaveMime = (mimeType != null ? mimeType : "application/octet-stream");
+                runOnUiThread(() -> {
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType(pendingSaveMime);
+                    intent.putExtra(Intent.EXTRA_TITLE, pendingSaveName);
+                    try {
+                        startActivityForResult(intent, SAVE_DOC_REQUEST);
+                    } catch (Exception ex) {
+                        // No file manager available: fall back to direct Gallery save.
+                        new Thread(() -> saveFileInternal(pendingSaveName,
+                                Base64.encodeToString(readAll(pendingSaveTemp), Base64.NO_WRAP),
+                                pendingSaveMime)).start();
+                    }
+                });
+            } catch (Exception e) {
+                final String err = e.getMessage();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: " + err, Toast.LENGTH_LONG).show());
+            }
         }
 
         @JavascriptInterface
@@ -382,6 +446,33 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == SAVE_DOC_REQUEST) {
+            final Uri target = (resultCode == RESULT_OK && data != null) ? data.getData() : null;
+            final File tmp = pendingSaveTemp;
+            final String name = pendingSaveName;
+            pendingSaveTemp = null;
+            if (target == null || tmp == null) {
+                Toast.makeText(this, "Save cancelled", Toast.LENGTH_SHORT).show();
+                if (tmp != null) tmp.delete();
+                return;
+            }
+            new Thread(() -> {
+                try (InputStream is = new java.io.FileInputStream(tmp);
+                     OutputStream os = getContentResolver().openOutputStream(target)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = is.read(buf)) != -1) os.write(buf, 0, n);
+                    os.flush();
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Saved: " + name, Toast.LENGTH_LONG).show());
+                } catch (Exception e) {
+                    final String err = e.getMessage();
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save failed: " + err, Toast.LENGTH_LONG).show());
+                } finally {
+                    tmp.delete();
+                }
+            }).start();
+            return;
+        }
         if (requestCode == FILE_CHOOSER_REQUEST) {
             if (filePathCallback != null) {
                 Uri[] results = null;
