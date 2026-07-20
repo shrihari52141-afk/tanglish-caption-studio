@@ -166,10 +166,17 @@ export async function startServer() {
   let geminiKeys: string[] = [];
   let nextKeyIndex = 0;
 
-  // Model priority: try the newest Gemini 3.5 Flash first, silently fall back to
-  // Gemini 2.5 Flash on any failure. No user interaction required.
-  const GEMINI_PRIMARY_MODEL = "gemini-3.5-flash";
-  const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash"];
+  // Model priority. NOTE (verified against the live API):
+  //  - gemini-2.5-flash → 404 "no longer available to new users" (removed).
+  //  - gemini-3.5-flash / gemini-flash-latest → currently returning 503 (overloaded),
+  //    kept only as last-resort fallbacks in case they recover.
+  //  - gemini-3.1-flash-lite / gemini-flash-lite-latest → reliably serving now.
+  const GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite";
+  const GEMINI_FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash",
+    "gemini-flash-latest",
+  ];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
   }
@@ -264,6 +271,65 @@ export async function startServer() {
     }));
   }
 
+  // Inline Base64 audio is only safe below Gemini's ~20MB total request cap.
+  // Anything larger MUST go through the resumable Files API.
+  const GEMINI_INLINE_MAX_BYTES = 18 * 1024 * 1024;
+
+  /**
+   * Builds the audio "part" for a Gemini generateContent call.
+   * - Small files (< ~18MB): inline Base64 (fast, no extra round-trip).
+   * - Large files: upload via the Files API and reference by URI (supports up to 2GB).
+   */
+  async function buildGeminiAudioPart(
+    ai: GoogleGenAI,
+    audioFilePath: string,
+    mimeType: string,
+    jobId?: string
+  ): Promise<any> {
+    let sizeBytes = 0;
+    try {
+      sizeBytes = fs.statSync(audioFilePath).size;
+    } catch {
+      sizeBytes = 0;
+    }
+
+    if (sizeBytes > 0 && sizeBytes <= GEMINI_INLINE_MAX_BYTES) {
+      const fileBuffer = fs.readFileSync(audioFilePath);
+      return { inlineData: { data: fileBuffer.toString("base64"), mimeType } };
+    }
+
+    // Large file → Files API upload
+    sendLog(
+      jobId,
+      `Audio is ${(sizeBytes / (1024 * 1024)).toFixed(1)}MB — uploading via Gemini Files API...`
+    );
+    const uploaded = await ai.files.upload({
+      file: audioFilePath,
+      config: { mimeType },
+    });
+
+    // Wait until the file is ACTIVE before referencing it.
+    let fileInfo: any = uploaded;
+    const fileName = (uploaded as any).name;
+    for (let i = 0; i < 30 && fileInfo?.state !== "ACTIVE"; i++) {
+      if (fileInfo?.state === "FAILED") {
+        throw new Error("Gemini Files API processing failed.");
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+      fileInfo = await ai.files.get({ name: fileName });
+    }
+    if (fileInfo?.state !== "ACTIVE") {
+      throw new Error("Gemini Files API upload did not become ACTIVE in time.");
+    }
+    sendLog(jobId, "Files API upload ready.");
+    return {
+      fileData: {
+        fileUri: fileInfo.uri || (uploaded as any).uri,
+        mimeType: fileInfo.mimeType || mimeType,
+      },
+    };
+  }
+
   /**
    * PRIMARY transcription: Gemini (audio understanding)
    * Transcribes spoken audio in the original language with phrase/word-level timing.
@@ -316,16 +382,11 @@ Return ONLY a JSON object (no markdown, no code fences):
 
     const { result, model } = await callGeminiWithModelFallback<WhisperWordsResult>(
       async (ai, modelName) => {
-        const fileBuffer = fs.readFileSync(audioFilePath);
+        const audioPart = await buildGeminiAudioPart(ai, audioFilePath, mimeType, jobId);
         const geminiRes = await ai.models.generateContent({
           model: modelName,
           contents: [
-            {
-              inlineData: {
-                data: fileBuffer.toString("base64"),
-                mimeType: mimeType,
-              },
-            },
+            audioPart,
             { text: prompt },
           ],
           config: {
@@ -881,6 +942,165 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
     }
   }
 
+  /**
+   * OPTIMIZED SINGLE-CALL path: transcribe audio AND produce final captions
+   * (transliteration / English rewrite + emoji + timestamps) in ONE Gemini call.
+   * Halves quota + latency vs the 2-call transcribe→polish flow.
+   * Throws on malformed / low-coverage output so the caller can fall back to the
+   * proven 2-call flow (transcribeWithGeminiFlash + polishWhisperPhrases).
+   */
+  async function transcribeAndPolishCombined(
+    audioFilePath: string,
+    mimeType: string,
+    languageInstruction: string,
+    usePunctuation: boolean,
+    useEmojis: boolean,
+    jobId?: string,
+    language?: string,
+    targetDuration = 0
+  ): Promise<{ words: TimedWord[]; providerUsed: string }> {
+    if (geminiKeys.length === 0) {
+      loadGeminiKeys();
+    }
+    if (geminiKeys.length === 0) {
+      throw new Error("No Gemini API key is configured.");
+    }
+
+    const langLabel =
+      !language || language === "auto"
+        ? "the spoken language (auto-detect; likely a regional Indian language)"
+        : String(language);
+
+    const systemPrompt = `You are a professional, frame-accurate audio transcriber AND expert caption scriptwriter for Indian languages (Tamil, Telugu, Hindi, Kannada, Malayalam) and mixed Indian-English speech. In a SINGLE pass you must: (1) listen to the audio, (2) transcribe it verbatim with precise timing, and (3) produce the FINAL polished captions.
+
+TIMING RULES (MOST IMPORTANT):
+1. Transcribe from the first spoken sound to the very last with NO skipping or summarizing.
+2. Every phrase must have precise "start_time" and "end_time" in SECONDS on the audio timeline.
+3. PRESERVE SILENCE: keep real pauses between phrases (do not snap timestamps together).
+4. The FIRST phrase starts when the first word begins; the LAST phrase's end_time must reach close to the actual end of speech — NEVER stop early.
+5. Report the total "audio_duration" in seconds as a top-level number.
+6. Keep each phrase short (one readable caption line).
+
+CAPTION / LANGUAGE RULES:
+${languageInstruction.trim()}
+- PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
+- GRAMMAR: 100% natural, idiomatic, grammatically correct captions. Fix flipped logic (e.g. "with hidden charges" → "no hidden charges"), fix brand/place names from context.
+- EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each phrase line (match the emotion of that line). Never more than one per line." : "Do NOT add any emojis."}
+
+Spoken language hint: ${langLabel}.
+
+Return ONLY a JSON object (no markdown):
+{ "audio_duration": number, "phrases": [ { "text": string, "start_time": number, "end_time": number } ] }`;
+
+    sendLog(
+      jobId,
+      `⚡ Combined 1-call transcribe+caption (${GEMINI_PRIMARY_MODEL} → fallback) — ${geminiKeys.length} key(s)...`
+    );
+
+    const { result: rawPhrases, model } = await callGeminiWithModelFallback<
+      { text: string; start_time: number; end_time: number }[]
+    >(async (ai, modelName) => {
+      const audioPart = await buildGeminiAudioPart(ai, audioFilePath, mimeType, jobId);
+      const geminiRes = await ai.models.generateContent({
+        model: modelName,
+        contents: [
+          audioPart,
+          { text: "Transcribe and produce the final captions per your instructions." },
+        ],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.3,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              audio_duration: { type: Type.NUMBER },
+              phrases: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    text: { type: Type.STRING },
+                    start_time: { type: Type.NUMBER },
+                    end_time: { type: Type.NUMBER },
+                  },
+                  required: ["text", "start_time", "end_time"],
+                },
+              },
+            },
+            required: ["phrases"],
+          },
+        },
+      });
+      const text = geminiRes.text;
+      if (!text) throw new Error("Combined call returned empty text.");
+      const parsed = extractJsonFromResponse(text);
+      const phrases = Array.isArray(parsed.phrases) ? parsed.phrases : [];
+      if (phrases.length === 0) throw new Error("Combined call returned no phrases.");
+      (phrases as any)._audioDuration = Number(parsed.audio_duration) || 0;
+      return phrases;
+    }, jobId);
+
+    // ---- Validate coverage so we don't silently ship worse quality ----
+    const clean = (rawPhrases as any[])
+      .map((p) => ({
+        text: String(p.text || "").trim(),
+        start: Number(p.start_time || 0),
+        end: Number(p.end_time || 0),
+      }))
+      .filter((p) => p.text.length > 0 && p.end > p.start);
+
+    if (clean.length === 0) {
+      throw new Error("Combined call: no usable phrases after cleaning.");
+    }
+
+    const reportedDuration =
+      targetDuration > 0
+        ? targetDuration
+        : (rawPhrases as any)._audioDuration ||
+          Math.max(...clean.map((p) => p.end), 1);
+    const lastEnd = Math.max(...clean.map((p) => p.end));
+    // If captions cover < 70% of the real audio, timing likely drifted → fall back.
+    if (reportedDuration > 0 && lastEnd < reportedDuration * 0.7) {
+      throw new Error(
+        `Combined call coverage too low (${lastEnd.toFixed(1)}s of ${reportedDuration.toFixed(1)}s).`
+      );
+    }
+
+    // ---- Distribute each phrase's words across its timestamp window ----
+    const words: TimedWord[] = [];
+    clean.forEach((p, idx) => {
+      const line = ensureOneLineEmoji(p.text, idx, useEmojis);
+      const emojiMatch = useEmojis ? line.match(/\p{Extended_Pictographic}/u) : null;
+      const body = stripAllEmojis(line).split(/\s+/).filter(Boolean);
+      if (body.length === 0) return;
+      const timed = distributePhraseText(body.join(" "), p.start, p.end, []);
+      if (emojiMatch && timed.length > 0) {
+        timed[timed.length - 1] = {
+          ...timed[timed.length - 1],
+          word: `${timed[timed.length - 1].word} ${emojiMatch[0]}`,
+        };
+      }
+      words.push(...timed);
+    });
+
+    const stretchTarget =
+      targetDuration > 0 ? targetDuration : reportedDuration;
+    const normalized = normalizeTranscriptionTiming(
+      normalizeWhisperWords(words),
+      stretchTarget
+    );
+    if (normalized.length === 0) {
+      throw new Error("Combined call produced no timed words after normalization.");
+    }
+
+    sendLog(
+      jobId,
+      `✅ Combined 1-call OK — ${normalized.length} words / ${clean.length} lines via ${model}.`
+    );
+    return { words: normalized, providerUsed: `${model} (1-call)` };
+  }
+
   /** Legacy keyword emoji helper (used only if expert polish skipped) */
   function applyServerSideEmojis(
     words: TimedWord[],
@@ -1143,18 +1363,31 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
       const durationFromClient = mediaDurationSeconds !== "" ? parseFloat(mediaDurationSeconds) : null;
       
       sendLog(jobId, `Selected language: ${language.toUpperCase()} (${translationMode.toUpperCase()}) | Emojis: ${isEmojiActive ? 'YES' : 'NO'} (${emojiStyle.toUpperCase()}) | Punctuation: ${isPunctuationActive ? 'YES' : 'NO'}`);
-      sendLog(jobId, "Extracting audio from video using FFmpeg...");
-      audioPath = `${req.file.path}.mp3`;
-      
-      try {
-        await execAsync(`ffmpeg -y -i "${req.file.path}" -vn -acodec libmp3lame -q:a 2 "${audioPath}"`);
-        sendLog(jobId, "Audio extraction complete.");
-      } catch (err) {
-        sendLog(jobId, "Error extracting audio, falling back to original video file...");
-        audioPath = req.file.path; // fallback
-      }
+      // The client already extracts a compact WAV before upload. If the input is
+      // already an audio file, skip the costly WAV→MP3 re-encode and send it as-is.
+      const incomingType = (req.file.mimetype || "").toLowerCase();
+      const incomingName = (req.file.originalname || "").toLowerCase();
+      const isAlreadyAudio =
+        incomingType.startsWith("audio/") ||
+        /\.(wav|mp3|m4a|aac|ogg|flac|opus)$/.test(incomingName);
 
-      const mimeType = audioPath.endsWith(".mp3") ? "audio/mpeg" : req.file.mimetype;
+      let mimeType: string;
+      if (isAlreadyAudio) {
+        sendLog(jobId, "Input is already audio — skipping re-encode (direct send).");
+        audioPath = req.file.path;
+        mimeType = incomingType.startsWith("audio/") ? incomingType : "audio/wav";
+      } else {
+        sendLog(jobId, "Extracting audio from video using FFmpeg...");
+        audioPath = `${req.file.path}.mp3`;
+        try {
+          await execAsync(`ffmpeg -y -i "${req.file.path}" -vn -acodec libmp3lame -q:a 2 "${audioPath}"`);
+          sendLog(jobId, "Audio extraction complete.");
+        } catch (err) {
+          sendLog(jobId, "Error extracting audio, falling back to original video file...");
+          audioPath = req.file.path; // fallback
+        }
+        mimeType = audioPath.endsWith(".mp3") ? "audio/mpeg" : req.file.mimetype;
+      }
 
       // Measure the REAL audio duration so captions can be stretched to cover 100%
       // of the video (model-reported durations are often under-reported).
@@ -1171,46 +1404,10 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         sendLog(jobId, "Could not measure audio duration; will rely on model report.");
       }
 
-      // ---- PRIMARY: Gemini 3.5 Flash audio transcription (native, with key rotation) ----
+      // Transcription is deferred until AFTER languageInstruction is built, so the
+      // OPTIMIZED single-call path (transcribe + caption in one Gemini call) can use it.
       let initialWords: { word: string; start_time: number; end_time: number }[] = [];
-      let transcriptionEngine = "gemini-3.5-flash";
-
-      try {
-        sendLog(
-          jobId,
-          "Step 1/2: Gemini 2.5 Flash — ORIGINAL language transcription (audio understanding)..."
-        );
-        const geminiResult = await transcribeWithGeminiFlash(
-          audioPath,
-          mimeType,
-          jobId,
-          language,
-          3, // rotate across keys / retry up to 3 rounds
-          realAudioDuration
-        );
-        initialWords = geminiResult.words;
-        transcriptionEngine = geminiResult.model;
-        sendLog(
-          jobId,
-          `Gemini 2.5 Flash original-language transcript ready: ${initialWords.length} timed phrases.`
-        );
-      } catch (geminiErr: any) {
-        sendLog(
-          jobId,
-          `Gemini 2.5 Flash transcription failed after all retries (${geminiErr.message || geminiErr}).`
-        );
-        throw geminiErr;
-      }
-
-      // Attach engine name for tracker later
-      (req as any)._transcriptionEngine = transcriptionEngine;
-
-      // STEP 2: English caption polish / transliteration done by Gemini 2.5 Flash
-      // using the original-language transcript + timestamps.
-      sendLog(
-        jobId,
-        "Step 2/2: Gemini 2.5 Flash English captions / transliteration from original-language transcript..."
-      );
+      let transcriptionEngine = GEMINI_PRIMARY_MODEL;
 
       let languageInstruction = "";
 
@@ -1335,35 +1532,91 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
       let finalWords: any[] = [];
       let providerUsed = "Raw Fallback";
 
+      const effectiveLangInstruction =
+        languageInstruction ||
+        "Translate original-language Whisper transcript into natural accurate English captions. Fix ASR logic errors and brand names. Match syllable count to each timestamp window.";
+
+      // ---- OPTIMIZED: try the single-call transcribe+caption path first ----
+      let combinedOk = false;
       try {
-        sendLog(
-          jobId,
-          `Step 2/2: Gemini 2.5 Flash English captions from original ${language} transcript...`
-        );
-        const polished = await polishWhisperPhrases(
-          initialWords,
-          languageInstruction ||
-            "Translate original-language Whisper transcript into natural accurate English captions. Fix ASR logic errors and brand names. Match syllable count to each timestamp window.",
+        const combined = await transcribeAndPolishCombined(
+          audioPath,
+          mimeType,
+          effectiveLangInstruction,
           isPunctuationActive,
-          jobId,
           isEmojiActive,
-          String(language || "auto")
+          jobId,
+          String(language || "auto"),
+          realAudioDuration
         );
-        // Emojis already applied per-line inside expert polish when enabled
-        finalWords = polished.words;
-        providerUsed = polished.providerUsed;
-      } catch (err: any) {
+        finalWords = combined.words;
+        providerUsed = combined.providerUsed;
+        transcriptionEngine = combined.providerUsed;
+        combinedOk = true;
+      } catch (combErr: any) {
         sendLog(
           jobId,
-          `Warning: polish pipeline failed: ${err.message}. Using raw Whisper words + line emojis.`
+          `Single-call path fell back to 2-call flow (${combErr.message || combErr}).`
         );
-        finalWords = applyServerSideEmojis(
-          normalizeWhisperWords(initialWords),
-          emojiStyle,
-          isEmojiActive
-        );
-        providerUsed = "Whisper raw + line-emojis";
       }
+
+      // ---- FALLBACK: proven 2-call flow (transcribe → polish) ----
+      if (!combinedOk) {
+        try {
+          sendLog(jobId, "Step 1/2: Gemini — ORIGINAL language transcription...");
+          const geminiResult = await transcribeWithGeminiFlash(
+            audioPath,
+            mimeType,
+            jobId,
+            language,
+            3,
+            realAudioDuration
+          );
+          initialWords = geminiResult.words;
+          transcriptionEngine = geminiResult.model;
+          sendLog(
+            jobId,
+            `Original-language transcript ready: ${initialWords.length} timed phrases.`
+          );
+        } catch (geminiErr: any) {
+          sendLog(
+            jobId,
+            `Transcription failed after all retries (${geminiErr.message || geminiErr}).`
+          );
+          throw geminiErr;
+        }
+
+        try {
+          sendLog(
+            jobId,
+            `Step 2/2: Gemini English captions from original ${language} transcript...`
+          );
+          const polished = await polishWhisperPhrases(
+            initialWords,
+            effectiveLangInstruction,
+            isPunctuationActive,
+            jobId,
+            isEmojiActive,
+            String(language || "auto")
+          );
+          finalWords = polished.words;
+          providerUsed = polished.providerUsed;
+        } catch (err: any) {
+          sendLog(
+            jobId,
+            `Warning: polish pipeline failed: ${err.message}. Using raw Whisper words + line emojis.`
+          );
+          finalWords = applyServerSideEmojis(
+            normalizeWhisperWords(initialWords),
+            emojiStyle,
+            isEmojiActive
+          );
+          providerUsed = "Whisper raw + line-emojis";
+        }
+      }
+
+      // Attach engine name for tracker later
+      (req as any)._transcriptionEngine = transcriptionEngine;
 
       sendLog(jobId, "Cleaning up...");
       if (audioPath && audioPath !== req.file.path && fs.existsSync(audioPath)) {
@@ -1422,8 +1675,8 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
           timezone: clientTimezone,
           clientIp,
           location,
-          aiProvider: `${(req as any)._transcriptionEngine || "gemini-2.5-flash"} + polish:${providerUsed}`,
-          aiModel: (req as any)._transcriptionEngine || "gemini-2.5-flash",
+          aiProvider: `${(req as any)._transcriptionEngine || GEMINI_PRIMARY_MODEL} + polish:${providerUsed}`,
+          aiModel: (req as any)._transcriptionEngine || GEMINI_PRIMARY_MODEL,
           processingMs,
           sessionFailCount: parseInt(String(sessionFailCount), 10) || 0,
           wordCount: cleanedWords.length,
@@ -1804,7 +2057,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       sendLog(jobId, "Subtitles file written successfully.");
 
       outputPath = `${videoPath}_exported.mp4`;
-      sendLog(jobId, "Starting FFmpeg burning filter with ultrafast speed profile...");
+      sendLog(jobId, "Starting FFmpeg burning filter (superfast profile, balanced quality/size)...");
 
       const relFile = path.relative(process.cwd(), videoPath).replace(/\\/g, "/");
       const relAss = path.relative(process.cwd(), assPath).replace(/\\/g, "/");
@@ -1836,11 +2089,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         sendLog(jobId, "Audio-only detected: generating colored background canvas...");
         await execAsync(
           `ffmpeg -y -f lavfi -i "color=c=${colorExpr}:s=${width}x${height}:r=30" -i "${relFile}" ` +
-          `-shortest -vf "ass='${assFilterPath}'" -preset ultrafast -c:v libx264 -crf 10 -pix_fmt yuv420p -c:a aac -threads 0 "${relOutput}"`
+          `-shortest -vf "ass='${assFilterPath}'" -preset superfast -c:v libx264 -crf 22 -pix_fmt yuv420p -c:a aac -threads 0 "${relOutput}"`
         );
       } else {
         await execAsync(
-          `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset ultrafast -c:v libx264 -crf 10 -c:a copy -threads 0 "${relOutput}"`
+          `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset superfast -c:v libx264 -crf 22 -c:a copy -threads 0 "${relOutput}"`
         );
       }
       

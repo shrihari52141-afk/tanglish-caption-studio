@@ -9,7 +9,18 @@ import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebase
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
 import { notifyTelegram } from './utils/deviceTracker';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'https://tanglish-caption-api.onrender.com';
+const RENDER_API = 'https://tanglish-caption-api.onrender.com';
+const _envApi = (import.meta.env.VITE_API_URL || '').trim();
+const _isBrowserLocalhost =
+  typeof window !== 'undefined' &&
+  /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
+// Only honor a localhost API URL when the app itself is actually served from
+// localhost (dev). In production (Cloudflare/APK) a localhost value is invalid
+// and would cause xhr.onerror, so fall back to the Render backend.
+const API_BASE =
+  _envApi && (!/localhost|127\.0\.0\.1/.test(_envApi) || _isBrowserLocalhost)
+    ? _envApi
+    : RENDER_API;
 import {
   buildTrackerClientMeta,
   probeMediaDuration,
