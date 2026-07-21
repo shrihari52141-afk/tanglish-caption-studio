@@ -2328,11 +2328,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         sendLog(jobId, "Audio-only detected: generating colored background canvas...");
         await execAsync(
           `ffmpeg -y -f lavfi -i "color=c=${colorExpr}:s=${width}x${height}:r=30" -i "${relFile}" ` +
-          `-shortest -vf "ass='${assFilterPath}'" -preset superfast -c:v libx264 -crf 22 -pix_fmt yuv420p -c:a aac -threads 0 "${relOutput}"`
+          `-shortest -vf "ass='${assFilterPath}'" -preset medium -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -threads 0 "${relOutput}"`
         );
       } else {
         await execAsync(
-          `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset superfast -c:v libx264 -crf 22 -c:a copy -threads 0 "${relOutput}"`
+          `ffmpeg -y -i "${relFile}" -vf "ass='${assFilterPath}'" -preset medium -c:v libx264 -crf 18 -c:a copy -threads 0 "${relOutput}"`
         );
       }
       

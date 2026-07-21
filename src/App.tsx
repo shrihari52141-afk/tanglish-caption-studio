@@ -108,6 +108,12 @@ function drawSubtitlesOnCanvas(
   const REF = 340;
   const scaleX = canvasWidth / REF;   // video-px per editor-base unit
   const scaleY = scaleX;              // uniform scaling (no distortion)
+  // CSS padding/border values are FIXED (e.g. px-3 = always 12px) regardless of
+  // container width, while font scales with container. To match the editor's visual
+  // ratio at its current display size, compute the pixel ratio between canvas and
+  // editor display — NOT the fixed REF ratio.
+  const editorW = (editorDisplayWidth || REF);
+  const canvasToEditorRatio = canvasWidth / editorW;
 
   // positionX/Y are stored in resolution-independent base-340 units (the editor
   // applies them as positionX * scaleFactor, scaleFactor = containerWidth/340).
@@ -225,13 +231,15 @@ function drawSubtitlesOnCanvas(
       }
       if (styleSettings.showBackground) {
         ctx.fillStyle = '#000000';
-        const paddingX = 12 * scaleX;
-        const paddingY = 6 * scaleX;
+        // Padding matches CSS px-3 py-1.5 proportionally — use editor display
+        // ratio (not scaleX) so the visual ratio matches the editor's viewport.
+        const paddingX = 12 * canvasToEditorRatio;
+        const paddingY = 6 * canvasToEditorRatio;
         const rx = curX - wordWidth / 2 - paddingX;
         const ry = curY - baseFontSize / 2 - paddingY;
         const rw = wordWidth + paddingX * 2;
         const rh = baseFontSize + paddingY * 2;
-        const radius = 8 * scaleX;
+        const radius = 8 * canvasToEditorRatio;
         ctx.beginPath();
         ctx.moveTo(rx + radius, ry);
         ctx.lineTo(rx + rw - radius, ry);
@@ -245,7 +253,7 @@ function drawSubtitlesOnCanvas(
         ctx.closePath();
         ctx.fill();
         ctx.strokeStyle = anim.colorOverride || styleSettings.highlightColor;
-        ctx.lineWidth = 2 * scaleX;
+        ctx.lineWidth = 2 * canvasToEditorRatio;
         ctx.stroke();
       }
       if (styleSettings.showBacklight) {
@@ -717,6 +725,9 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error("Canvas 2D context unavailable.");
 
+      // Use 30 fps for canvas capture — this is sufficient for captions and
+      // keeps performance good on mobile. The fixed-interval draw loop (see below)
+      // ensures caption timing is independent of the capture frame rate.
       const fps = 30;
       const canvasStream = canvas.captureStream(fps);
 

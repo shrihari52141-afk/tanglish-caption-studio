@@ -109,6 +109,12 @@ video::cue {
   animation: pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
 }
 
+@keyframes pop {
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+
 .style-karaoke-active {
   color: #C026D3;
   text-shadow: 0 0 10px rgba(192, 38, 211, 0.8);
@@ -123,14 +129,27 @@ video::cue {
 }
 
 .style-glitch {
-  animation: glitch 0.3s infinite;
+  animation: glitch 0.15s infinite;
   color: #00FF00;
+}
+
+@keyframes glitch {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-2px, 1px); }
+  50% { transform: translate(2px, -1px); }
+  75% { transform: translate(-1px, -2px); }
+  100% { transform: translate(0, 0); }
 }
 
 .style-beast {
   animation: beast 0.4s ease-in-out infinite alternate;
   font-family: var(--font-caption);
   text-transform: uppercase;
+}
+
+@keyframes beast {
+  0% { transform: scale(1) rotate(0deg); color: inherit; }
+  100% { transform: scale(1.2) rotate(-2deg); color: #FF4500; }
 }
 
 .style-shake {
