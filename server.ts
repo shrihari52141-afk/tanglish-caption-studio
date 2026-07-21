@@ -238,36 +238,24 @@ export async function startServer() {
    */
   function normalizeTranscriptionTiming(
     words: TimedWord[],
-    targetDuration: number
+    _targetDuration: number  // unused — we NEVER stretch beyond actual speech end
   ): TimedWord[] {
-    if (words.length === 0 || !(targetDuration > 0)) return words;
+    if (words.length === 0) return words;
 
     // Work on a copy sorted by start
     const sorted = [...words].sort((a, b) => a.start_time - b.start_time);
     const rawStart = sorted[0].start_time;
     const rawEnd = Math.max(...sorted.map((w) => w.end_time), rawStart + 0.1);
-    const rawSpan = rawEnd - rawStart;
 
-    if (rawSpan <= 0.01) {
-      // Degenerate: distribute evenly across the duration
-      const step = targetDuration / sorted.length;
-      return sorted.map((w, i) => ({
-        ...w,
-        start_time: +(i * step).toFixed(3),
-        end_time: +((i + 1) * step).toFixed(3),
-      }));
-    }
-
-    // If the reported span is shorter than the true audio, stretch to fill it
-    // (preserving relative gaps = preserving silence/pacing). Anchor the first
-    // word to time 0 so captions begin exactly when speech begins.
-    const scale = targetDuration / rawSpan;
+    // CRITICAL: Do NOT stretch timestamps to fill the video duration.
+    // Captions must only cover the actual speech window. Silent gaps at
+    // the end of the video get NO captions — highlighted word freezes.
+    // Only shift so the first word starts at 0 (beginning of speech).
     const offset = -rawStart;
-
     return sorted.map((w) => ({
       ...w,
-      start_time: +Math.max(0, rawStart + (w.start_time - rawStart) * scale + offset).toFixed(3),
-      end_time: +Math.min(targetDuration, rawStart + (w.end_time - rawStart) * scale + offset).toFixed(3),
+      start_time: +Math.max(0, (w.start_time + offset)).toFixed(3),
+      end_time: +Math.max(0.001, (w.end_time + offset)).toFixed(3),
     }));
   }
 
@@ -610,9 +598,28 @@ Return ONLY a JSON object (no markdown, no code fences):
   };
 
   /**
-   * Auto-Speedup: compress translated word timestamps into source audio window.
-   * When translating, syllable counts change but the speaker's time window doesn't.
-   * This ensures the last translated word finishes exactly when the speaker stops.
+   * Count syllables in an English word (approximate, but good enough for timing).
+   * Each vowel group = 1 syllable. Handles common patterns like -tion, -sion, -ing, -ed.
+   * Examples: "Tension"=2, "that"=1, "booking"=2, "cancel"=2, "agutho"=3.
+   */
+  function countSyllables(word: string): number {
+    const w = word.toLowerCase().replace(/[^a-z]/g, '');
+    if (w.length === 0) return 1;
+    // Special cases
+    if (w.endsWith('tion') || w.endsWith('sion')) return Math.max(1, w.match(/[aeiouy]{1,2}/g)?.length || 1);
+    if (w.endsWith('ing') || w.endsWith('igh')) return Math.max(1, w.match(/[aeiouy]{1,2}/g)?.length || 1);
+    // Count vowel groups
+    const vowelGroups = w.match(/[aeiouy]+/g);
+    return Math.max(1, (vowelGroups?.length || 1));
+  }
+
+  /**
+   * Auto-Speedup: compress translated word timestamps into source audio window
+   * using SYLLABLE-WEIGHTED proportioning (not character count).
+   * Syllables determine speech time, not letters.
+   * Example: 5 English words, 8 syllables → 1.2s window → ms per syllable = 150ms.
+   * Each word duration = word_syllables × 150ms.
+   * Last word snaps to sourceEndSec exactly.
    */
   function applySpeedupTimestamps(
     words: TimedWord[],
@@ -623,21 +630,18 @@ Return ONLY a JSON object (no markdown, no code fences):
     const totalWindowMs = (sourceEndSec - sourceStartSec) * 1000;
     if (totalWindowMs <= 0) return words;
 
-    const totalChars = words.reduce((sum, w) => {
-      const clean = w.word.replace(/[\s.,!?;:'"()]/g, '');
-      return sum + (clean.length || 1);
-    }, 0);
+    const totalSyllables = words.reduce((sum, w) => sum + countSyllables(w.word), 1);
+    const msPerSyllable = totalWindowMs / totalSyllables;
 
     let currentStartMs = sourceStartSec * 1000;
     const endMs = sourceEndSec * 1000;
 
     return words.map((w, i) => {
-      const clean = w.word.replace(/[\s.,!?;:'"()]/g, '');
-      const weight = (clean.length || 1) / totalChars;
-      const durMs = Math.round(totalWindowMs * weight);
+      const wordSyllables = countSyllables(w.word);
+      const durMs = Math.round(wordSyllables * msPerSyllable);
       const start = currentStartMs;
       const end = i === words.length - 1 ? endMs : start + durMs;
-      currentStartMs = end + 1;
+      currentStartMs = end + 1; // 1ms gap between words
       return { ...w, start_time: start / 1000, end_time: end / 1000 };
     });
   }
@@ -1059,19 +1063,23 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
 
     const systemPrompt = `You are an ultra-precise audio transcription, translation, and auto-speedup subtitle engine.
 
-Your primary objective is ZERO-LAG LIP SYNC. The total duration of any translated caption MUST strictly equal the acoustic speech duration of the source audio segment.
+Your primary objective is ZERO-LAG LIP SYNC. Captions must cover ONLY the speech — NOT the entire video duration. Silent gaps at the end of video must have NO captions.
 
-=== 1. SPEECH DURATION & TIMING LOCK ===
-- Detect exact acoustic start (start_ms) and acoustic end (end_ms) of each spoken source phrase.
-- NEVER stretch timestamps to fill silent audio gaps or video file padding.
-- When speech stops, end timestamps immediately.
-- ABSOLUTE SPEECH-END BOUNDARY: If video is 60s but speech ends at 48.2s, last word end_ms = ~48200. Do NOT fill silent gaps.
+=== 1. SPEECH DURATION & TIMING LOCK (CRITICAL) ===
+- Detect exact acoustic start (start_ms) and acoustic end (end_ms) of EACH spoken word in the audio.
+- CRITICAL: Captions must COVER ONLY SPEECH, NOT the video duration. If the video is 60 seconds but speech only lasts 48.2 seconds, your last word's end_ms MUST be ~48200. Do NOT stretch timestamps to fill the video file's total length.
+- When there is silence at the end of the video with no speech, return NO words for that silence period. Do NOT invent words or stretch existing words to fill the gap.
+- ABSOLUTE SPEECH-END BOUNDARY: Never extend captions beyond where speech actually stops.
 
-=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION ===
+=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION (SYLLABLE-WEIGHTED) ===
 - Translate speech accurately while strictly locking translated phrases inside the source phrase's acoustic window (source_start_ms to source_end_ms).
-- AUTO-SPEEDUP: If target language translation contains more words/syllables than original speech, compress target word durations proportionally by letter count so that the last word finishes EXACTLY at source_end_ms.
+- SYLLABLE-WEIGHTED AUTO-SPEEDUP: Target language often has more syllables than source (e.g., 8 English syllables vs 7 Kanglish syllables in the same 1.2s window). This causes 0.3s lag per sentence. To eliminate lag:
+  * Count syllables in each target word (e.g., "Tension"=2, "that"=1, "booking"=2, "might"=1, "cancel."=2 = total 8).
+  * Total syllables fit into the source window: ms_per_syllable = source_window_ms / total_target_syllables.
+  * Each word duration = word_syllables × ms_per_syllable.
+  * Last word snaps EXACTLY to source_end_ms — no rounding gaps.
 - Do NOT expand time bounds beyond when the speaker finishes talking.
-- WORD-LEVEL TIMING: Return INDIVIDUAL WORDS with start_ms and end_ms in MILLISECONDS. Every word must have its own precise timestamp.
+- WORD-LEVEL TIMING: Return INDIVIDUAL WORDS with start_ms and end_ms in MILLISECONDS.
 
 === 3. SILENCE & PAUSE RULES ===
 - If silence >150ms between words, preceding word MUST end at acoustic boundary. Do not bridge silences.

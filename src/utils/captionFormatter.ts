@@ -249,6 +249,17 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
 }
 
 /**
+ * Count syllables in an English word (approximate, for timing purposes).
+ * Each vowel group ≈ 1 syllable.
+ */
+export function countSyllables(word: string): number {
+  const w = word.toLowerCase().replace(/[^a-z]/g, '');
+  if (w.length === 0) return 1;
+  const vowelGroups = w.match(/[aeiouy]+/g);
+  return Math.max(1, (vowelGroups?.length || 1));
+}
+
+/**
  * Auto-Speedup Caption Algorithm for translation sync.
  *
  * When translating between languages, syllable count and word lengths change,
@@ -256,7 +267,7 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
  * 1.2s, the English translation highlights MUST complete in exactly 1.2s.
  *
  * This function takes translated words and forces their timestamps into the
- * source audio's exact millisecond bounds using character-weighted proportioning.
+ * source audio's exact millisecond bounds using SYLLABLE-weighted proportioning.
  *
  * @param translatedWords - Array of words with at least { word: string }
  * @param sourceStartMs   - Start of the source audio segment in ms
@@ -271,7 +282,6 @@ export function calculateSpeedupTimestamps<T extends { word: string; is_expressi
   if (translatedWords.length === 0) return [];
   const totalWindowMs = sourceEndMs - sourceStartMs;
   if (totalWindowMs <= 0) {
-    // Degenerate: distribute evenly
     const step = 1;
     return translatedWords.map((item, i) => ({
       ...item,
@@ -280,21 +290,18 @@ export function calculateSpeedupTimestamps<T extends { word: string; is_expressi
     }));
   }
 
-  // Total character count (excluding spaces and punctuation for weighting)
-  const totalChars = translatedWords.reduce((sum, item) => {
-    const clean = item.word.replace(/[\s.,!?;:'"()]/g, '');
-    return sum + (clean.length || 1);
-  }, 0);
+  // Use SYLLABLE-WEIGHTED proportioning (not character count).
+  // Syllables determine speech time, not letters.
+  const totalSyllables = translatedWords.reduce((sum, item) => sum + countSyllables(item.word), 1);
+  const msPerSyllable = totalWindowMs / totalSyllables;
 
   let currentStartMs = sourceStartMs;
 
   return translatedWords.map((item, index) => {
-    const clean = item.word.replace(/[\s.,!?;:'"()]/g, '');
-    const wordCharWeight = (clean.length || 1) / totalChars;
-    const wordDurationMs = Math.round(totalWindowMs * wordCharWeight);
+    const wordSyllables = countSyllables(item.word);
+    const wordDurationMs = Math.round(wordSyllables * msPerSyllable);
 
     const wordStart = currentStartMs;
-    // Last word snaps strictly to sourceEndMs to prevent floating-point rounding gaps
     const wordEnd = index === translatedWords.length - 1
       ? sourceEndMs
       : wordStart + wordDurationMs;
