@@ -150,7 +150,7 @@ export default function VideoPlayer({
     setIsDragging(true);
     setIsSelected(true);
     setDragStart({ x: e.clientX, y: e.clientY });
-    setInitialOffset({ x: styleSettings.positionX, y: styleSettings.positionY });
+    setInitialOffset({ x: styleSettings.positionX * scaleFactor, y: styleSettings.positionY * scaleFactor });
     if (onCaptionClick) {
       onCaptionClick();
     }
@@ -162,7 +162,7 @@ export default function VideoPlayer({
     setIsDragging(true);
     setIsSelected(true);
     setDragStart({ x: touch.clientX, y: touch.clientY });
-    setInitialOffset({ x: styleSettings.positionX, y: styleSettings.positionY });
+    setInitialOffset({ x: styleSettings.positionX * scaleFactor, y: styleSettings.positionY * scaleFactor });
     if (onCaptionClick) {
       onCaptionClick();
     }
@@ -192,19 +192,20 @@ export default function VideoPlayer({
         const clampedY = Math.max(minAvailableY, Math.min(maxAvailableY, targetY));
         
         onUpdateStyleSettings({
-          positionX: clampedX,
-          positionY: clampedY,
+          positionX: clampedX / scaleFactor,
+          positionY: clampedY / scaleFactor,
         });
       } else {
         onUpdateStyleSettings({
-          positionX: initialOffset.x + dx,
-          positionY: initialOffset.y - dy,
+          positionX: (initialOffset.x + dx) / scaleFactor,
+          positionY: (initialOffset.y - dy) / scaleFactor,
         });
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
       if (!isDragging) return;
+      e.preventDefault();
       const touch = e.touches[0];
       const dx = touch.clientX - dragStart.x;
       const dy = touch.clientY - dragStart.y;
@@ -227,13 +228,13 @@ export default function VideoPlayer({
         const clampedY = Math.max(minAvailableY, Math.min(maxAvailableY, targetY));
         
         onUpdateStyleSettings({
-          positionX: clampedX,
-          positionY: clampedY,
+          positionX: clampedX / scaleFactor,
+          positionY: clampedY / scaleFactor,
         });
       } else {
         onUpdateStyleSettings({
-          positionX: initialOffset.x + dx,
-          positionY: initialOffset.y - dy,
+          positionX: (initialOffset.x + dx) / scaleFactor,
+          positionY: (initialOffset.y - dy) / scaleFactor,
         });
       }
     };
@@ -245,7 +246,8 @@ export default function VideoPlayer({
     if (isDragging) {
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleEnd);
-      window.addEventListener('touchmove', handleTouchMove);
+      // passive:false so preventDefault() can block page scroll while dragging.
+      window.addEventListener('touchmove', handleTouchMove, { passive: false });
       window.addEventListener('touchend', handleEnd);
     }
 
@@ -255,7 +257,7 @@ export default function VideoPlayer({
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleEnd);
     };
-  }, [isDragging, dragStart, initialOffset, onUpdateStyleSettings, bottomOffset]);
+  }, [isDragging, dragStart, initialOffset, onUpdateStyleSettings, bottomOffset, scaleFactor]);
 
   const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const video = e.currentTarget;
@@ -355,14 +357,23 @@ export default function VideoPlayer({
     <div className="flex flex-col items-center justify-center w-full max-w-full px-2 gap-4">
       <div 
         ref={containerRef}
-        style={{
-          aspectRatio: videoRatio,
-          maxWidth: videoRatio > 1.0 ? '100%' : 'min(520px, calc(100vw - 24px))',
-          height: isSelected && videoUrl && displayWords.length > 0 && !editingWord
-            ? 'calc(100vh - 270px)'
-            : 'calc(100vh - 150px)',
-          width: 'auto',
-        }}
+        style={(() => {
+          // When the caption is selected the resize/rotate toolbar appears below,
+          // so shrink the video a bit (but not too much) to keep everything on
+          // screen. Size by the LIMITING dimension so the container ALWAYS matches
+          // the real video aspect ratio (no letterbox top/bottom or sides) for
+          // both landscape and portrait clips.
+          const isShrunk = !!(isSelected && videoUrl && displayWords.length > 0 && !editingWord);
+          const vOffset = isShrunk ? 320 : 150;
+          const widthCap = videoRatio > 1.0
+            ? 'calc(100vw - 24px)'
+            : 'min(520px, calc(100vw - 24px))';
+          return {
+            aspectRatio: videoRatio,
+            width: `min(${widthCap}, calc((100vh - ${vOffset}px) * ${videoRatio}))`,
+            height: 'auto',
+          } as React.CSSProperties;
+        })()}
         className="relative mx-auto bg-gradient-to-b from-[#1a1a1a] to-black rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.5)] flex items-center justify-center border-4 border-[#333] select-none transition-all duration-300"
       >
         {videoUrl ? (
@@ -395,11 +406,12 @@ export default function VideoPlayer({
             onMouseDown={handleMouseDown}
             onTouchStart={handleTouchStart}
             style={{
-              transform: `translate(${styleSettings.positionX}px, ${-styleSettings.positionY}px) rotate(${styleSettings.rotation}deg)`,
+              transform: `translate(${styleSettings.positionX * scaleFactor}px, ${-styleSettings.positionY * scaleFactor}px) rotate(${styleSettings.rotation}deg)`,
               fontSize: `${Math.max(10, 32 * styleSettings.fontSize * scaleFactor)}px`,
               bottom: `${bottomOffset}px`,
               gap: `${8 * scaleFactor}px`,
               padding: `${Math.max(4, 8 * scaleFactor)}px ${Math.max(8, 16 * scaleFactor)}px`,
+              touchAction: 'none',
             }}
             className={`absolute inset-x-0 mx-auto w-max max-w-[90%] flex flex-wrap justify-center items-center cursor-grab active:cursor-grabbing rounded-xl z-50 pointer-events-auto ${
               isDragging ? '' : 'transition-transform duration-100'

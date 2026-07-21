@@ -908,7 +908,7 @@ export default function App() {
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = reader.result as string;
-          const base64 = dataUrl.split(',')[1] || '';
+          const base64 = dataUrl.substring(dataUrl.lastIndexOf(',') + 1);
           try {
             // Prefer chunked transfer (avoids WebView's giant-string corruption →
             // "bad base-64"). Chunks MUST be aligned to 4-char base64 boundaries.
