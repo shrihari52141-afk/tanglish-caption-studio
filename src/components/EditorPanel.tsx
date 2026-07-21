@@ -489,24 +489,24 @@ export default function EditorPanel({
                   <Hash className="w-4 h-4 text-fuchsia-500" /> Words on Screen
                 </span>
                 <span className="text-[10px] bg-fuchsia-600/20 text-fuchsia-400 px-2 py-0.5 rounded-full font-bold">
-                  Active: {styleSettings.maxWordsPerScreen || 1} {styleSettings.maxWordsPerScreen === 1 ? 'word' : 'words'}
+                  Active: {styleSettings.maxWordsPerScreen === 0 ? 'Auto with AI' : `${styleSettings.maxWordsPerScreen} ${styleSettings.maxWordsPerScreen === 1 ? 'word' : 'words'}`}
                 </span>
               </div>
               
-              <div className="grid grid-cols-5 gap-1.5 mb-2.5">
-                {[1, 2, 3, 4, 5].map((num) => {
+              <div className="grid grid-cols-6 gap-1.5 mb-2.5">
+                {[0, 1, 2, 3, 4, 5].map((num) => {
                   const isActive = styleSettings.maxWordsPerScreen === num;
                   return (
                     <button
                       key={num}
                       onClick={() => onUpdateStyleSettings({ maxWordsPerScreen: num })}
-                      className={`py-2 px-1 rounded-lg border text-[12px] font-black transition-all cursor-pointer ${
+                      className={`py-2 px-1 rounded-lg border text-[11px] font-black transition-all cursor-pointer ${
                         isActive
                           ? 'border-fuchsia-600 bg-fuchsia-600/20 text-fuchsia-500 shadow-lg font-extrabold'
                           : 'border-[#333] bg-[#222] text-white hover:bg-[#333]'
                       }`}
                     >
-                      {num}
+                      {num === 0 ? 'AI Auto' : num}
                     </button>
                   );
                 })}
@@ -713,7 +713,7 @@ export default function EditorPanel({
               <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-2">
                 Active Word Color
               </div>
-              <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333]">
+              <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] items-center">
                 {premiumColors.map((c) => (
                   <button
                     key={c.hex}
@@ -727,6 +727,16 @@ export default function EditorPanel({
                     }`}
                   />
                 ))}
+                {/* Custom Color Selector */}
+                <div className="relative w-8 h-8 rounded-full border-2 border-dashed border-[#555] hover:border-[#888] flex items-center justify-center transition-transform active:scale-95 cursor-pointer bg-transparent" title="Custom Color Picker">
+                  <input
+                    type="color"
+                    value={styleSettings.highlightColor}
+                    onChange={(e) => onUpdateStyleSettings({ highlightColor: e.target.value })}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <span className="text-[14px] text-[#aaa] font-bold">+</span>
+                </div>
               </div>
             </div>
 
@@ -734,7 +744,7 @@ export default function EditorPanel({
               <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-2">
                 Standard Text Color
               </div>
-              <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333]">
+              <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] items-center">
                 {premiumColors.map((c) => (
                   <button
                     key={c.hex}
@@ -748,6 +758,16 @@ export default function EditorPanel({
                     }`}
                   />
                 ))}
+                {/* Custom Color Selector */}
+                <div className="relative w-8 h-8 rounded-full border-2 border-dashed border-[#555] hover:border-[#888] flex items-center justify-center transition-transform active:scale-95 cursor-pointer bg-transparent" title="Custom Color Picker">
+                  <input
+                    type="color"
+                    value={styleSettings.textColor}
+                    onChange={(e) => onUpdateStyleSettings({ textColor: e.target.value })}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <span className="text-[14px] text-[#aaa] font-bold">+</span>
+                </div>
               </div>
             </div>
           </div>

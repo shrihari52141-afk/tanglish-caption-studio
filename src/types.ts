@@ -3,6 +3,10 @@ export interface CaptionWord {
   word: string;
   start_time: number;
   end_time: number;
+  is_question?: boolean;
+  is_expression?: boolean;
+  is_name?: boolean;
+  is_sentence_end?: boolean;
 }
 
 export type CaptionStyle = string;

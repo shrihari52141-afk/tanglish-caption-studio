@@ -366,13 +366,18 @@ TIMING IS THE MOST IMPORTANT PART. Follow these rules exactly:
 6. The words array must span (almost) the ENTIRE audio duration. Report the total "audio_duration" in seconds as a top-level number.
 7. Use the EXACT ORIGINAL spoken language (do not translate). Preserve native script where used.
 8. Keep each token short (a few words) for readability.
+9. METADATA TAGGING:
+   - "is_question": Mark true for interrogative words/phrases (e.g. "madbeka?", "book?").
+   - "is_expression": Mark true for exclamations, reactions, or expressions (e.g. "Ayyo", "shut up", "oh god", "oops").
+   - "is_name": Mark true for proper names, brands, or places.
+   - "is_sentence_end": Mark true if the word ends a sentence or thought unit (has punctuation like ., !, ?).
 
 Spoken language hint: ${langLabel}.
 
 Return ONLY a JSON object (no markdown, no code fences):
 {
   "audio_duration": number,
-  "words": [ { "word": string, "start_time": number, "end_time": number } ]
+  "words": [ { "word": string, "start_time": number, "end_time": number, "is_question": boolean, "is_expression": boolean, "is_name": boolean, "is_sentence_end": boolean } ]
 }`;
 
     sendLog(
@@ -403,6 +408,10 @@ Return ONLY a JSON object (no markdown, no code fences):
                       word: { type: Type.STRING },
                       start_time: { type: Type.NUMBER },
                       end_time: { type: Type.NUMBER },
+                      is_question: { type: Type.BOOLEAN },
+                      is_expression: { type: Type.BOOLEAN },
+                      is_name: { type: Type.BOOLEAN },
+                      is_sentence_end: { type: Type.BOOLEAN },
                     },
                     required: ["word", "start_time", "end_time"],
                   },
@@ -424,6 +433,10 @@ Return ONLY a JSON object (no markdown, no code fences):
                 word: String(w.word || w.text || "").trim(),
                 start_time: Number(w.start_time || w.start || 0),
                 end_time: Number(w.end_time || w.end || Number(w.start_time || 0) + 0.4),
+                is_question: !!w.is_question,
+                is_expression: !!w.is_expression,
+                is_name: !!w.is_name,
+                is_sentence_end: !!w.is_sentence_end,
               }))
             : [];
         const cleaned = normalizeWhisperWords(words as TimedWord[]);
@@ -586,7 +599,15 @@ Return ONLY a JSON object (no markdown, no code fences):
     throw new Error("Unable to parse JSON from AI model response content.");
   }
 
-  type TimedWord = { word: string; start_time: number; end_time: number };
+  type TimedWord = { 
+    word: string; 
+    start_time: number; 
+    end_time: number;
+    is_question?: boolean;
+    is_expression?: boolean;
+    is_name?: boolean;
+    is_sentence_end?: boolean;
+  };
 
   /** Clean Whisper tokens (strip stray punctuation-only tokens, normalize) */
   function normalizeWhisperWords(words: TimedWord[]): TimedWord[] {
@@ -649,10 +670,42 @@ Return ONLY a JSON object (no markdown, no code fences):
       .filter(Boolean);
     if (parts.length === 0) return fallbackWords;
     const span = Math.max(end - start, 0.08 * parts.length);
+
+    const totalLetters = parts.reduce((sum, p) => sum + p.length, 0);
+    const hasQuestion = fallbackWords.some((w) => w.is_question);
+    const hasExpression = fallbackWords.some((w) => w.is_expression);
+    const hasName = fallbackWords.some((w) => w.is_name);
+    const hasSentenceEnd = fallbackWords.some((w) => w.is_sentence_end);
+
+    const makeWord = (p: string, t0: number, t1: number, i: number, isLast: boolean): TimedWord => {
+      const cleanWord = p.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "").trim();
+      return {
+        word: p,
+        start_time: +t0.toFixed(3),
+        end_time: +Math.max(t1, t0 + 0.04).toFixed(3),
+        is_question: hasQuestion || p.includes('?'),
+        is_expression: hasExpression || ["ayyo", "shutup", "ohgod"].includes(cleanWord.toLowerCase()),
+        is_name: hasName || (cleanWord.length > 0 && cleanWord[0] === cleanWord[0].toUpperCase() && !isLast && i !== 0),
+        is_sentence_end: (isLast && hasSentenceEnd) || p.includes('.') || p.includes('!') || p.includes('?'),
+      };
+    };
+
+    if (totalLetters === 0) {
+      return parts.map((p, i) => {
+        const t0 = start + (span * i) / parts.length;
+        const t1 = start + (span * (i + 1)) / parts.length;
+        return makeWord(p, t0, t1, i, i === parts.length - 1);
+      });
+    }
+
+    let runningOffset = 0;
     return parts.map((p, i) => {
-      const t0 = start + (span * i) / parts.length;
-      const t1 = start + (span * (i + 1)) / parts.length;
-      return { word: p, start_time: t0, end_time: Math.max(t1, t0 + 0.04) };
+      const wordWeight = p.length / totalLetters;
+      const wordDuration = span * wordWeight;
+      const t0 = start + runningOffset;
+      const t1 = t0 + wordDuration;
+      runningOffset += wordDuration;
+      return makeWord(p, t0, t1, i, i === parts.length - 1);
     });
   }
 
@@ -983,6 +1036,11 @@ TIMING RULES (CRITICAL — THIS IS THE #1 PRIORITY):
 7. Report the total "audio_duration" in seconds as a top-level number. This MUST equal the real total duration of the audio file.
 8. Keep each phrase short (one readable caption line, ~5-10 words max per phrase).
 9. The LAST phrase MUST end at or very close to the actual end of the last spoken word. If the audio is 30 seconds long, your last phrase must end near 30 seconds — NOT at 20 seconds or 25 seconds. NEVER leave the last portion of audio without captions.
+10. METADATA TAGGING (CRITICAL):
+    - is_question: Mark true if this segment/phrase is a question or interrogative unit (e.g. "madbeka?", "Can I book?").
+    - is_expression: Mark true if this segment contains hot words, exclamations, or strong expressions (e.g. "Ayyo", "Shut up", "Oh god", "Ouch").
+    - is_name: Mark true if this segment contains proper nouns like names, brands, or places.
+    - is_sentence_end: Mark true if this segment concludes a sentence or thought unit.
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}
@@ -993,7 +1051,20 @@ ${languageInstruction.trim()}
 Spoken language hint: ${langLabel}.
 
 Return ONLY a JSON object (no markdown):
-{ "audio_duration": number, "phrases": [ { "text": string, "start_time": number, "end_time": number } ] }`;
+{ 
+  "audio_duration": number, 
+  "phrases": [ 
+    { 
+      "text": string, 
+      "start_time": number, 
+      "end_time": number,
+      "is_question": boolean,
+      "is_expression": boolean,
+      "is_name": boolean,
+      "is_sentence_end": boolean
+    } 
+  ] 
+}`;
 
     sendLog(
       jobId,
@@ -1001,7 +1072,7 @@ Return ONLY a JSON object (no markdown):
     );
 
     const { result: rawPhrases, model } = await callGeminiWithModelFallback<
-      { text: string; start_time: number; end_time: number }[]
+      { text: string; start_time: number; end_time: number; is_question?: boolean; is_expression?: boolean; is_name?: boolean; is_sentence_end?: boolean }[]
     >(async (ai, modelName) => {
       const audioPart = await buildGeminiAudioPart(ai, audioFilePath, mimeType, jobId);
       const geminiRes = await ai.models.generateContent({
@@ -1026,6 +1097,10 @@ Return ONLY a JSON object (no markdown):
                     text: { type: Type.STRING },
                     start_time: { type: Type.NUMBER },
                     end_time: { type: Type.NUMBER },
+                    is_question: { type: Type.BOOLEAN },
+                    is_expression: { type: Type.BOOLEAN },
+                    is_name: { type: Type.BOOLEAN },
+                    is_sentence_end: { type: Type.BOOLEAN },
                   },
                   required: ["text", "start_time", "end_time"],
                 },
@@ -1050,6 +1125,10 @@ Return ONLY a JSON object (no markdown):
         text: String(p.text || "").trim(),
         start: Number(p.start_time || 0),
         end: Number(p.end_time || 0),
+        is_question: !!p.is_question,
+        is_expression: !!p.is_expression,
+        is_name: !!p.is_name,
+        is_sentence_end: !!p.is_sentence_end,
       }))
       .filter((p) => p.text.length > 0 && p.end > p.start);
 
@@ -1079,7 +1158,18 @@ Return ONLY a JSON object (no markdown):
       const emojiMatch = useEmojis ? line.match(/\p{Extended_Pictographic}/u) : null;
       const body = stripAllEmojis(line).split(/\s+/).filter(Boolean);
       if (body.length === 0) return;
-      const timed = distributePhraseText(body.join(" "), p.start, p.end, []);
+
+      const dummyFallback: TimedWord = {
+        word: "",
+        start_time: p.start,
+        end_time: p.end,
+        is_question: p.is_question,
+        is_expression: p.is_expression,
+        is_name: p.is_name,
+        is_sentence_end: p.is_sentence_end,
+      };
+
+      const timed = distributePhraseText(body.join(" "), p.start, p.end, [dummyFallback]);
       if (emojiMatch && timed.length > 0) {
         timed[timed.length - 1] = {
           ...timed[timed.length - 1],

@@ -6,7 +6,7 @@ import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './ty
 import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages, Check } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
-import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags } from './utils/captionFormatter';
+import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags, generateCaptionFrames } from './utils/captionFormatter';
 import { notifyTelegram, notifyTelegramError } from './utils/deviceTracker';
 
 const RENDER_API = 'https://tanglish-caption-api.onrender.com';
@@ -64,16 +64,8 @@ function drawSubtitlesOnCanvas(
     }
   }
 
-  const maxWords = styleSettings.maxWordsPerScreen || 1;
-  let displayWords: CaptionWord[] = [];
-  if (maxWords <= 1) {
-    displayWords = [words[targetIndex]];
-  } else {
-    const chunkIndex = Math.floor(targetIndex / maxWords);
-    const start = chunkIndex * maxWords;
-    const end = Math.min(start + maxWords, words.length);
-    displayWords = words.slice(start, end);
-  }
+  const frames = generateCaptionFrames(words, styleSettings.maxWordsPerScreen);
+  const displayWords = frames.find(frame => frame.some(w => w.id === words[targetIndex].id)) || frames[0] || [];
 
   if (displayWords.length === 0) return;
 
@@ -184,8 +176,8 @@ function drawSubtitlesOnCanvas(
     if (isActive) {
       if (styleSettings.showBackground) {
         ctx.fillStyle = '#000000';
-        const paddingX = 14 * scaleX;
-        const paddingY = 8 * scaleX;
+        const paddingX = 12 * scaleX;
+        const paddingY = 6 * scaleX;
         const rx = curX - wordWidth / 2 - paddingX;
         const ry = curY - baseFontSize / 2 - paddingY;
         const rw = wordWidth + paddingX * 2;
@@ -275,7 +267,7 @@ export default function App() {
       positionX: 0,
       positionY: 0,
       rotation: 0,
-      maxWordsPerScreen: 5,
+      maxWordsPerScreen: 0,
       showEmojis: true,
       showPunctuation: true,
       emojiStyle: 'vibes',
@@ -513,7 +505,7 @@ export default function App() {
         positionX: 0,
         positionY: 0,
         rotation: 0,
-        maxWordsPerScreen: 5,
+        maxWordsPerScreen: 0,
         showEmojis: true,
         showPunctuation: true,
         emojiStyle: 'vibes',

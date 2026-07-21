@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { CaptionWord, SubtitleStyleSettings } from '../types';
 import { Move, ZoomIn, ZoomOut, RotateCw, Edit3, Check, X, ShieldAlert, Play, Pause, RotateCcw } from 'lucide-react';
-import { applyCaptionFormatting, stripASSTags } from '../utils/captionFormatter';
+import { applyCaptionFormatting, stripASSTags, generateCaptionFrames } from '../utils/captionFormatter';
 
 interface VideoPlayerProps {
   videoUrl: string | null;
@@ -45,6 +45,30 @@ export default function VideoPlayer({
   const [editTextValue, setEditTextValue] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [containerWidth, setContainerWidth] = useState<number>(340);
+  const [localTime, setLocalTime] = useState(currentTime);
+
+  useEffect(() => {
+    setLocalTime(currentTime);
+  }, [currentTime]);
+
+  useEffect(() => {
+    let animId: number;
+    const updateLoop = () => {
+      const video = videoRef.current;
+      if (video) {
+        setLocalTime(video.currentTime);
+      }
+      animId = requestAnimationFrame(updateLoop);
+    };
+
+    if (isPlaying) {
+      animId = requestAnimationFrame(updateLoop);
+    }
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [isPlaying]);
 
   const scaleFactor = containerWidth / 340;
   // Purely proportional so the export renderer can reproduce it EXACTLY at any
@@ -281,20 +305,20 @@ export default function VideoPlayer({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Find the index of the active word based on currentTime
+  // Find the index of the active word based on localTime
   const activeWordIndex = (() => {
     if (words.length === 0) return -1;
     const currentActiveIdx = words.findIndex(
-      (w) => currentTime >= w.start_time && currentTime <= w.end_time
+      (w) => localTime >= w.start_time && localTime <= w.end_time
     );
     if (currentActiveIdx !== -1) return currentActiveIdx;
 
     // Fallback: Find closest word
     let closestIdx = 0;
-    let minDiff = Math.abs(currentTime - words[0].start_time);
+    let minDiff = Math.abs(localTime - words[0].start_time);
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
-      const diff = Math.min(Math.abs(currentTime - w.start_time), Math.abs(currentTime - w.end_time));
+      const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
       if (diff < minDiff) {
         minDiff = diff;
         closestIdx = i;
@@ -306,18 +330,8 @@ export default function VideoPlayer({
   // Construct displayWords based on styleSettings.maxWordsPerScreen in a stable chunked block
   const displayWords = (() => {
     if (words.length === 0 || activeWordIndex === -1) return [];
-    
-    const maxWords = styleSettings.maxWordsPerScreen || 1;
-    if (maxWords <= 1) {
-      return [words[activeWordIndex]];
-    }
-    
-    // Divide words into fixed, non-overlapping chunks of size maxWords
-    const chunkIndex = Math.floor(activeWordIndex / maxWords);
-    const start = chunkIndex * maxWords;
-    const end = Math.min(start + maxWords, words.length);
-    
-    return words.slice(start, end);
+    const frames = generateCaptionFrames(words, styleSettings.maxWordsPerScreen);
+    return frames.find(frame => frame.some(w => w.id === words[activeWordIndex].id)) || frames[0] || [];
   })();
 
   const formatWordText = (text: string) => {

@@ -191,3 +191,59 @@ export function applyCaptionFormatting(
 
   return wordOnly;
 }
+
+export function generateCaptionFrames<T extends { id: string; word: string; is_question?: boolean; is_expression?: boolean; is_sentence_end?: boolean }>(
+  wordsList: T[],
+  maxWordsPerScreen: number = 0
+): T[][] {
+  if (wordsList.length === 0) return [];
+  const frames: T[][] = [];
+  let currentFrame: T[] = [];
+
+  for (let i = 0; i < wordsList.length; i++) {
+    const wordObj = wordsList[i];
+
+    // RULE 1: Hot Word / Expression Override
+    if (wordObj.is_expression) {
+      if (currentFrame.length > 0) {
+        frames.push(currentFrame);
+        currentFrame = [];
+      }
+      frames.push([wordObj]);
+      continue;
+    }
+
+    // RULE 2: Question Override
+    if (wordObj.is_question) {
+      if (currentFrame.length > 0) {
+        frames.push(currentFrame);
+        currentFrame = [];
+      }
+      frames.push([wordObj]);
+      continue;
+    }
+
+    // Add current word to frame
+    currentFrame.push(wordObj);
+
+    // RULE 3: Full Stop / Sentence End Override
+    if (wordObj.is_sentence_end || wordObj.word.includes('.') || wordObj.word.includes('!') || wordObj.word.includes('?')) {
+      frames.push(currentFrame);
+      currentFrame = [];
+      continue;
+    }
+
+    // RULE 4: Max Word Limit Fallback
+    const effectiveLimit = maxWordsPerScreen > 0 ? maxWordsPerScreen : 6;
+    if (currentFrame.length >= effectiveLimit) {
+      frames.push(currentFrame);
+      currentFrame = [];
+    }
+  }
+
+  if (currentFrame.length > 0) {
+    frames.push(currentFrame);
+  }
+
+  return frames;
+}
