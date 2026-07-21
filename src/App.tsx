@@ -7,37 +7,6 @@ import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, 
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags, generateCaptionFrames } from './utils/captionFormatter';
-
-// Canvas animation helpers for export parity with CSS keyframes
-function getAnimationTransform(preset: string, elapsedSec: number, scaleX: number): { dx: number; dy: number; scale: number; rotation: number; colorOverride?: string } {
-  const t = elapsedSec;
-  switch (preset) {
-    case 'bounce': {
-      const phase = Math.abs(Math.sin(t * 4));
-      return { dx: 0, dy: -8 * scaleX * phase, scale: 1 + 0.18 * phase, rotation: 0 };
-    }
-    case 'pop': {
-      if (t < 0.1) return { dx: 0, dy: 0, scale: 0.8 + (t / 0.1) * 0.3, rotation: 0 };
-      if (t < 0.2) return { dx: 0, dy: 0, scale: 1.1 - ((t - 0.1) / 0.1) * 0.1, rotation: 0 };
-      return { dx: 0, dy: 0, scale: 1.0, rotation: 0 };
-    }
-    case 'beast': {
-      return { dx: 0, dy: 0, scale: 1.2, rotation: -2 * Math.PI / 180, colorOverride: '#FF4500' };
-    }
-    case 'glitch': {
-      const jx = (Math.random() - 0.5) * 4 * scaleX;
-      const jy = (Math.random() - 0.5) * 4 * scaleX;
-      return { dx: jx, dy: jy, scale: 1.0, rotation: 0 };
-    }
-    case 'neon':
-    case 'neon_glow': {
-      const pulse = 0.5 + 0.5 * Math.sin(t * 6);
-      return { dx: 0, dy: 0, scale: 1.0 + 0.02 * pulse, rotation: 0 };
-    }
-    default:
-      return { dx: 0, dy: 0, scale: 1.0, rotation: 0 };
-  }
-}
 import { notifyTelegram, notifyTelegramError } from './utils/deviceTracker';
 
 const RENDER_API = 'https://tanglish-caption-api.onrender.com';
@@ -103,6 +72,178 @@ function drawSubtitlesOnCanvas(
   // ---- EDITOR-MATCHED SCALING ----
   // The editor sizes captions with: scaleFactor = containerWidth / 340, and the
   // container ALWAYS has the video's aspect ratio (video fills it, object-contain).
+  // So font/size at video resolution = 32 * fontSize * (canvasWidth / 340) — this
+  // is resolution-independent and matches the preview exactly for both portrait
+  // and landscape (landscape just has a larger canvasWidth).
+  const REF = 340;
+  const scaleX = canvasWidth / REF;   // video-px per editor-base unit
+  const scaleY = scaleX;              // uniform scaling (no distortion)
+
+  // positionX/Y are stored in resolution-independent base-340 units (the editor
+  // applies them as positionX * scaleFactor, scaleFactor = containerWidth/340).
+  // Because the editor container ALWAYS matches the video aspect ratio, the same
+  // units map to video pixels via scaleX (= canvasWidth/340) for BOTH axes, so
+  // the exported caption sits exactly where the preview shows it — at any size.
+  const baseFontSize = 32 * styleSettings.fontSize * scaleX;
+  
+  let fontName = 'sans-serif';
+  let fontStyle = '900';
+  if (styleSettings.fontFamily === 'Impact') {
+    fontName = 'Impact, sans-serif';
+    fontStyle = '900 italic';
+  } else if (styleSettings.fontFamily === 'Courier') {
+    fontName = '"Courier New", Courier, monospace';
+    fontStyle = 'bold';
+  } else if (styleSettings.fontFamily === 'Fredoka') {
+    fontName = '"Fredoka One", "Inter", sans-serif';
+    fontStyle = '900';
+  } else if (styleSettings.fontFamily === 'Space Grotesk') {
+    fontName = '"Space Grotesk", sans-serif';
+    fontStyle = '800';
+  } else {
+    fontName = '"Helvetica Neue", Arial, sans-serif';
+    fontStyle = '800';
+  }
+  
+  ctx.font = `${fontStyle} ${baseFontSize}px ${fontName}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  
+  ctx.save();
+  
+  // Editor: caption is horizontally centered (inset-x-0 mx-auto), sits at
+  // bottom:(96*scaleFactor) editor-px, and is translated by (positionX, -positionY).
+  const baseX = (canvasWidth / 2) + (styleSettings.positionX * scaleX);
+  const baseY = (canvasHeight - 96 * scaleX) - (styleSettings.positionY * scaleX);
+
+  ctx.translate(baseX, baseY);
+  ctx.rotate((styleSettings.rotation * Math.PI) / 180);
+  
+  const formatWordText = (text: string) => {
+    let formatted = applyCaptionFormatting(
+      text,
+      styleSettings.showEmojis !== false,
+      styleSettings.showPunctuation !== false,
+      styleSettings.emojiStyle || 'vibes'
+    );
+    if (styleSettings.capitalization === 'all') return formatted.toUpperCase();
+    if (styleSettings.capitalization === 'lower') return formatted.toLowerCase();
+    if (styleSettings.capitalization === 'sentence') {
+      return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+    }
+    return formatted;
+  };
+  
+  // Match the editor: caption box is `flex flex-wrap` with gap = 8*scaleFactor
+  // (editor-px) and max width 90% of the container. Words that overflow wrap to
+  // the next line, and every line is horizontally centered.
+  const gap = 8 * scaleX;
+  // Editor: box is max-w-[90%] with horizontal padding of 16*scaleFactor each side.
+  // Effective text width = 90% of container width minus both paddings, in video px.
+  const boxPaddingX = 16 * scaleX;
+  const maxLineWidth = 0.9 * canvasWidth - 2 * boxPaddingX;
+  const lineHeight = baseFontSize * 1.25; // matches typical line-box height
+
+  const formattedTexts = displayWords.map(w => formatWordText(w.word));
+  const wordWidths = formattedTexts.map(txt => ctx.measureText(txt).width);
+
+  // Group words into wrapped lines exactly like CSS flex-wrap would.
+  type LineItem = { text: string; width: number; wordRef: CaptionWord };
+  const lines: LineItem[][] = [];
+  let curLine: LineItem[] = [];
+  let curLineWidth = 0;
+  displayWords.forEach((w, index) => {
+    const item: LineItem = { text: formattedTexts[index], width: wordWidths[index], wordRef: w };
+    const projected = curLine.length === 0 ? item.width : curLineWidth + gap + item.width;
+    if (curLine.length > 0 && projected > maxLineWidth) {
+      lines.push(curLine);
+      curLine = [item];
+      curLineWidth = item.width;
+    } else {
+      curLine.push(item);
+      curLineWidth = projected;
+    }
+  });
+  if (curLine.length > 0) lines.push(curLine);
+
+  // Editor: the caption box is anchored at its BOTTOM (bottom:offset) and grows
+  // UPWARD as more lines wrap. The translate origin (0,0) is the single-line
+  // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
+  const firstLineY = -(lines.length - 1) * lineHeight;
+
+  const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
+    ctx.save();
+    if (isActive) {
+      if (styleSettings.showBackground) {
+        ctx.fillStyle = '#000000';
+        const paddingX = 12 * scaleX;
+        const paddingY = 6 * scaleX;
+        const rx = curX - wordWidth / 2 - paddingX;
+        const ry = curY - baseFontSize / 2 - paddingY;
+        const rw = wordWidth + paddingX * 2;
+        const rh = baseFontSize + paddingY * 2;
+        const radius = 8 * scaleX;
+        ctx.beginPath();
+        ctx.moveTo(rx + radius, ry);
+        ctx.lineTo(rx + rw - radius, ry);
+        ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + radius);
+        ctx.lineTo(rx + rw, ry + rh - radius);
+        ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - radius, ry + rh);
+        ctx.lineTo(rx + radius, ry + rh);
+        ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - radius);
+        ctx.lineTo(rx, ry + radius);
+        ctx.quadraticCurveTo(rx, ry, rx + radius, ry);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = styleSettings.highlightColor;
+        ctx.lineWidth = 2 * scaleX;
+        ctx.stroke();
+      }
+      if (styleSettings.showBacklight) {
+        ctx.shadowColor = styleSettings.highlightColor;
+        ctx.shadowBlur = 12 * scaleX;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+      } else if (styleSettings.showShadow) {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 8 * scaleX;
+        ctx.strokeText(wordText, curX, curY);
+      }
+      ctx.fillStyle = styleSettings.highlightColor;
+      ctx.fillText(wordText, curX, curY);
+    } else {
+      ctx.fillStyle = styleSettings.textColor;
+      if (styleSettings.showSpotlight) {
+        ctx.globalAlpha = 0.35;
+      }
+      if (styleSettings.showShadow) {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 8 * scaleX;
+        ctx.strokeText(wordText, curX, curY);
+      }
+      ctx.fillText(wordText, curX, curY);
+    }
+    ctx.restore();
+  };
+
+  lines.forEach((line, lineIdx) => {
+    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
+    let startX = -lineWidth / 2;
+    const curY = firstLineY + lineIdx * lineHeight;
+    line.forEach((it) => {
+      const curX = startX + it.width / 2;
+      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
+      drawWord(it.text, it.width, curX, curY, isActive);
+      startX += it.width + gap;
+    });
+  });
+
+  ctx.restore();
+}
+
+export default function App() {
+  const [state, setState] = useState<AppState>({
+    videoUrl: null,
     videoFile: null,
     words: [],
     activeStyle: 'bounce',
