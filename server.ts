@@ -973,13 +973,16 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
 
     const systemPrompt = `You are a professional, frame-accurate audio transcriber AND expert caption scriptwriter for Indian languages (Tamil, Telugu, Hindi, Kannada, Malayalam) and mixed Indian-English speech. In a SINGLE pass you must: (1) listen to the audio, (2) transcribe it verbatim with precise timing, and (3) produce the FINAL polished captions.
 
-TIMING RULES (MOST IMPORTANT):
-1. Transcribe from the first spoken sound to the very last with NO skipping or summarizing.
-2. Every phrase must have precise "start_time" and "end_time" in SECONDS on the audio timeline.
-3. PRESERVE SILENCE: keep real pauses between phrases (do not snap timestamps together).
-4. The FIRST phrase starts when the first word begins; the LAST phrase's end_time must reach close to the actual end of speech — NEVER stop early.
-5. Report the total "audio_duration" in seconds as a top-level number.
-6. Keep each phrase short (one readable caption line).
+TIMING RULES (CRITICAL — THIS IS THE #1 PRIORITY):
+1. You MUST transcribe EVERY SINGLE WORD from the very first spoken sound to the absolute last sound. Do NOT stop early. Do NOT summarize. Do NOT skip any words or phrases.
+2. Every phrase must have precise "start_time" and "end_time" in SECONDS. You MUST listen to the exact moment each word is spoken and assign that timestamp.
+3. PRESERVE ALL SILENCE: If there is a 2-second pause between two words, your timestamps MUST reflect that 2-second gap. Do NOT compress silence — the pauses ARE part of the audio and the captions MUST match them exactly.
+4. The FIRST phrase's start_time = when the first word actually begins speaking. The LAST phrase's end_time = when the LAST word finishes speaking. This is NON-NEGOTIABLE — your captions MUST cover 100% of the speech duration.
+5. CRITICAL SPEED RULE: Your phrase timestamps MUST match the ACTUAL speaking rate. If a speaker says 5 words in 2 seconds, your phrases covering those 5 words MUST span exactly 2 seconds (not 3, not 4 — EXACTLY 2). Match the natural speed of the speaker. Do NOT slow down or spread out captions beyond the actual speech pace.
+6. CAPTURE EVERY WORD: Even if words are spoken quickly, mumbled, or overlapping — transcribe them ALL with their exact timing. The speaker's speed is the speaker's speed — match it precisely.
+7. Report the total "audio_duration" in seconds as a top-level number. This MUST equal the real total duration of the audio file.
+8. Keep each phrase short (one readable caption line, ~5-10 words max per phrase).
+9. The LAST phrase MUST end at or very close to the actual end of the last spoken word. If the audio is 30 seconds long, your last phrase must end near 30 seconds — NOT at 20 seconds or 25 seconds. NEVER leave the last portion of audio without captions.
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}
@@ -1060,8 +1063,10 @@ Return ONLY a JSON object (no markdown):
         : (rawPhrases as any)._audioDuration ||
           Math.max(...clean.map((p) => p.end), 1);
     const lastEnd = Math.max(...clean.map((p) => p.end));
-    // If captions cover < 70% of the real audio, timing likely drifted → fall back.
-    if (reportedDuration > 0 && lastEnd < reportedDuration * 0.7) {
+    // If captions cover < 40% of the real audio, timing likely drifted → fall back.
+    // (normalizeTranscriptionTiming below will stretch timestamps to 100%, so even
+    // 40% raw coverage is fine — only reject truly garbled output.)
+    if (reportedDuration > 0 && lastEnd < reportedDuration * 0.4) {
       throw new Error(
         `Combined call coverage too low (${lastEnd.toFixed(1)}s of ${reportedDuration.toFixed(1)}s).`
       );
