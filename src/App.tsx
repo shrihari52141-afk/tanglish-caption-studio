@@ -9,6 +9,36 @@ import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebase
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags, generateCaptionFrames } from './utils/captionFormatter';
 import { notifyTelegram, notifyTelegramError } from './utils/deviceTracker';
 
+// Canvas animation helpers for export parity with CSS keyframes
+function getAnimationTransform(preset: string, elapsedSec: number, scaleX: number): { dx: number; dy: number; scale: number; rotation: number; colorOverride?: string } {
+  const t = elapsedSec;
+  switch (preset) {
+    case 'bounce': {
+      const phase = Math.abs(Math.sin(t * 4));
+      return { dx: 0, dy: -8 * scaleX * phase, scale: 1 + 0.18 * phase, rotation: 0 };
+    }
+    case 'pop': {
+      if (t < 0.1) return { dx: 0, dy: 0, scale: 0.8 + (t / 0.1) * 0.3, rotation: 0 };
+      if (t < 0.2) return { dx: 0, dy: 0, scale: 1.1 - ((t - 0.1) / 0.1) * 0.1, rotation: 0 };
+      return { dx: 0, dy: 0, scale: 1.0, rotation: 0 };
+    }
+    case 'beast':
+      return { dx: 0, dy: 0, scale: 1.2, rotation: -2 * Math.PI / 180, colorOverride: '#FF4500' };
+    case 'glitch': {
+      const jx = (Math.random() - 0.5) * 4 * scaleX;
+      const jy = (Math.random() - 0.5) * 4 * scaleX;
+      return { dx: jx, dy: jy, scale: 1.0, rotation: 0 };
+    }
+    case 'neon':
+    case 'neon_glow': {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+      return { dx: 0, dy: 0, scale: 1.0 + 0.02 * pulse, rotation: 0 };
+    }
+    default:
+      return { dx: 0, dy: 0, scale: 1.0, rotation: 0 };
+  }
+}
+
 const RENDER_API = 'https://tanglish-caption-api.onrender.com';
 const _envApi = (import.meta.env.VITE_API_URL || '').trim();
 const _isBrowserLocalhost =
@@ -100,6 +130,15 @@ function drawSubtitlesOnCanvas(
   } else if (styleSettings.fontFamily === 'Space Grotesk') {
     fontName = '"Space Grotesk", sans-serif';
     fontStyle = '800';
+  } else if (styleSettings.fontFamily === 'Playfair Display') {
+    fontName = '"Playfair Display", Georgia, serif';
+    fontStyle = '900 italic';
+  } else if (styleSettings.fontFamily === 'Pacifico') {
+    fontName = '"Pacifico", cursive';
+    fontStyle = 'normal';
+  } else if (styleSettings.fontFamily === 'Black Han Sans') {
+    fontName = '"Black Han Sans", sans-serif';
+    fontStyle = '900';
   } else {
     fontName = '"Helvetica Neue", Arial, sans-serif';
     fontStyle = '800';
@@ -121,7 +160,7 @@ function drawSubtitlesOnCanvas(
   
   const formatWordText = (text: string) => {
     let formatted = applyCaptionFormatting(
-      text,
+      stripASSTags(text),
       styleSettings.showEmojis !== false,
       styleSettings.showPunctuation !== false,
       styleSettings.emojiStyle || 'vibes'
@@ -138,10 +177,8 @@ function drawSubtitlesOnCanvas(
   // (editor-px) and max width 90% of the container. Words that overflow wrap to
   // the next line, and every line is horizontally centered.
   const gap = 8 * scaleX;
-  // Editor: box is max-w-[90%] with horizontal padding of 16*scaleFactor each side.
-  // Effective text width = 90% of container width minus both paddings, in video px.
-  const boxPaddingX = 16 * scaleX;
-  const maxLineWidth = 0.9 * canvasWidth - 2 * boxPaddingX;
+  // Editor: box is max-w-[90%] of the container.
+  const maxLineWidth = 0.9 * canvasWidth;
   const lineHeight = baseFontSize * 1.25; // matches typical line-box height
 
   const formattedTexts = displayWords.map(w => formatWordText(w.word));
@@ -171,9 +208,21 @@ function drawSubtitlesOnCanvas(
   // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
   const firstLineY = -(lines.length - 1) * lineHeight;
 
+  // Compute animation elapsed time for the active word
+  const activeWord = words[activeWordIndex];
+  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
+
   const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
     ctx.save();
     if (isActive) {
+      // Apply preset animation transforms (bounce, pop, beast, glitch, neon)
+      const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
+      if (anim.scale !== 1.0 || anim.dx !== 0 || anim.dy !== 0 || anim.rotation !== 0) {
+        ctx.translate(curX + anim.dx, curY + anim.dy);
+        ctx.rotate(anim.rotation);
+        ctx.scale(anim.scale, anim.scale);
+        ctx.translate(-curX, -curY);
+      }
       if (styleSettings.showBackground) {
         ctx.fillStyle = '#000000';
         const paddingX = 12 * scaleX;
@@ -195,30 +244,47 @@ function drawSubtitlesOnCanvas(
         ctx.quadraticCurveTo(rx, ry, rx + radius, ry);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = styleSettings.highlightColor;
+        ctx.strokeStyle = anim.colorOverride || styleSettings.highlightColor;
         ctx.lineWidth = 2 * scaleX;
         ctx.stroke();
       }
       if (styleSettings.showBacklight) {
-        ctx.shadowColor = styleSettings.highlightColor;
-        ctx.shadowBlur = 12 * scaleX;
+        // Dual-stage glow matching CSS: 0 0 12px color, 0 0 24px color
+        ctx.shadowColor = anim.colorOverride || styleSettings.highlightColor;
+        ctx.shadowBlur = 24 * scaleX;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
+        ctx.fillStyle = anim.colorOverride || styleSettings.highlightColor;
+        ctx.fillText(wordText, curX, curY);
+        ctx.shadowBlur = 12 * scaleX;
+        ctx.fillText(wordText, curX, curY);
+        ctx.shadowBlur = 0;
       } else if (styleSettings.showShadow) {
+        // Offset drop shadow matching CSS: 4px 4px 0px #000
+        ctx.fillStyle = '#000000';
+        ctx.fillText(wordText, curX + 4 * scaleX, curY + 4 * scaleX);
         ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 8 * scaleX;
+        ctx.lineWidth = 4 * scaleX;
         ctx.strokeText(wordText, curX, curY);
       }
-      ctx.fillStyle = styleSettings.highlightColor;
-      ctx.fillText(wordText, curX, curY);
+      ctx.fillStyle = anim.colorOverride || styleSettings.highlightColor;
+      if (!styleSettings.showBacklight) {
+        ctx.fillText(wordText, curX, curY);
+      }
     } else {
       ctx.fillStyle = styleSettings.textColor;
       if (styleSettings.showSpotlight) {
         ctx.globalAlpha = 0.35;
       }
       if (styleSettings.showShadow) {
+        ctx.save();
+        ctx.fillStyle = '#000000';
+        ctx.fillText(wordText, curX + 4 * scaleX, curY + 4 * scaleX);
+        ctx.restore();
+        ctx.fillStyle = styleSettings.textColor;
+        if (styleSettings.showSpotlight) ctx.globalAlpha = 0.35;
         ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 8 * scaleX;
+        ctx.lineWidth = 4 * scaleX;
         ctx.strokeText(wordText, curX, curY);
       }
       ctx.fillText(wordText, curX, curY);

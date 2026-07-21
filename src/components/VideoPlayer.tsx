@@ -79,24 +79,18 @@ export default function VideoPlayer({
     return () => cancelAnimationFrame(rafId);
   }, [videoUrl, words]);
 
+  // Phase 4: Fallback interval for low-end phones where RAF may drop frames.
+  // This safety net fires at 10Hz to ensure localTime never gets stuck.
   useEffect(() => {
-    let animId: number;
-    const updateLoop = () => {
-      const video = videoRef.current;
-      if (video) {
+    const video = videoRef.current;
+    if (!video) return;
+    const fallback = setInterval(() => {
+      if (!video.paused) {
         setLocalTime(video.currentTime);
       }
-      animId = requestAnimationFrame(updateLoop);
-    };
-
-    if (isPlaying) {
-      animId = requestAnimationFrame(updateLoop);
-    }
-
-    return () => {
-      cancelAnimationFrame(animId);
-    };
-  }, [isPlaying]);
+    }, 100);
+    return () => clearInterval(fallback);
+  }, [videoUrl]);
 
   const scaleFactor = containerWidth / 340;
   // Purely proportional so the export renderer can reproduce it EXACTLY at any
