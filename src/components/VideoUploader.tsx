@@ -23,36 +23,7 @@ interface VideoUploaderProps {
   initialFile?: File | null;
 }
 
-const LANGUAGES = [
-  { id: 'auto', name: 'Auto-Detect', desc: 'Detects audio automatically', script: 'Translates non-English to English alphabets' },
-  { id: 'tamil', name: 'Tamil', desc: 'Select options after selecting this language', script: 'e.g. Tamil to Tanglish or Tamil to English' },
-  { id: 'hindi', name: 'Hindi', desc: 'Select options after selecting this language', script: 'e.g. Hinglish or Hindi to English' },
-  { id: 'telugu', name: 'Telugu', desc: 'Select options after selecting this language', script: 'e.g. Telugish or Telugu to English' },
-  { id: 'kannada', name: 'Kannada', desc: 'Select options after selecting this language', script: 'e.g. Kannadish or Kannada to English' },
-  { id: 'malayalam', name: 'Malayalam', desc: 'Select options after selecting this language', script: 'e.g. Manglish or Malayalam to English' },
-  { id: 'english', name: 'English', desc: 'Standard English subtitles', script: 'e.g. Awesome!' },
-  { id: 'spanish', name: 'Spanish', desc: 'Select options after selecting this language', script: 'e.g. Spanish or Spanish to English' },
-  { id: 'french', name: 'French', desc: 'Select options after selecting this language', script: 'e.g. French or French to English' },
-  { id: 'german', name: 'German', desc: 'Select options after selecting this language', script: 'e.g. German or German to English' },
-  { id: 'portuguese', name: 'Portuguese', desc: 'Select options after selecting this language', script: 'e.g. Portuguese or Portuguese to English' },
-  { id: 'italian', name: 'Italian', desc: 'Select options after selecting this language', script: 'e.g. Italian or Italian to English' },
-  { id: 'arabic', name: 'Arabic', desc: 'Select options after selecting this language', script: 'e.g. Arabic or Arabic to English' },
-  { id: 'chinese', name: 'Chinese', desc: 'Select options after selecting this language', script: 'e.g. Mandarin or Chinese to English' },
-  { id: 'japanese', name: 'Japanese', desc: 'Select options after selecting this language', script: 'e.g. Japanese or Japanese to English' },
-  { id: 'korean', name: 'Korean', desc: 'Select options after selecting this language', script: 'e.g. Korean or Korean to English' },
-  { id: 'thai', name: 'Thai', desc: 'Select options after selecting this language', script: 'e.g. Thai or Thai to English' },
-  { id: 'vietnamese', name: 'Vietnamese', desc: 'Select options after selecting this language', script: 'e.g. Vietnamese or Vietnamese to English' },
-  { id: 'indonesian', name: 'Indonesian', desc: 'Select options after selecting this language', script: 'e.g. Indonesian or Indonesian to English' },
-  { id: 'turkish', name: 'Turkish', desc: 'Select options after selecting this language', script: 'e.g. Turkish or Turkish to English' },
-  { id: 'russian', name: 'Russian', desc: 'Select options after selecting this language', script: 'e.g. Russian or Russian to English' },
-  { id: 'punjabi', name: 'Punjabi', desc: 'Select options after selecting this language', script: 'e.g. Punjabi or Punjabi to English' },
-  { id: 'bengali', name: 'Bengali', desc: 'Select options after selecting this language', script: 'e.g. Bengali or Bengali to English' },
-  { id: 'marathi', name: 'Marathi', desc: 'Select options after selecting this language', script: 'e.g. Marathi or Marathi to English' },
-  { id: 'gujarati', name: 'Gujarati', desc: 'Select options after selecting this language', script: 'e.g. Gujarati or Gujarati to English' },
-  { id: 'urdu', name: 'Urdu', desc: 'Select options after selecting this language', script: 'e.g. Urdu or Urdu to English' },
-  { id: 'dutch', name: 'Dutch', desc: 'Select options after selecting this language', script: 'e.g. Dutch or Dutch to English' },
-  { id: 'swedish', name: 'Swedish', desc: 'Select options after selecting this language', script: 'e.g. Swedish or Swedish to English' },
-];
+
 
 export default function VideoUploader({ onUpload, isProcessing, initialFile }: VideoUploaderProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -64,10 +35,10 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
     }
   }, [initialFile]);
   const [selectedLanguage, setSelectedLanguage] = useState<string>(() => {
-    return localStorage.getItem('saved_selectedLanguage') || 'tamil';
+    return localStorage.getItem('saved_selectedLanguage') || 'auto';
   });
   const [translationMode, setTranslationMode] = useState<string>(() => {
-    return localStorage.getItem('saved_translationMode') || 'translate_english';
+    return localStorage.getItem('saved_translationMode') || 'transliterate';
   });
   const [useEmojis, setUseEmojis] = useState<boolean>(() => {
     const val = localStorage.getItem('saved_useEmojis');
@@ -236,128 +207,107 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
 
       {/* Scrollable middle section for options */}
       <div style={{ marginTop: '-14px' }} className="flex-1 p-5 sm:p-6 space-y-6 overflow-y-auto custom-scrollbar">
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <Languages className="w-5 h-5 text-fuchsia-500" />
-            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
-              {selectedFile.type.startsWith('audio/') ? "What's your original audio language?" : "What's your original video language?"}
-            </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#111] p-4 rounded-xl border border-[#222]">
+          {/* Source Language */}
+          <div className="space-y-2">
+            <label className="text-[11px] font-black uppercase tracking-wider text-[#aaa] flex items-center gap-1.5">
+              🎙️ Source Language
+            </label>
+            <div className="relative">
+              <select
+                value={selectedLanguage}
+                onChange={(e) => setSelectedLanguage(e.target.value)}
+                className="bg-[#0A0A0A] border border-[#333] rounded-xl text-white text-sm font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-600 appearance-none cursor-pointer"
+              >
+                <option value="auto">Auto Detect</option>
+                <option value="tamil">Tamil</option>
+                <option value="hindi">Hindi</option>
+                <option value="english">English</option>
+                <option value="kannada">Kannada</option>
+                <option value="telugu">Telugu</option>
+                <option value="malayalam">Malayalam</option>
+                <option value="bengali">Bengali</option>
+                <option value="marathi">Marathi</option>
+                <option value="gujarati">Gujarati</option>
+                <option value="punjabi">Punjabi</option>
+                <option value="odia">Odia</option>
+                <option value="assamese">Assamese</option>
+                <option value="urdu">Urdu</option>
+                <option value="sanskrit">Sanskrit</option>
+                <option value="korean">Korean</option>
+                <option value="japanese">Japanese</option>
+                <option value="chinese">Chinese (Mandarin)</option>
+                <option value="cantonese">Chinese (Cantonese)</option>
+                <option value="spanish">Spanish</option>
+                <option value="french">French</option>
+                <option value="german">German</option>
+                <option value="portuguese">Portuguese</option>
+                <option value="italian">Italian</option>
+                <option value="russian">Russian</option>
+                <option value="arabic">Arabic</option>
+                <option value="turkish">Turkish</option>
+                <option value="thai">Thai</option>
+                <option value="vietnamese">Vietnamese</option>
+                <option value="indonesian">Indonesian</option>
+                <option value="malay">Malay</option>
+                <option value="dutch">Dutch</option>
+                <option value="polish">Polish</option>
+                <option value="romanian">Romanian</option>
+                <option value="czech">Czech</option>
+                <option value="swedish">Swedish</option>
+                <option value="norwegian">Norwegian</option>
+                <option value="danish">Danish</option>
+                <option value="finnish">Finnish</option>
+                <option value="greek">Greek</option>
+                <option value="hebrew">Hebrew</option>
+                <option value="persian">Persian</option>
+                <option value="swahili">Swahili</option>
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-fuchsia-500">
+                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                  <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+                </svg>
+              </div>
+            </div>
           </div>
-          <p className="text-[11px] text-[#888888] uppercase font-bold mb-4 tracking-wide">
-            Select a language from the list below. AI will transcribe or translate with conversion to English/Roman alphabets.
-          </p>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[220px] overflow-y-auto pr-1.5 custom-scrollbar">
-            {LANGUAGES.map((lang) => {
-              const isSelected = selectedLanguage === lang.id;
-              return (
-                <button
-                  key={lang.id}
-                  type="button"
-                  onClick={() => setSelectedLanguage(lang.id)}
-                  className={`p-4 rounded-xl text-left border-2 transition-all flex flex-col gap-1 cursor-pointer ${
-                    isSelected 
-                      ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                      : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[13px] font-black uppercase tracking-tight text-white">
-                      {lang.name}
-                    </span>
-                    {isSelected && (
-                      <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                        <Check className="w-3 h-3" />
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[10px] text-[#888888] font-semibold leading-tight">
-                    {lang.desc}
-                  </span>
-                  <span className="text-[10px] text-fuchsia-400 font-mono mt-0.5">
-                    {lang.script}
-                  </span>
-                </button>
-              );
-            })}
+          {/* Translation Mode */}
+          <div className="space-y-2">
+            <label className="text-[11px] font-black uppercase tracking-wider text-[#aaa] flex items-center gap-1.5">
+              🌐 Translate To
+            </label>
+            <div className="relative">
+              <select
+                value={translationMode}
+                onChange={(e) => setTranslationMode(e.target.value)}
+                className="bg-[#0A0A0A] border border-[#333] rounded-xl text-white text-sm font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-600 appearance-none cursor-pointer"
+              >
+                <option value="transliterate">Keep Original</option>
+                <option value="translate_english">Translate to English</option>
+                <option value="translate_tamil">Translate to Tamil</option>
+                <option value="translate_hindi">Translate to Hindi</option>
+                <option value="translate_kannada">Translate to Kannada</option>
+                <option value="translate_telugu">Translate to Telugu</option>
+                <option value="translate_malayalam">Translate to Malayalam</option>
+                <option value="translate_spanish">Translate to Spanish</option>
+                <option value="translate_french">Translate to French</option>
+                <option value="translate_german">Translate to German</option>
+                <option value="translate_portuguese">Translate to Portuguese</option>
+                <option value="translate_italian">Translate to Italian</option>
+                <option value="translate_russian">Translate to Russian</option>
+                <option value="translate_arabic">Translate to Arabic</option>
+                <option value="translate_japanese">Translate to Japanese</option>
+                <option value="translate_korean">Translate to Korean</option>
+                <option value="translate_chinese">Translate to Chinese</option>
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-fuchsia-500">
+                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                  <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+                </svg>
+              </div>
+            </div>
           </div>
         </div>
-
-        {/* Translation & Script Mode Selection */}
-        {['auto', 'tamil', 'hindi', 'telugu', 'kannada', 'malayalam', 'spanish', 'italian'].includes(selectedLanguage) && (
-          <div className="pt-4 border-t border-[#252525] animate-fade-in">
-            <div className="flex items-center gap-2 mb-3">
-              <Languages className="w-5 h-5 text-fuchsia-500" />
-              <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
-                Choose Subtitle Style & Translation
-              </h3>
-            </div>
-            <p className="text-[11px] text-[#888888] uppercase font-bold mb-4 tracking-wide">
-              Customize how the subtitles are translated or romanized.
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setTranslationMode('transliterate')}
-                className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
-                  translationMode === 'transliterate'
-                    ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md'
-                    : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] font-black uppercase text-white">
-                    {selectedLanguage === 'auto'
-                      ? 'Auto-Detect to Roman Script'
-                      : ['spanish', 'italian'].includes(selectedLanguage)
-                      ? `Original ${selectedLanguage.toUpperCase()}`
-                      : `${selectedLanguage.toUpperCase()} to Roman Script`}
-                  </span>
-                  {translationMode === 'transliterate' && (
-                    <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                      <Check className="w-3 h-3" />
-                    </span>
-                  )}
-                </div>
-                <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                  {selectedLanguage === 'auto'
-                    ? 'Detect language and convert regional speech into English letters (Romanized, e.g., Tanglish/Hinglish)'
-                    : ['spanish', 'italian'].includes(selectedLanguage) 
-                    ? `Provide standard ${selectedLanguage} subtitles in Roman letters`
-                    : `Convert spoken ${selectedLanguage} into English letters (Romanized, e.g. Tanglish)`}
-                </p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTranslationMode('translate_english')}
-                className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
-                  translationMode === 'translate_english'
-                    ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md'
-                    : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[13px] font-black uppercase text-white">
-                    {selectedLanguage === 'auto'
-                      ? 'Auto-Detect to English Text'
-                      : `${selectedLanguage.toUpperCase()} to English Text`}
-                  </span>
-                  {translationMode === 'translate_english' && (
-                    <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                      <Check className="w-3 h-3" />
-                    </span>
-                  )}
-                </div>
-                <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                  {selectedLanguage === 'auto'
-                    ? 'Detect language, translate non-English speech and output subtitles in proper English text.'
-                    : `Translate the spoken ${selectedLanguage} audio and output subtitles in proper English text.`}
-                </p>
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Emojis Option Selection */}
         <div className="pt-4 border-t border-[#252525]">

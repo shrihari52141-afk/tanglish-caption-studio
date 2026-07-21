@@ -1024,23 +1024,28 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
 
-    const systemPrompt = `You are an ultra-precise audio alignment, semantic parsing, and multi-language subtitle engine. You analyze audio down to millisecond-level acoustic speech boundaries and output structured word-level JSON.
+    const systemPrompt = `You are an ultra-precise, millisecond-level audio alignment and semantic parsing engine for dynamic video captions.
 
-CRITICAL RULES — FOLLOW EXACTLY:
-1. WORD-LEVEL TIMESTAMPS: Return INDIVIDUAL WORDS, not phrases. Every single word MUST have its own "start_ms" and "end_ms" in MILLISECONDS reflecting the exact acoustic moment it is spoken.
-2. MILLIMETER PRECISION: timestamps must be in milliseconds (e.g. 1230 means 1.23 seconds). Do NOT round to whole seconds. The difference between words spoken quickly (e.g. "madbeka" at 1500ms-2100ms) vs slowly must be accurately captured.
-3. SILENCE & PAUSES: If there is a silence/pause/breath between words (>150ms gap), the previous word's end_ms MUST end at the exact moment speech stops. Do NOT stretch timestamps across silent gaps. Silence is NOT speech — captions must FREEZE during silence.
-4. TRANSLATION TIMING: When translating (e.g., Kanglish→English, Tamil→Hindi), distribute the translated words' timestamps PROPORTIONALLY across the source audio segment's time window. Use character-weighted allocation: a longer translated word gets more time than a shorter one, but ALL translated words MUST fit within the original source segment's start_ms to end_ms.
-5. COMPLETE COVERAGE: Transcribe from the VERY FIRST spoken sound to the ABSOLUTE LAST. The last word's end_ms MUST reach the actual end of speech. NEVER stop early. NEVER skip words.
-6. SPEED MATCHING: Word timestamps MUST match the ACTUAL speaking rate exactly. If a speaker says 3 words in 1 second, those 3 words' combined duration MUST be ~1000ms. Do NOT slow down or speed up beyond the real speech pace.
-7. EVERY WORD COUNTS: Transcribe ALL words — even quick, mumbled, or overlapping ones. The speaker's speed is the speaker's speed.
-8. METADATA TAGGING per word:
-   - "is_question": true if this word is interrogative or part of a question (e.g. "madbeka?", "Can I?", "why?")
-   - "is_expression": true if this word is an emotional exclamation/hot word (e.g. "Ayyo", "Shut up", "Oh god", "Ouch", "Wow")
-   - "is_name": true if this word is a proper noun — name, brand, place (e.g. "Ani", "Bengaluru", "Izzy")
-   - "is_sentence_end": true if this word ends a sentence/thought (has . or ! or ? or is the last word before a natural pause)
-9. EMOJI: Attach ONE contextually relevant emoji per sentence-end word (match the emotion of that segment).
-10. AUDIO DURATION: Report "audio_duration_ms" as the total audio length in milliseconds.
+Your task is to transcribe or translate speech strictly based on acoustic audio playback.
+
+=== CRITICAL TIMING & ANTI-STRETCHING RULES ===
+1. ABSOLUTE SPEECH-END BOUNDARY: Do NOT anchor, stretch, or interpolate timestamps to match the video or audio file duration. 
+   - If the video is 60 seconds long but speech ends at 48.2 seconds, the final word MUST have an end_ms of ~48200.
+   - Do NOT fill silent gaps at the end of the video with stretched captions.
+2. ACOUSTIC ACCURACY: start_ms and end_ms for every word must reflect the EXACT milliseconds speech is audible.
+3. PAUSE SENSITIVITY: If there is a silence >150ms between words, the preceding word MUST end immediately at the acoustic boundary. Do not bridge silences.
+4. TRANSLATION ALIGNMENT: When translating (e.g., Kanglish/Kannada to English), anchor the translated sentence strictly within the start_ms of the first source word and the end_ms of the last source word of that phrase.
+
+=== SEMANTIC TAGGING & HOT WORD RULES ===
+1. HOT WORDS / EXPRESSIONS (is_expression: true): 
+   - Tag ONLY true exclamations, isolated location queries, or emotional hot words (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god").
+   - Do NOT tag standard narrative words (e.g., "Hasnake", "one way", "cab", "book") as hot words. Keep standard words grouped together.
+2. QUESTIONS (is_question: true): Mark direct question words or phrases separately.
+3. PROPER NAMES (is_name: true): Mark proper names, cities, or brand names (e.g., "Ani Cabs", "Bengaluru").
+4. SENTENCE ENDS (is_sentence_end: true): Mark true whenever a word ends a sentence or has punctuation (., !, ?).
+
+=== EMOJI RULE ===
+Provide 1 contextually accurate emotion/object emoji per sentence segment.
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}
@@ -1048,24 +1053,7 @@ ${languageInstruction.trim()}
 - GRAMMAR: 100% natural, idiomatic, grammatically correct. Fix logic errors, brand names, place names from context.
 - EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each sentence (attached to the is_sentence_end word). Match emotion. Never more than one per sentence." : "Do NOT add any emojis."}
 
-Spoken language hint: ${langLabel}.
-
-Return ONLY a JSON object (no markdown):
-{
-  "audio_duration_ms": number,
-  "words": [
-    {
-      "word": string,
-      "start_ms": number,
-      "end_ms": number,
-      "is_question": boolean,
-      "is_expression": boolean,
-      "is_name": boolean,
-      "is_sentence_end": boolean,
-      "emoji": string | null
-    }
-  ]
-}`;
+Spoken language hint: ${langLabel}.`;
 
     sendLog(
       jobId,
@@ -1089,26 +1077,39 @@ Return ONLY a JSON object (no markdown):
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              audio_duration_ms: { type: Type.NUMBER },
-              words: {
+              total_speech_duration_ms: { type: Type.NUMBER },
+              segments: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    word: { type: Type.STRING },
-                    start_ms: { type: Type.NUMBER },
-                    end_ms: { type: Type.NUMBER },
-                    is_question: { type: Type.BOOLEAN },
-                    is_expression: { type: Type.BOOLEAN },
-                    is_name: { type: Type.BOOLEAN },
-                    is_sentence_end: { type: Type.BOOLEAN },
+                    segment_id: { type: Type.NUMBER },
+                    text_original: { type: Type.STRING },
+                    text_translated: { type: Type.STRING },
                     emoji: { type: Type.STRING },
+                    words: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          word: { type: Type.STRING },
+                          start_ms: { type: Type.NUMBER },
+                          end_ms: { type: Type.NUMBER },
+                          is_question: { type: Type.BOOLEAN },
+                          is_expression: { type: Type.BOOLEAN },
+                          is_name: { type: Type.BOOLEAN },
+                          is_sentence_end: { type: Type.BOOLEAN },
+                          emoji: { type: Type.STRING },
+                        },
+                        required: ["word", "start_ms", "end_ms"],
+                      },
+                    },
                   },
-                  required: ["word", "start_ms", "end_ms"],
+                  required: ["words"],
                 },
               },
             },
-            required: ["words"],
+            required: ["segments"],
           },
         },
       });
@@ -1118,7 +1119,18 @@ Return ONLY a JSON object (no markdown):
 
       // Support both new word-level and legacy phrase-level formats
       let words: any[] = [];
-      if (Array.isArray(parsed.words) && parsed.words.length > 0) {
+      if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+        parsed.segments.forEach((seg: any) => {
+          if (Array.isArray(seg.words)) {
+            if (seg.words.length > 0 && seg.emoji) {
+              const lastWord = seg.words[seg.words.length - 1];
+              if (!lastWord.emoji) lastWord.emoji = seg.emoji;
+            }
+            words.push(...seg.words);
+          }
+        });
+        (words as any)._audioDurationMs = Number(parsed.total_speech_duration_ms) || 0;
+      } else if (Array.isArray(parsed.words) && parsed.words.length > 0) {
         words = parsed.words;
         (words as any)._audioDurationMs = Number(parsed.audio_duration_ms) || 0;
       } else if (Array.isArray(parsed.phrases) && parsed.phrases.length > 0) {
