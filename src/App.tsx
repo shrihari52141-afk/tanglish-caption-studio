@@ -373,12 +373,14 @@ export default function App() {
   const newProjectFileInputRef = useRef<HTMLInputElement>(null);
   const replaceVideoInputRef = useRef<HTMLInputElement>(null);
 
-  // Undo/Redo history
-  const [undoStack, setUndoStack] = useState<CaptionWord[][]>([]);
-  const [redoStack, setRedoStack] = useState<CaptionWord[][]>([]);
+  // Undo/Redo history — capture full snapshot (words + styleSettings)
+  const [undoStack, setUndoStack] = useState<{words: CaptionWord[]; styleSettings: SubtitleStyleSettings}[]>([]);
+  const [redoStack, setRedoStack] = useState<{words: CaptionWord[]; styleSettings: SubtitleStyleSettings}[]>([]);
 
-  const pushUndo = (currentWords: CaptionWord[]) => {
-    setUndoStack(prev => [...prev.slice(-50), currentWords]);
+  const snapState = () => ({ words: state.words, styleSettings: state.styleSettings });
+
+  const pushUndo = () => {
+    setUndoStack(prev => [...prev.slice(-50), snapState()]);
     setRedoStack([]);
   };
 
@@ -386,17 +388,33 @@ export default function App() {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
     setUndoStack(s => s.slice(0, -1));
-    setRedoStack(r => [...r, state.words]);
-    setState(s => ({ ...s, words: prev }));
+    setRedoStack(r => [...r, snapState()]);
+    setState(s => ({ ...s, words: prev.words, styleSettings: prev.styleSettings }));
   };
 
   const handleRedo = () => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
     setRedoStack(r => r.slice(0, -1));
-    setUndoStack(u => [...u, state.words]);
-    setState(s => ({ ...s, words: next }));
+    setUndoStack(u => [...u, snapState()]);
+    setState(s => ({ ...s, words: next.words, styleSettings: next.styleSettings }));
   };
+
+  // Remove video confirmation
+  const [showRemoveDialog, setShowRemoveDialog] = useState(false);
+  const handleRemoveVideo = (mode: 'video' | 'audio' | 'both') => {
+    if (mode === 'both') {
+      setState(s => ({ ...s, videoUrl: '', videoFile: null, audioFile: null, words: [], currentTime: 0 }));
+    } else if (mode === 'video') {
+      setState(s => ({ ...s, videoUrl: '', videoFile: null }));
+    } else if (mode === 'audio') {
+      setState(s => ({ ...s, audioFile: null }));
+    }
+    setShowRemoveDialog(false);
+  };
+
+  // Mobile responsive: toggle between preview and edit tabs on small screens
+  const [mobileTab, setMobileTab] = useState<'preview' | 'edit'>('preview');
 
   // Replace video (keep audio/captions)
   const handleReplaceVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -506,7 +524,7 @@ export default function App() {
   };
 
   const handleUpdateWords = (updatedWords: CaptionWord[]) => {
-    pushUndo(state.words);
+    pushUndo();
     setState(s => ({ ...s, words: sanitizeCaptionWords(updatedWords) }));
   };
 
@@ -703,6 +721,17 @@ export default function App() {
     videoEl.muted = false;
     videoEl.playsInline = true;
     (videoEl as any).preload = 'auto';
+    
+    // To ensure mobile devices and WebViews decode video frames during offscreen playback,
+    // we must temporarily append it to the document body with hidden/invisible styling.
+    videoEl.style.position = 'fixed';
+    videoEl.style.left = '-9999px';
+    videoEl.style.top = '-9999px';
+    videoEl.style.width = '1px';
+    videoEl.style.height = '1px';
+    videoEl.style.opacity = '0';
+    videoEl.style.pointerEvents = 'none';
+    document.body.appendChild(videoEl);
 
     await new Promise<void>((resolve) => {
       let done = false;
@@ -723,6 +752,23 @@ export default function App() {
         throw new Error("Could not determine media duration.");
       }
 
+      // --- Measure source frame rate by playing a short sample ---
+      // We seek to ~10% in (avoids intro freeze-frames), play for 1s, count
+      // decoded frames via getVideoPlaybackQuality, then seek back to 0.
+      let sourceFps = 30; // safe fallback
+      try {
+        videoEl.currentTime = Math.min(duration * 0.1, 3);
+        await videoEl.play();
+        await new Promise(r => setTimeout(r, 200));
+        const qStart = videoEl.getVideoPlaybackQuality().totalVideoFrames;
+        await new Promise(r => setTimeout(r, 800));
+        const qEnd = videoEl.getVideoPlaybackQuality().totalVideoFrames;
+        const measured = Math.round((qEnd - qStart) / 0.8);
+        if (measured >= 15 && measured <= 120) sourceFps = measured;
+        videoEl.pause();
+        videoEl.currentTime = 0;
+      } catch { /* use fallback */ }
+
       // --- Canvas that we draw each frame onto ---
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -730,10 +776,8 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error("Canvas 2D context unavailable.");
 
-      // Use 30 fps for canvas capture — this is sufficient for captions and
-      // keeps performance good on mobile. The fixed-interval draw loop (see below)
-      // ensures caption timing is independent of the capture frame rate.
-      const fps = 30;
+      const fps = sourceFps;
+      const frameMs = 1000 / fps;
       const canvasStream = canvas.captureStream(fps);
 
       // --- Pull the audio track from the video into the recording ---
@@ -773,11 +817,11 @@ export default function App() {
         ? `Encoding natively as MP4 (${chosenMime})...`
         : `Device cannot record MP4 natively; recording then packaging as .mp4...`]);
 
-      // High bitrate scaled to resolution so exports aren't visibly compressed
-      // (roughly 0.15 bits/pixel/frame; clamped to a sane 8–40 Mbps range).
+      // Near-lossless bitrate: ~0.3 bits/pixel/frame (double the old value),
+      // clamped to 20-100 Mbps so high-res exports retain original quality.
       const targetBitrate = Math.min(
-        40_000_000,
-        Math.max(8_000_000, Math.round(width * height * fps * 0.15))
+        100_000_000,
+        Math.max(20_000_000, Math.round(width * height * fps * 0.3))
       );
       const recorderOpts: MediaRecorderOptions = {
         videoBitsPerSecond: targetBitrate,
@@ -804,10 +848,6 @@ export default function App() {
       await videoEl.play().catch(() => { /* some browsers need muted; retry */ });
 
       let stopped = false;
-      const targetFps = 30;
-      const frameMs = 1000 / targetFps;
-      // Track real elapsed time so the caption timing does NOT drift if video
-      // playback stutters or canvas rendering takes too long.
       const exportStartTime = performance.now();
       const drawFrame = () => {
         if (stopped) return;
@@ -883,7 +923,14 @@ export default function App() {
       setExportLogs(l => [...l, `Error: ${err?.message || err}`]);
       alert("On-device render failed. You can try Cloud Export instead.");
     } finally {
-      try { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); } catch { /* ignore */ }
+      try {
+        videoEl.pause();
+        videoEl.removeAttribute('src');
+        videoEl.load();
+        if (videoEl.parentNode) {
+          videoEl.parentNode.removeChild(videoEl);
+        }
+      } catch { /* ignore */ }
     }
   };
 
@@ -1336,6 +1383,7 @@ export default function App() {
   };
 
   const handleUpdateStyleSettings = (newSettings: Partial<SubtitleStyleSettings>) => {
+    pushUndo();
     setState(s => ({
       ...s,
       styleSettings: {
@@ -1346,7 +1394,7 @@ export default function App() {
   };
 
   const handleUpdateWordText = (id: string, text: string) => {
-    pushUndo(state.words);
+    pushUndo();
     const cleaned = stripASSTags(text);
     setState(s => ({
       ...s,
@@ -1514,6 +1562,7 @@ export default function App() {
                 onSeekComplete={handleSeekComplete}
                 onCaptionClick={() => setEditorTab('decorations')}
                 onDisplaySizeChange={(size) => { editorDisplayRef.current = size; }}
+                onRemoveVideo={() => setShowRemoveDialog(true)}
               />
               {state.isProcessing && (
                 <div className="absolute inset-0 bg-black/85 backdrop-blur-md z-20 flex flex-col items-center justify-center p-8">
@@ -1770,6 +1819,31 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Remove video/audio confirmation dialog */}
+      {showRemoveDialog && (
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#161616] border border-[#333] rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[15px] font-black uppercase tracking-wider text-white">Remove Media</h3>
+              <button onClick={() => setShowRemoveDialog(false)} className="text-[#888] hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-[12px] text-[#aaa] leading-relaxed">What would you like to remove?</p>
+            <div className="flex flex-col gap-2">
+              <button onClick={() => handleRemoveVideo('video')} className="w-full bg-[#222] hover:bg-red-950/40 hover:text-red-400 text-left px-4 py-3 rounded-xl border border-[#333] hover:border-red-500/30 text-[12px] font-bold text-white cursor-pointer transition-colors flex items-center gap-3">
+                <FileVideo className="w-4 h-4 text-red-400" /> Remove Video Only <span className="text-[10px] text-[#666] ml-auto">(keeps audio)</span>
+              </button>
+              <button onClick={() => handleRemoveVideo('audio')} className="w-full bg-[#222] hover:bg-amber-950/40 hover:text-amber-400 text-left px-4 py-3 rounded-xl border border-[#333] hover:border-amber-500/30 text-[12px] font-bold text-white cursor-pointer transition-colors flex items-center gap-3">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-amber-400"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg> Remove Audio Only <span className="text-[10px] text-[#666] ml-auto">(keeps video)</span>
+              </button>
+              <button onClick={() => handleRemoveVideo('both')} className="w-full bg-[#222] hover:bg-red-950/40 hover:text-red-400 text-left px-4 py-3 rounded-xl border border-[#333] hover:border-red-500/30 text-[12px] font-bold text-white cursor-pointer transition-colors flex items-center gap-3">
+                <XCircle className="w-4 h-4 text-red-500" /> Remove Both
+              </button>
+            </div>
+            <button onClick={() => setShowRemoveDialog(false)} className="text-[11px] text-[#666] hover:text-[#aaa] font-bold uppercase text-center cursor-pointer">Cancel</button>
           </div>
         </div>
       )}
