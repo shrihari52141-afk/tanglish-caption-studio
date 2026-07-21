@@ -1087,7 +1087,7 @@ Your primary objective is ZERO-LAG LIP SYNC. Captions must cover ONLY the speech
 
 === 4. SEMANTIC BREAKING & HOT-WORD OVERRIDES ===
 - is_expression: Mark TRUE ONLY for standalone exclamations or isolated queries (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god"). Do NOT tag normal narrative sentence words as hot words.
-- is_question: Mark TRUE for interrogatives.
+- is_question: Mark TRUE ONLY for the FINAL word of an interrogative phrase (e.g., only "ready?" in "are you ready?"). Do NOT mark every word in a question sentence — mark only the LAST word that carries the question intonation.
 - is_sentence_end: Mark TRUE when a word has a full stop (.), exclamation (!), or question mark (?).
 - is_name: Mark TRUE for proper nouns or brand names (e.g., "Ani Cabs", "Bengaluru").
 
@@ -1757,6 +1757,14 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
         }
       }
 
+      // If user selected "keep_script", preserve the native script (no transliteration)
+      if (translationMode === 'keep_script') {
+        languageInstruction = `
+          Keep the original language in its NATIVE script. Do NOT transliterate or convert to Roman script.
+          Preserve Tamil/Telugu/Kannada/Malayalam/Hindi/other native characters exactly as spoken.
+        `;
+      }
+
       // Gemini 2.5 Flash (original language) → Gemini 2.5 Flash (English lip-sync captions)
       let finalWords: any[] = [];
       let providerUsed = "Raw Fallback";
@@ -2006,6 +2014,8 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
       let languageInstruction = "";
       if (translationMode === "translate_english") {
         languageInstruction = `Translate all non-English speech to polished NATURAL ENGLISH captions. Fix logic errors, brand names, and grammar. Output English only.`;
+      } else if (translationMode === "keep_script") {
+        languageInstruction = `Keep the original language in its NATIVE script. Do NOT transliterate or convert to Roman script. Preserve native characters exactly as spoken.`;
       } else {
         switch (language) {
           case "tamil":

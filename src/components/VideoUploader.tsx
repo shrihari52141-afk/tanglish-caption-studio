@@ -274,7 +274,7 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
           {/* Translation Mode */}
           <div className="space-y-2">
             <label className="text-[11px] font-black uppercase tracking-wider text-[#aaa] flex items-center gap-1.5">
-              🌐 Translate To
+              🌐 Output Script
             </label>
             <div className="relative">
               <select
@@ -282,7 +282,12 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
                 onChange={(e) => setTranslationMode(e.target.value)}
                 className="bg-[#0A0A0A] border border-[#333] rounded-xl text-white text-sm font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-600 appearance-none cursor-pointer"
               >
-                <option value="transliterate">Keep Original</option>
+                <option value="keep_script">
+                  Keep {selectedLanguage === 'auto' ? 'Detected' : selectedLanguage.charAt(0).toUpperCase() + selectedLanguage.slice(1)} Script
+                </option>
+                <option value="transliterate">
+                  {selectedLanguage === 'auto' ? 'Auto' : selectedLanguage.charAt(0).toUpperCase() + selectedLanguage.slice(1)} → Roman Script
+                </option>
                 <option value="translate_english">Translate to English</option>
                 <option value="translate_tamil">Translate to Tamil</option>
                 <option value="translate_hindi">Translate to Hindi</option>

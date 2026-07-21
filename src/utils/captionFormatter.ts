@@ -203,18 +203,8 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
   for (let i = 0; i < wordsList.length; i++) {
     const wordObj = wordsList[i];
 
-    // RULE 1: Hot Word / Expression Override
+    // RULE 1: Hot Word / Expression Override — isolate standalone reaction words
     if (wordObj.is_expression) {
-      if (currentFrame.length > 0) {
-        frames.push(currentFrame);
-        currentFrame = [];
-      }
-      frames.push([wordObj]);
-      continue;
-    }
-
-    // RULE 2: Question Override
-    if (wordObj.is_question) {
       if (currentFrame.length > 0) {
         frames.push(currentFrame);
         currentFrame = [];
@@ -226,14 +216,14 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
     // Add current word to frame
     currentFrame.push(wordObj);
 
-    // RULE 3: Full Stop / Sentence End Override
+    // RULE 2: Full Stop / Sentence End Override
     if (wordObj.is_sentence_end || wordObj.word.includes('.') || wordObj.word.includes('!') || wordObj.word.includes('?')) {
       frames.push(currentFrame);
       currentFrame = [];
       continue;
     }
 
-    // RULE 4: Max Word Limit Fallback
+    // RULE 3: Max Word Limit Fallback
     const effectiveLimit = maxWordsPerScreen > 0 ? maxWordsPerScreen : 6;
     if (currentFrame.length >= effectiveLimit) {
       frames.push(currentFrame);

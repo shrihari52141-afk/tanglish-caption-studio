@@ -25,8 +25,8 @@ function getAnimationTransform(preset: string, elapsedSec: number, scaleX: numbe
     case 'beast':
       return { dx: 0, dy: 0, scale: 1.2, rotation: -2 * Math.PI / 180, colorOverride: '#FF4500' };
     case 'glitch': {
-      const jx = (Math.random() - 0.5) * 4 * scaleX;
-      const jy = (Math.random() - 0.5) * 4 * scaleX;
+      const jx = Math.sin(t * 37) * 4 * scaleX;
+      const jy = Math.cos(t * 53) * 4 * scaleX;
       return { dx: jx, dy: jy, scale: 1.0, rotation: 0 };
     }
     case 'neon':
@@ -125,7 +125,7 @@ function drawSubtitlesOnCanvas(
     fontName = '"Courier New", Courier, monospace';
     fontStyle = 'bold';
   } else if (styleSettings.fontFamily === 'Fredoka') {
-    fontName = '"Fredoka One", "Inter", sans-serif';
+    fontName = '"Fredoka", "Inter", sans-serif';
     fontStyle = '900';
   } else if (styleSettings.fontFamily === 'Space Grotesk') {
     fontName = '"Space Grotesk", sans-serif';
@@ -788,20 +788,32 @@ export default function App() {
       await videoEl.play().catch(() => { /* some browsers need muted; retry */ });
 
       let stopped = false;
-      const drawLoop = () => {
+      const targetFps = 30;
+      const frameMs = 1000 / targetFps;
+      // Track real elapsed time so the caption timing does NOT drift if video
+      // playback stutters or canvas rendering takes too long.
+      const exportStartTime = performance.now();
+      const drawFrame = () => {
         if (stopped) return;
+        const realElapsedMs = performance.now() - exportStartTime;
+        const captionTime = realElapsedMs / 1000;
         if (isAudioOnly) {
           ctx.fillStyle = exportBgColor || '#000000';
           ctx.fillRect(0, 0, width, height);
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, videoEl.currentTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height);
-        const pct = Math.min(99, Math.round((videoEl.currentTime / duration) * 100));
+        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height);
+        const pct = Math.min(99, Math.round((captionTime / duration) * 100));
         setLocalProgress(pct);
-        requestAnimationFrame(drawLoop);
+        // Schedule next frame at FIXED interval — do NOT use requestAnimationFrame
+        // which drifts when rendering is slow. A fixed setTimeout gives stable
+        // 30fps and prevents the video from appearing to slow down.
+        const nextAt = (Math.floor(realElapsedMs / frameMs) + 1) * frameMs;
+        const delay = Math.max(0, nextAt - performance.now());
+        setTimeout(drawFrame, delay);
       };
-      requestAnimationFrame(drawLoop);
+      setTimeout(drawFrame, frameMs);
 
       await new Promise<void>((resolve) => {
         const onEnded = () => resolve();

@@ -426,13 +426,13 @@ export default function VideoPlayer({
             }}
           />
           {/* Floating play/pause + speed control — always visible on top of video */}
-          <div className="absolute top-2 right-2 flex items-center gap-1.5 z-40">
+          <div className="absolute top-2 right-2 flex items-center gap-2 z-40">
             <select
               onChange={(e) => {
                 if (videoRef.current) videoRef.current.playbackRate = parseFloat(e.target.value);
               }}
               defaultValue="1"
-              className="bg-black/60 text-white text-[10px] font-bold px-1.5 py-1 rounded-lg border border-white/20 backdrop-blur-sm cursor-pointer"
+              className="bg-black/60 text-white text-[13px] font-bold px-2.5 py-1.5 rounded-lg border border-white/20 backdrop-blur-sm cursor-pointer"
             >
               <option value="0.5">0.5x</option>
               <option value="0.75">0.75x</option>
@@ -447,9 +447,9 @@ export default function VideoPlayer({
                   isPlaying ? videoRef.current.pause() : videoRef.current.play();
                 }
               }}
-              className="bg-black/60 backdrop-blur-sm text-white p-1.5 rounded-lg border border-white/20 hover:bg-black/80 transition-colors cursor-pointer"
+              className="bg-black/60 backdrop-blur-sm text-white p-2.5 rounded-lg border border-white/20 hover:bg-black/80 transition-colors cursor-pointer"
             >
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />}
+              {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-current" />}
             </button>
           </div>
           </>
