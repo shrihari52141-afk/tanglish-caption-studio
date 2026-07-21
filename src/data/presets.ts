@@ -24,7 +24,8 @@ export const STYLE_CATEGORIES = [
   { id: 'creative', name: 'Creative ✨' },
   { id: 'clean', name: 'Minimal 📝' },
   { id: 'cinematic', name: 'Cinematic 🎬' },
-  { id: 'anime', name: 'Anime & Pop 🌸' }
+  { id: 'anime', name: 'Anime & Pop 🌸' },
+  { id: 'remotion', name: 'Remotion 🎯' }
 ];
 
 export const PRESETS: PresetStyle[] = [
@@ -1117,6 +1118,254 @@ export const PRESETS: PresetStyle[] = [
       showBacklight: true,
       rotation: -3,
       maxWordsPerScreen: 2
+    }
+  },
+  // ── Remotion Caption Themes (from vshukla7/remotion-captions-themes) ──
+  {
+    id: 'remotion_pop',
+    name: 'Remotion Pop',
+    emoji: '🎯',
+    category: 'remotion',
+    settings: {
+      preset: 'pop',
+      fontFamily: 'Inter',
+      textColor: '#FFFFFF',
+      highlightColor: '#F59E0B',
+      capitalization: 'none',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: true,
+      rotation: 0,
+      maxWordsPerScreen: 6
+    }
+  },
+  {
+    id: 'remotion_karaoke',
+    name: 'Karaoke',
+    emoji: '🎤',
+    category: 'remotion',
+    settings: {
+      preset: 'bounce',
+      fontFamily: 'Inter',
+      textColor: '#CCCCCC',
+      highlightColor: '#F472B6',
+      capitalization: 'none',
+      showBackground: false,
+      showSpotlight: true,
+      showBacklight: false,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 5
+    }
+  },
+  {
+    id: 'remotion_hustle',
+    name: 'Hustle',
+    emoji: '💼',
+    category: 'remotion',
+    settings: {
+      preset: 'bounce',
+      fontFamily: 'Impact',
+      textColor: '#FFFFFF',
+      highlightColor: '#22C55E',
+      capitalization: 'all',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: true,
+      rotation: 2,
+      maxWordsPerScreen: 4
+    }
+  },
+  {
+    id: 'remotion_grape',
+    name: 'Grape',
+    emoji: '🍇',
+    category: 'remotion',
+    settings: {
+      preset: 'bounce',
+      fontFamily: 'Inter',
+      textColor: '#111827',
+      highlightColor: '#A855F7',
+      capitalization: 'all',
+      showBackground: true,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 5
+    }
+  },
+  {
+    id: 'remotion_beast',
+    name: 'MrBeast Bold',
+    emoji: '🦁',
+    category: 'remotion',
+    settings: {
+      preset: 'beast',
+      fontFamily: 'Impact',
+      textColor: '#FFFFFF',
+      highlightColor: '#FFD700',
+      capitalization: 'all',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: true,
+      rotation: -2,
+      maxWordsPerScreen: 4
+    }
+  },
+  {
+    id: 'remotion_poppin',
+    name: 'Poppin',
+    emoji: '💜',
+    category: 'remotion',
+    settings: {
+      preset: 'basic',
+      fontFamily: 'Inter',
+      textColor: '#FFFFFF',
+      highlightColor: '#EC4899',
+      capitalization: 'all',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: true,
+      rotation: 0,
+      maxWordsPerScreen: 6
+    }
+  },
+  {
+    id: 'remotion_aarit',
+    name: 'Aarit Cinematic',
+    emoji: '🎬',
+    category: 'remotion',
+    settings: {
+      preset: 'neon',
+      fontFamily: 'Playfair Display',
+      textColor: '#FFFFFF',
+      highlightColor: '#FBBF24',
+      capitalization: 'sentence',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: true,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 4
+    }
+  },
+  {
+    id: 'remotion_soft_ai',
+    name: 'Soft AI',
+    emoji: '🌫️',
+    category: 'remotion',
+    settings: {
+      preset: 'neon',
+      fontFamily: 'Inter',
+      textColor: '#E2E8F0',
+      highlightColor: '#93C5FD',
+      capitalization: 'none',
+      showBackground: true,
+      showSpotlight: false,
+      showBacklight: true,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 5
+    }
+  },
+  {
+    id: 'remotion_gaming_stream',
+    name: 'Gaming Stream',
+    emoji: '🎮',
+    category: 'remotion',
+    settings: {
+      preset: 'glitch',
+      fontFamily: 'Inter',
+      textColor: '#00FF00',
+      highlightColor: '#FF4500',
+      capitalization: 'all',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: true,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 3
+    }
+  },
+  {
+    id: 'remotion_simple_one_word',
+    name: 'One Word',
+    emoji: '👁️',
+    category: 'remotion',
+    settings: {
+      preset: 'basic',
+      fontFamily: 'Fredoka',
+      textColor: '#FFFFFF',
+      highlightColor: '#F59E0B',
+      capitalization: 'none',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: true,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 1
+    }
+  },
+  {
+    id: 'remotion_kinetic01',
+    name: 'Kinetic Flow',
+    emoji: '🌀',
+    category: 'remotion',
+    settings: {
+      preset: 'bounce',
+      fontFamily: 'Space Grotesk',
+      textColor: '#E2E8F0',
+      highlightColor: '#06B6D4',
+      capitalization: 'none',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: true,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 4
+    }
+  },
+  {
+    id: 'remotion_kinetic02',
+    name: 'Kinetic Pulse',
+    emoji: '⚡',
+    category: 'remotion',
+    settings: {
+      preset: 'pop',
+      fontFamily: 'Space Grotesk',
+      textColor: '#FFFFFF',
+      highlightColor: '#F97316',
+      capitalization: 'none',
+      showBackground: false,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: true,
+      rotation: 1,
+      maxWordsPerScreen: 5
+    }
+  },
+  {
+    id: 'remotion_podcast',
+    name: 'Podcast',
+    emoji: '🎙️',
+    category: 'remotion',
+    settings: {
+      preset: 'basic',
+      fontFamily: 'Inter',
+      textColor: '#F8FAFC',
+      highlightColor: '#A78BFA',
+      capitalization: 'none',
+      showBackground: true,
+      showSpotlight: false,
+      showBacklight: false,
+      showShadow: false,
+      rotation: 0,
+      maxWordsPerScreen: 6
     }
   }
 ];

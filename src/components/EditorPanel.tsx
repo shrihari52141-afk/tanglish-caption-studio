@@ -4,6 +4,7 @@ import { PRESETS, STYLE_CATEGORIES } from '../data/presets';
 import { Sparkles, Type, CaseSensitive, AlignCenter, AlignLeft, AlignRight, Sliders, Edit3, Check, Play, Hash, Smile } from 'lucide-react';
 import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from '../utils/subtitleExporter';
 import { stripASSTags } from '../utils/captionFormatter';
+import PresetPreview from './PresetPreview';
 
 interface EditorPanelProps {
   styleSettings: SubtitleStyleSettings;
@@ -328,24 +329,9 @@ export default function EditorPanel({
                           </div>
                         </div>
                         
-                        {/* Interactive live preview playing the preset animation */}
-                        <div className="mt-1 bg-[#0A0A0A] p-2.5 rounded-lg text-[13px] font-black text-center border border-[#2c2c2c] overflow-hidden h-[42px] flex items-center justify-center">
-                          <span 
-                            style={{ 
-                              color: p.settings.highlightColor, 
-                              fontFamily: p.settings.fontFamily === 'Impact' ? 'Impact, sans-serif' :
-                                          p.settings.fontFamily === 'Courier' ? '"Courier New", Courier, monospace' :
-                                          p.settings.fontFamily === 'Fredoka' ? '"Fredoka One", "Inter", sans-serif' :
-                                          p.settings.fontFamily === 'Space Grotesk' ? '"Space Grotesk", sans-serif' :
-                                          '"Helvetica Neue", Arial, sans-serif',
-                              textShadow: p.settings.showBacklight 
-                                ? `0 0 10px ${p.settings.highlightColor}` 
-                                : '3px 3px 0px #000',
-                            }}
-                            className={`inline-block style-${p.settings.preset} ${p.settings.fontFamily === 'Impact' ? 'italic uppercase' : ''}`}
-                          >
-                            TNP {p.emoji}
-                          </span>
+                        {/* Animated live preview playing the preset animation */}
+                        <div className="mt-1 bg-[#0A0A0A] rounded-lg border border-[#2c2c2c] overflow-hidden h-[44px]">
+                          <PresetPreview settings={p.settings} />
                         </div>
                       </div>
 

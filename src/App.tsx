@@ -1364,92 +1364,72 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen bg-[#0A0A0A] text-white font-sans selection:bg-fuchsia-600/30 flex flex-col overflow-hidden">
-      <header style={{ marginTop: '-1px' }} className="h-[64px] border-b border-[#333] bg-[#161616] flex items-center justify-between px-4 sm:px-6 shrink-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-fuchsia-600 flex items-center justify-center shrink-0">
-              <Layers className="w-5 h-5 text-white" />
-            </div>
-            <h1 className="font-black text-[18px] sm:text-[24px] tracking-tight uppercase flex items-center shrink-0">
-              CAPTIONS
-            </h1>
-            
-            <button 
-              onClick={handleExport}
-              disabled={state.words.length === 0 || isExporting}
-              className="ml-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-lg shadow-fuchsia-600/10 shrink-0"
-              title="Export Video"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            </button>
-
-            <button 
-              onClick={handleNewProject}
-              className="ml-1 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
-              title="New project"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-
-            {state.videoUrl && (
-              <>
-                <button 
-                  onClick={handleUndo}
-                  disabled={undoStack.length === 0}
-                  className="ml-1 bg-[#222] hover:bg-[#333] text-[#aaa] hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
-                  title="Undo"
-                >
-                  <Undo2 className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={handleRedo}
-                  disabled={redoStack.length === 0}
-                  className="ml-1 bg-[#222] hover:bg-[#333] text-[#aaa] hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
-                  title="Redo"
-                >
-                  <Redo2 className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={() => replaceVideoInputRef.current?.click()}
-                  className="ml-1 bg-[#222] hover:bg-[#333] text-fuchsia-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
-                  title="Replace video (keep captions & audio)"
-                >
-                  <Replace className="w-4 h-4" />
-                </button>
-                <input
-                  type="file"
-                  accept="video/*"
-                  ref={replaceVideoInputRef}
-                  onChange={handleReplaceVideoChange}
-                  className="hidden"
-                />
-              </>
-            )}
+      <header className="h-[48px] border-b border-[#2c2c2c] bg-[#0d0d0d] flex items-center justify-between px-3 shrink-0 z-50">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-600 to-fuchsia-600 flex items-center justify-center shrink-0 shadow-md shadow-fuchsia-600/20">
+            <Layers className="w-4 h-4 text-white" />
           </div>
+          <h1 className="font-black text-[14px] tracking-tight uppercase shrink-0 text-white/80 mr-1">
+            Studio
+          </h1>
           
-          {state.videoUrl && (
-            <div className="hidden md:flex items-center gap-2 pl-4 border-l border-[#333]">
-              <button
-                onClick={handleSaveDraft}
-                className="flex items-center gap-1.5 bg-[#222] hover:bg-[#2c2c2c] text-[#ccc] hover:text-white px-3 py-1.5 rounded-lg font-bold text-[11px] uppercase transition-all active:scale-95 border border-[#333]"
-                title="Save progress to draft"
-              >
-                <Save className="w-3.5 h-3.5 text-fuchsia-500" /> Save Draft
-              </button>
+          <button 
+            onClick={handleNewProject}
+            className="bg-[#222] hover:bg-[#333] text-fuchsia-400 hover:text-white w-7 h-7 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
+            title="New project"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
 
-              <button
-                onClick={handleAddVideoClick}
-                className="flex items-center gap-1.5 bg-[#222] hover:bg-[#2c2c2c] text-[#ccc] hover:text-white px-3 py-1.5 rounded-lg font-bold text-[11px] uppercase transition-all active:scale-95 border border-[#333]"
-                title="Upload/change the video file"
+          {state.videoUrl && (
+            <>
+              <div className="w-px h-5 bg-[#333] mx-1" />
+              <button 
+                onClick={handleUndo}
+                disabled={undoStack.length === 0}
+                className="bg-[#222] hover:bg-[#333] text-[#888] hover:text-white w-7 h-7 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Undo"
               >
-                <FileVideo className="w-3.5 h-3.5 text-fuchsia-500" /> Add Video
+                <Undo2 className="w-3.5 h-3.5" />
               </button>
-            </div>
+              <button 
+                onClick={handleRedo}
+                disabled={redoStack.length === 0}
+                className="bg-[#222] hover:bg-[#333] text-[#888] hover:text-white w-7 h-7 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Redo"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+              <button 
+                onClick={() => replaceVideoInputRef.current?.click()}
+                className="bg-[#222] hover:bg-[#333] text-fuchsia-400 hover:text-white w-7 h-7 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
+                title="Replace video media"
+              >
+                <Replace className="w-3.5 h-3.5" />
+              </button>
+              <input
+                type="file"
+                accept="video/*"
+                ref={replaceVideoInputRef}
+                onChange={handleReplaceVideoChange}
+                className="hidden"
+              />
+            </>
           )}
         </div>
 
-        <div className="flex items-center gap-4 shrink-0">
-          {/* Hidden file input for adding/swapping video */}
+        {state.videoUrl && (
+          <div className="hidden md:flex items-center gap-2">
+            <button
+              onClick={handleSaveDraft}
+              className="flex items-center gap-1 bg-[#222] hover:bg-[#2c2c2c] text-[#aaa] hover:text-white px-2.5 py-1.5 rounded-lg font-bold text-[10px] uppercase transition-all active:scale-95 border border-[#333]"
+            >
+              <Save className="w-3 h-3 text-fuchsia-500" /> Save
+            </button>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 shrink-0">
           <input
             type="file"
             accept="video/*"
@@ -1457,8 +1437,6 @@ export default function App() {
             onChange={handleAddVideoChange}
             className="hidden"
           />
-
-          {/* Hidden file input for creating a new clean project */}
           <input
             type="file"
             accept="video/*"
@@ -1467,8 +1445,17 @@ export default function App() {
             className="hidden"
           />
 
-          <div className="hidden xs:flex text-[11px] sm:text-[13px] font-black uppercase text-[#888888] tracking-wider items-center gap-1">
-            <Sparkles className="w-3.5 h-3.5 text-fuchsia-500 animate-pulse" /> Live Caption Engine V4
+          <button 
+            onClick={handleExport}
+            disabled={state.words.length === 0 || isExporting}
+            className="bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white px-3.5 py-1.5 rounded-lg font-black text-[11px] uppercase tracking-wider cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-lg shadow-fuchsia-600/20 flex items-center gap-1.5"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Export
+          </button>
+
+          <div className="hidden xs:flex text-[9px] font-bold uppercase text-[#555] tracking-wider items-center gap-1 pl-2 border-l border-[#333]">
+            <Sparkles className="w-2.5 h-2.5 text-fuchsia-500" /> V4
           </div>
         </div>
       </header>
@@ -1513,7 +1500,7 @@ export default function App() {
             </>
           </div>
         ) : (
-          <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] h-[calc(100vh-64px)] overflow-y-auto lg:overflow-hidden w-full max-w-full">
+          <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] h-[calc(100vh-48px)] overflow-y-auto lg:overflow-hidden w-full max-w-full">
             <div className="flex flex-col items-center justify-center bg-black border-r border-[#333] relative p-2 md:p-3 lg:p-4">
               <VideoPlayer 
                 videoUrl={state.videoUrl}
