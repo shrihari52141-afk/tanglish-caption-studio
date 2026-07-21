@@ -851,16 +851,15 @@ export default function App() {
       const exportStartTime = performance.now();
       const drawFrame = () => {
         if (stopped) return;
-        const realElapsedMs = performance.now() - exportStartTime;
-        const captionTime = realElapsedMs / 1000;
+        const currentVideoTime = videoEl.currentTime;
         if (isAudioOnly) {
           ctx.fillStyle = exportBgColor || '#000000';
           ctx.fillRect(0, 0, width, height);
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
-        const pct = Math.min(99, Math.round((captionTime / duration) * 100));
+        drawSubtitlesOnCanvas(ctx, width, height, currentVideoTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
+        const pct = Math.min(99, Math.round((currentVideoTime / duration) * 100));
         setLocalProgress(pct);
         // Schedule next frame at FIXED interval — do NOT use requestAnimationFrame
         // which drifts when rendering is slow. A fixed setTimeout gives stable
@@ -1726,6 +1725,24 @@ export default function App() {
                       </h4>
                       <p className="text-[11px] text-[#aaa] leading-relaxed">
                         100% private & instant. Renders directly in your browser using GPU acceleration. <strong>No video uploads required!</strong>
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Cloud Option */}
+                  <button
+                    onClick={startCloudExport}
+                    className="p-5 rounded-2xl border-2 border-[#2c2c2c] hover:border-fuchsia-500 bg-[#121212] hover:bg-fuchsia-600/5 text-left transition-all flex flex-col gap-3 group cursor-pointer"
+                  >
+                    <div className="p-2 bg-fuchsia-600/20 rounded-xl w-max text-fuchsia-400 group-hover:scale-110 transition-transform">
+                      <Cloud className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-[14px] font-black text-white uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                        Cloud Burner <span className="text-[9px] bg-[#333] text-gray-400 font-black px-1.5 py-0.5 rounded uppercase">Original Quality</span>
+                      </h4>
+                      <p className="text-[11px] text-[#aaa] leading-relaxed">
+                        Burns subtitles directly on our high-speed render cluster. <strong>Retains original resolution, codecs, frame rate, and maximum quality.</strong>
                       </p>
                     </div>
                   </button>
