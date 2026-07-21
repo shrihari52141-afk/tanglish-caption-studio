@@ -46,10 +46,38 @@ export default function VideoPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [containerWidth, setContainerWidth] = useState<number>(340);
   const [localTime, setLocalTime] = useState(currentTime);
+  const [highlightedWordId, setHighlightedWordId] = useState<string | null>(null);
 
+  // requestAnimationFrame loop for word-level millisecond sync.
+  // Throttled to ~30fps (every 2 frames) to avoid overwhelming low-end phones.
+  // The parent's timeupdate fires at ~4fps which is too slow for word-level sync.
   useEffect(() => {
-    setLocalTime(currentTime);
-  }, [currentTime]);
+    const video = videoRef.current;
+    if (!video) return;
+    let rafId: number;
+    let frameCount = 0;
+    const tick = () => {
+      frameCount++;
+      // Update every 2nd frame (~30fps) — smooth enough for word-level sync,
+      // light enough for low-end devices.
+      if (frameCount % 2 === 0) {
+        const t = video.currentTime;
+        setLocalTime(t);
+        let found: string | null = null;
+        for (let i = 0; i < words.length; i++) {
+          const w = words[i];
+          if (t >= w.start_time && t <= w.end_time) {
+            found = w.id;
+            break;
+          }
+        }
+        setHighlightedWordId(found);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [videoUrl, words]);
 
   useEffect(() => {
     let animId: number;
@@ -305,26 +333,21 @@ export default function VideoPlayer({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Find the index of the active word based on localTime
+  // Active word index from the RAF-driven highlightedWordId (word-level, not phrase-level).
   const activeWordIndex = (() => {
-    if (words.length === 0) return -1;
-    const currentActiveIdx = words.findIndex(
-      (w) => localTime >= w.start_time && localTime <= w.end_time
-    );
-    if (currentActiveIdx !== -1) return currentActiveIdx;
-
-    // Fallback: Find closest word
-    let closestIdx = 0;
-    let minDiff = Math.abs(localTime - words[0].start_time);
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIdx = i;
+    if (words.length === 0 || !highlightedWordId) {
+      // No highlight: find closest word for display purposes
+      if (words.length === 0) return -1;
+      let closestIdx = 0;
+      let minDiff = Math.abs(localTime - words[0].start_time);
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
+        if (diff < minDiff) { minDiff = diff; closestIdx = i; }
       }
+      return minDiff < 3.0 ? closestIdx : -1;
     }
-    return minDiff < 3.0 ? closestIdx : -1;
+    return words.findIndex((w) => w.id === highlightedWordId);
   })();
 
   // Construct displayWords based on styleSettings.maxWordsPerScreen in a stable chunked block
@@ -391,6 +414,7 @@ export default function VideoPlayer({
         className="relative mx-auto bg-gradient-to-b from-[#1a1a1a] to-black rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.5)] flex items-center justify-center border-4 border-[#333] select-none transition-all duration-300"
       >
         {videoUrl ? (
+          <>
           <video
             ref={videoRef}
             src={videoUrl}
@@ -407,6 +431,34 @@ export default function VideoPlayer({
               }
             }}
           />
+          {/* Floating play/pause + speed control — always visible on top of video */}
+          <div className="absolute top-2 right-2 flex items-center gap-1.5 z-40">
+            <select
+              onChange={(e) => {
+                if (videoRef.current) videoRef.current.playbackRate = parseFloat(e.target.value);
+              }}
+              defaultValue="1"
+              className="bg-black/60 text-white text-[10px] font-bold px-1.5 py-1 rounded-lg border border-white/20 backdrop-blur-sm cursor-pointer"
+            >
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1">1x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2x</option>
+            </select>
+            <button
+              onClick={() => {
+                if (videoRef.current) {
+                  isPlaying ? videoRef.current.pause() : videoRef.current.play();
+                }
+              }}
+              className="bg-black/60 backdrop-blur-sm text-white p-1.5 rounded-lg border border-white/20 hover:bg-black/80 transition-colors cursor-pointer"
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />}
+            </button>
+          </div>
+          </>
         ) : (
           <div className="text-[#888888] flex flex-col items-center">
             <span className="text-sm font-bold uppercase tracking-wide">Upload a video to preview</span>
@@ -434,8 +486,9 @@ export default function VideoPlayer({
             }`}
           >
             {displayWords.map((w) => {
-              // Check if this specific word is the active one in the sliding window
-              const isActive = words[activeWordIndex]?.id === w.id;
+              // Word-level highlight: active only when video time is within this
+              // word's exact start_time..end_time window. Freezes during silence.
+              const isActive = highlightedWordId === w.id;
               
               // Apply customized styling based on settings
               let itemStyle: React.CSSProperties = {
@@ -647,6 +700,37 @@ export default function VideoPlayer({
                 >
                   <RotateCw className="w-3.5 h-3.5" />
                 </button>
+              </div>
+            </div>
+
+            {/* Color Palette Section */}
+            <div className="flex flex-col gap-2 bg-[#0c0c0c] p-2 rounded-xl border border-[#222]">
+              <div className="text-[#888] text-[9px] uppercase tracking-wider mb-0.5">Colors</div>
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-[#aaa] font-bold w-16 shrink-0">Highlight</label>
+                <div className="flex gap-1 flex-wrap">
+                  {['#C600DC','#FF3B30','#FF9500','#FFCC00','#34C759','#007AFF','#5856D6','#FF2D92','#A2845E','#FFFFFF'].map(c => (
+                    <button key={c} onClick={() => onUpdateStyleSettings({ highlightColor: c })}
+                      className={`w-5 h-5 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${styleSettings.highlightColor === c ? 'border-white scale-110' : 'border-[#333]'}`}
+                      style={{ backgroundColor: c }} />
+                  ))}
+                  <input type="color" value={styleSettings.highlightColor}
+                    onChange={(e) => onUpdateStyleSettings({ highlightColor: e.target.value })}
+                    className="w-5 h-5 rounded cursor-pointer bg-transparent border-none p-0" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-[#aaa] font-bold w-16 shrink-0">Text</label>
+                <div className="flex gap-1 flex-wrap">
+                  {['#FFFFFF','#000000','#FF3B30','#FF9500','#FFCC00','#34C759','#007AFF','#5856D6','#C600DC','#A2845E'].map(c => (
+                    <button key={c} onClick={() => onUpdateStyleSettings({ textColor: c })}
+                      className={`w-5 h-5 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${styleSettings.textColor === c ? 'border-white scale-110' : 'border-[#333]'}`}
+                      style={{ backgroundColor: c }} />
+                  ))}
+                  <input type="color" value={styleSettings.textColor}
+                    onChange={(e) => onUpdateStyleSettings({ textColor: e.target.value })}
+                    className="w-5 h-5 rounded cursor-pointer bg-transparent border-none p-0" />
+                </div>
               </div>
             </div>
           </div>

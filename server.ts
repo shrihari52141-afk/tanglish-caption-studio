@@ -1024,46 +1024,47 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
 
-    const systemPrompt = `You are a professional, frame-accurate audio transcriber AND expert caption scriptwriter for Indian languages (Tamil, Telugu, Hindi, Kannada, Malayalam) and mixed Indian-English speech. In a SINGLE pass you must: (1) listen to the audio, (2) transcribe it verbatim with precise timing, and (3) produce the FINAL polished captions.
+    const systemPrompt = `You are an ultra-precise audio alignment, semantic parsing, and multi-language subtitle engine. You analyze audio down to millisecond-level acoustic speech boundaries and output structured word-level JSON.
 
-TIMING RULES (CRITICAL — THIS IS THE #1 PRIORITY):
-1. You MUST transcribe EVERY SINGLE WORD from the very first spoken sound to the absolute last sound. Do NOT stop early. Do NOT summarize. Do NOT skip any words or phrases.
-2. Every phrase must have precise "start_time" and "end_time" in SECONDS. You MUST listen to the exact moment each word is spoken and assign that timestamp.
-3. PRESERVE ALL SILENCE: If there is a 2-second pause between two words, your timestamps MUST reflect that 2-second gap. Do NOT compress silence — the pauses ARE part of the audio and the captions MUST match them exactly.
-4. The FIRST phrase's start_time = when the first word actually begins speaking. The LAST phrase's end_time = when the LAST word finishes speaking. This is NON-NEGOTIABLE — your captions MUST cover 100% of the speech duration.
-5. CRITICAL SPEED RULE: Your phrase timestamps MUST match the ACTUAL speaking rate. If a speaker says 5 words in 2 seconds, your phrases covering those 5 words MUST span exactly 2 seconds (not 3, not 4 — EXACTLY 2). Match the natural speed of the speaker. Do NOT slow down or spread out captions beyond the actual speech pace.
-6. CAPTURE EVERY WORD: Even if words are spoken quickly, mumbled, or overlapping — transcribe them ALL with their exact timing. The speaker's speed is the speaker's speed — match it precisely.
-7. Report the total "audio_duration" in seconds as a top-level number. This MUST equal the real total duration of the audio file.
-8. Keep each phrase short (one readable caption line, ~5-10 words max per phrase).
-9. The LAST phrase MUST end at or very close to the actual end of the last spoken word. If the audio is 30 seconds long, your last phrase must end near 30 seconds — NOT at 20 seconds or 25 seconds. NEVER leave the last portion of audio without captions.
-10. METADATA TAGGING (CRITICAL):
-    - is_question: Mark true if this segment/phrase is a question or interrogative unit (e.g. "madbeka?", "Can I book?").
-    - is_expression: Mark true if this segment contains hot words, exclamations, or strong expressions (e.g. "Ayyo", "Shut up", "Oh god", "Ouch").
-    - is_name: Mark true if this segment contains proper nouns like names, brands, or places.
-    - is_sentence_end: Mark true if this segment concludes a sentence or thought unit.
+CRITICAL RULES — FOLLOW EXACTLY:
+1. WORD-LEVEL TIMESTAMPS: Return INDIVIDUAL WORDS, not phrases. Every single word MUST have its own "start_ms" and "end_ms" in MILLISECONDS reflecting the exact acoustic moment it is spoken.
+2. MILLIMETER PRECISION: timestamps must be in milliseconds (e.g. 1230 means 1.23 seconds). Do NOT round to whole seconds. The difference between words spoken quickly (e.g. "madbeka" at 1500ms-2100ms) vs slowly must be accurately captured.
+3. SILENCE & PAUSES: If there is a silence/pause/breath between words (>150ms gap), the previous word's end_ms MUST end at the exact moment speech stops. Do NOT stretch timestamps across silent gaps. Silence is NOT speech — captions must FREEZE during silence.
+4. TRANSLATION TIMING: When translating (e.g., Kanglish→English, Tamil→Hindi), distribute the translated words' timestamps PROPORTIONALLY across the source audio segment's time window. Use character-weighted allocation: a longer translated word gets more time than a shorter one, but ALL translated words MUST fit within the original source segment's start_ms to end_ms.
+5. COMPLETE COVERAGE: Transcribe from the VERY FIRST spoken sound to the ABSOLUTE LAST. The last word's end_ms MUST reach the actual end of speech. NEVER stop early. NEVER skip words.
+6. SPEED MATCHING: Word timestamps MUST match the ACTUAL speaking rate exactly. If a speaker says 3 words in 1 second, those 3 words' combined duration MUST be ~1000ms. Do NOT slow down or speed up beyond the real speech pace.
+7. EVERY WORD COUNTS: Transcribe ALL words — even quick, mumbled, or overlapping ones. The speaker's speed is the speaker's speed.
+8. METADATA TAGGING per word:
+   - "is_question": true if this word is interrogative or part of a question (e.g. "madbeka?", "Can I?", "why?")
+   - "is_expression": true if this word is an emotional exclamation/hot word (e.g. "Ayyo", "Shut up", "Oh god", "Ouch", "Wow")
+   - "is_name": true if this word is a proper noun — name, brand, place (e.g. "Ani", "Bengaluru", "Izzy")
+   - "is_sentence_end": true if this word ends a sentence/thought (has . or ! or ? or is the last word before a natural pause)
+9. EMOJI: Attach ONE contextually relevant emoji per sentence-end word (match the emotion of that segment).
+10. AUDIO DURATION: Report "audio_duration_ms" as the total audio length in milliseconds.
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}
 - PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
-- GRAMMAR: 100% natural, idiomatic, grammatically correct captions. Fix flipped logic (e.g. "with hidden charges" → "no hidden charges"), fix brand/place names from context.
-- EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each phrase line (match the emotion of that line). Never more than one per line." : "Do NOT add any emojis."}
+- GRAMMAR: 100% natural, idiomatic, grammatically correct. Fix logic errors, brand names, place names from context.
+- EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each sentence (attached to the is_sentence_end word). Match emotion. Never more than one per sentence." : "Do NOT add any emojis."}
 
 Spoken language hint: ${langLabel}.
 
 Return ONLY a JSON object (no markdown):
-{ 
-  "audio_duration": number, 
-  "phrases": [ 
-    { 
-      "text": string, 
-      "start_time": number, 
-      "end_time": number,
+{
+  "audio_duration_ms": number,
+  "words": [
+    {
+      "word": string,
+      "start_ms": number,
+      "end_ms": number,
       "is_question": boolean,
       "is_expression": boolean,
       "is_name": boolean,
-      "is_sentence_end": boolean
-    } 
-  ] 
+      "is_sentence_end": boolean,
+      "emoji": string | null
+    }
+  ]
 }`;
 
     sendLog(
@@ -1071,15 +1072,15 @@ Return ONLY a JSON object (no markdown):
       `⚡ Combined 1-call transcribe+caption (${GEMINI_PRIMARY_MODEL} → fallback) — ${geminiKeys.length} key(s)...`
     );
 
-    const { result: rawPhrases, model } = await callGeminiWithModelFallback<
-      { text: string; start_time: number; end_time: number; is_question?: boolean; is_expression?: boolean; is_name?: boolean; is_sentence_end?: boolean }[]
+    const { result: rawWords, model } = await callGeminiWithModelFallback<
+      { word: string; start_ms: number; end_ms: number; is_question?: boolean; is_expression?: boolean; is_name?: boolean; is_sentence_end?: boolean; emoji?: string | null }[]
     >(async (ai, modelName) => {
       const audioPart = await buildGeminiAudioPart(ai, audioFilePath, mimeType, jobId);
       const geminiRes = await ai.models.generateContent({
         model: modelName,
         contents: [
           audioPart,
-          { text: "Transcribe and produce the final captions per your instructions." },
+          { text: "Transcribe and produce the final captions per your instructions. Return word-level timestamps in milliseconds." },
         ],
         config: {
           systemInstruction: systemPrompt,
@@ -1088,101 +1089,120 @@ Return ONLY a JSON object (no markdown):
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              audio_duration: { type: Type.NUMBER },
-              phrases: {
+              audio_duration_ms: { type: Type.NUMBER },
+              words: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    text: { type: Type.STRING },
-                    start_time: { type: Type.NUMBER },
-                    end_time: { type: Type.NUMBER },
+                    word: { type: Type.STRING },
+                    start_ms: { type: Type.NUMBER },
+                    end_ms: { type: Type.NUMBER },
                     is_question: { type: Type.BOOLEAN },
                     is_expression: { type: Type.BOOLEAN },
                     is_name: { type: Type.BOOLEAN },
                     is_sentence_end: { type: Type.BOOLEAN },
+                    emoji: { type: Type.STRING },
                   },
-                  required: ["text", "start_time", "end_time"],
+                  required: ["word", "start_ms", "end_ms"],
                 },
               },
             },
-            required: ["phrases"],
+            required: ["words"],
           },
         },
       });
       const text = geminiRes.text;
       if (!text) throw new Error("Combined call returned empty text.");
       const parsed = extractJsonFromResponse(text);
-      const phrases = Array.isArray(parsed.phrases) ? parsed.phrases : [];
-      if (phrases.length === 0) throw new Error("Combined call returned no phrases.");
-      (phrases as any)._audioDuration = Number(parsed.audio_duration) || 0;
-      return phrases;
+
+      // Support both new word-level and legacy phrase-level formats
+      let words: any[] = [];
+      if (Array.isArray(parsed.words) && parsed.words.length > 0) {
+        words = parsed.words;
+        (words as any)._audioDurationMs = Number(parsed.audio_duration_ms) || 0;
+      } else if (Array.isArray(parsed.phrases) && parsed.phrases.length > 0) {
+        // Legacy phrase-level fallback: split phrases into words
+        for (const p of parsed.phrases) {
+          const text = String(p.text || "").trim();
+          const ws = text.split(/\s+/).filter(Boolean);
+          if (ws.length === 0) continue;
+          const pStart = Number(p.start_time || 0) * 1000;
+          const pEnd = Number(p.end_time || 0) * 1000;
+          const pDur = Math.max(pEnd - pStart, 1);
+          let charOffset = 0;
+          const totalChars = text.replace(/\s/g, "").length || 1;
+          for (let j = 0; j < ws.length; j++) {
+            const wClean = ws[j].replace(/[.,!?;:'"]/g, "");
+            const wChars = wClean.length || 1;
+            const wStart = pStart + (charOffset / totalChars) * pDur;
+            charOffset += wClean.length;
+            const wEnd = j < ws.length - 1
+              ? pStart + (charOffset / totalChars) * pDur
+              : pEnd;
+            words.push({
+              word: ws[j],
+              start_ms: Math.round(wStart),
+              end_ms: Math.round(wEnd),
+              is_question: j === ws.length - 1 ? !!p.is_question : false,
+              is_expression: !!p.is_expression,
+              is_name: !!p.is_name,
+              is_sentence_end: j === ws.length - 1 ? !!p.is_sentence_end : false,
+              emoji: j === ws.length - 1 ? (p.emoji || null) : null,
+            });
+          }
+        }
+        (words as any)._audioDurationMs = Number(parsed.audio_duration) * 1000 || 0;
+      }
+      if (words.length === 0) throw new Error("Combined call returned no words.");
+      return words;
     }, jobId);
 
-    // ---- Validate coverage so we don't silently ship worse quality ----
-    const clean = (rawPhrases as any[])
-      .map((p) => ({
-        text: String(p.text || "").trim(),
-        start: Number(p.start_time || 0),
-        end: Number(p.end_time || 0),
-        is_question: !!p.is_question,
-        is_expression: !!p.is_expression,
-        is_name: !!p.is_name,
-        is_sentence_end: !!p.is_sentence_end,
-      }))
-      .filter((p) => p.text.length > 0 && p.end > p.start);
+    // ---- Convert ms → seconds, validate coverage, normalize ----
+    const rawW = (rawWords as any[]).map((w) => ({
+      word: String(w.word || "").trim(),
+      start_time: (Number(w.start_ms || 0)) / 1000,
+      end_time: (Number(w.end_ms || 0)) / 1000,
+      is_question: !!w.is_question,
+      is_expression: !!w.is_expression,
+      is_name: !!w.is_name,
+      is_sentence_end: !!w.is_sentence_end,
+      emoji: w.emoji || null,
+    })).filter((w) => w.word.length > 0 && w.end_time > w.start_time);
 
-    if (clean.length === 0) {
-      throw new Error("Combined call: no usable phrases after cleaning.");
+    if (rawW.length === 0) {
+      throw new Error("Combined call: no usable words after cleaning.");
     }
 
-    const reportedDuration =
+    // Attach emoji to sentence-end words if not already set by model
+    if (useEmojis) {
+      rawW.forEach((w, i) => {
+        if (w.is_sentence_end && !w.emoji) {
+          const emojiPool = ["🔥", "💪", "😂", "❤️", "😎", "👏", "💡", "😮", "😢", "🎉"];
+          w.emoji = emojiPool[i % emojiPool.length];
+        }
+        if (w.is_sentence_end && w.emoji) {
+          w.word = `${w.word} ${w.emoji}`;
+        }
+      });
+    }
+
+    const reportedDurationMs =
       targetDuration > 0
-        ? targetDuration
-        : (rawPhrases as any)._audioDuration ||
-          Math.max(...clean.map((p) => p.end), 1);
-    const lastEnd = Math.max(...clean.map((p) => p.end));
-    // If captions cover < 40% of the real audio, timing likely drifted → fall back.
-    // (normalizeTranscriptionTiming below will stretch timestamps to 100%, so even
-    // 40% raw coverage is fine — only reject truly garbled output.)
-    if (reportedDuration > 0 && lastEnd < reportedDuration * 0.4) {
+        ? targetDuration * 1000
+        : (rawWords as any)._audioDurationMs ||
+          Math.max(...rawW.map((w) => w.end_time * 1000), 1);
+    const lastEndMs = Math.max(...rawW.map((w) => w.end_time * 1000));
+    // If captions cover < 30% of the real audio, timing likely drifted → fall back.
+    if (reportedDurationMs > 0 && lastEndMs < reportedDurationMs * 0.3) {
       throw new Error(
-        `Combined call coverage too low (${lastEnd.toFixed(1)}s of ${reportedDuration.toFixed(1)}s).`
+        `Combined call coverage too low (${(lastEndMs/1000).toFixed(1)}s of ${(reportedDurationMs/1000).toFixed(1)}s).`
       );
     }
 
-    // ---- Distribute each phrase's words across its timestamp window ----
-    const words: TimedWord[] = [];
-    clean.forEach((p, idx) => {
-      const line = ensureOneLineEmoji(p.text, idx, useEmojis);
-      const emojiMatch = useEmojis ? line.match(/\p{Extended_Pictographic}/u) : null;
-      const body = stripAllEmojis(line).split(/\s+/).filter(Boolean);
-      if (body.length === 0) return;
-
-      const dummyFallback: TimedWord = {
-        word: "",
-        start_time: p.start,
-        end_time: p.end,
-        is_question: p.is_question,
-        is_expression: p.is_expression,
-        is_name: p.is_name,
-        is_sentence_end: p.is_sentence_end,
-      };
-
-      const timed = distributePhraseText(body.join(" "), p.start, p.end, [dummyFallback]);
-      if (emojiMatch && timed.length > 0) {
-        timed[timed.length - 1] = {
-          ...timed[timed.length - 1],
-          word: `${timed[timed.length - 1].word} ${emojiMatch[0]}`,
-        };
-      }
-      words.push(...timed);
-    });
-
-    const stretchTarget =
-      targetDuration > 0 ? targetDuration : reportedDuration;
+    const stretchTarget = targetDuration > 0 ? targetDuration : reportedDurationMs / 1000;
     const normalized = normalizeTranscriptionTiming(
-      normalizeWhisperWords(words),
+      normalizeWhisperWords(rawW),
       stretchTarget
     );
     if (normalized.length === 0) {
@@ -1191,7 +1211,7 @@ Return ONLY a JSON object (no markdown):
 
     sendLog(
       jobId,
-      `✅ Combined 1-call OK — ${normalized.length} words / ${clean.length} lines via ${model}.`
+      `✅ Combined 1-call OK — ${normalized.length} words via ${model} (word-level ms).`
     );
     return { words: normalized, providerUsed: `${model} (1-call)` };
   }
