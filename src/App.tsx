@@ -67,7 +67,8 @@ function drawSubtitlesOnCanvas(
   styleSettings: SubtitleStyleSettings,
   videoEl: HTMLVideoElement,
   editorDisplayWidth?: number,
-  editorDisplayHeight?: number
+  editorDisplayHeight?: number,
+  enableAnimation?: boolean
 ) {
   if (words.length === 0) return;
 
@@ -135,7 +136,7 @@ function drawSubtitlesOnCanvas(
     fontStyle = '900';
   } else if (styleSettings.fontFamily === 'Space Grotesk') {
     fontName = '"Space Grotesk", sans-serif';
-    fontStyle = '800';
+    fontStyle = '900';
   } else if (styleSettings.fontFamily === 'Playfair Display') {
     fontName = '"Playfair Display", Georgia, serif';
     fontStyle = '900 italic';
@@ -147,7 +148,7 @@ function drawSubtitlesOnCanvas(
     fontStyle = '900';
   } else {
     fontName = '"Helvetica Neue", Arial, sans-serif';
-    fontStyle = '800';
+    fontStyle = 'bold';
   }
   
   ctx.font = `${fontStyle} ${baseFontSize}px ${fontName}`;
@@ -221,8 +222,12 @@ function drawSubtitlesOnCanvas(
   const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
     ctx.save();
     if (isActive) {
-      // Apply preset animation transforms (bounce, pop, beast, glitch, neon)
-      const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
+      // Apply preset animation transforms only when enabled (editor preview).
+      // Export rendering uses static highlighting so the output matches the
+      // editor's base style without motion.
+      const anim = enableAnimation !== false
+        ? getAnimationTransform(styleSettings.preset, animElapsed, scaleX)
+        : { dx: 0, dy: 0, scale: 1.0, rotation: 0, colorOverride: undefined };
       if (anim.scale !== 1.0 || anim.dx !== 0 || anim.dy !== 0 || anim.rotation !== 0) {
         ctx.translate(curX + anim.dx, curY + anim.dy);
         ctx.rotate(anim.rotation);
@@ -814,7 +819,7 @@ export default function App() {
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height);
+        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
         const pct = Math.min(99, Math.round((captionTime / duration) * 100));
         setLocalProgress(pct);
         // Schedule next frame at FIXED interval — do NOT use requestAnimationFrame
