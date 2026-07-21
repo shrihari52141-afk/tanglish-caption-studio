@@ -247,3 +247,64 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
 
   return frames;
 }
+
+/**
+ * Auto-Speedup Caption Algorithm for translation sync.
+ *
+ * When translating between languages, syllable count and word lengths change,
+ * but the speaker's video time window never changes. If Kanglish speech lasts
+ * 1.2s, the English translation highlights MUST complete in exactly 1.2s.
+ *
+ * This function takes translated words and forces their timestamps into the
+ * source audio's exact millisecond bounds using character-weighted proportioning.
+ *
+ * @param translatedWords - Array of words with at least { word: string }
+ * @param sourceStartMs   - Start of the source audio segment in ms
+ * @param sourceEndMs     - End of the source audio segment in ms
+ * @returns Array of words with start_ms and end_ms compressed to fit the window
+ */
+export function calculateSpeedupTimestamps<T extends { word: string; is_expression?: boolean; is_question?: boolean; is_name?: boolean; is_sentence_end?: boolean; emoji?: string | null }>(
+  translatedWords: T[],
+  sourceStartMs: number,
+  sourceEndMs: number
+): (T & { start_ms: number; end_ms: number })[] {
+  if (translatedWords.length === 0) return [];
+  const totalWindowMs = sourceEndMs - sourceStartMs;
+  if (totalWindowMs <= 0) {
+    // Degenerate: distribute evenly
+    const step = 1;
+    return translatedWords.map((item, i) => ({
+      ...item,
+      start_ms: sourceStartMs + i * step,
+      end_ms: sourceStartMs + (i + 1) * step,
+    }));
+  }
+
+  // Total character count (excluding spaces and punctuation for weighting)
+  const totalChars = translatedWords.reduce((sum, item) => {
+    const clean = item.word.replace(/[\s.,!?;:'"()]/g, '');
+    return sum + (clean.length || 1);
+  }, 0);
+
+  let currentStartMs = sourceStartMs;
+
+  return translatedWords.map((item, index) => {
+    const clean = item.word.replace(/[\s.,!?;:'"()]/g, '');
+    const wordCharWeight = (clean.length || 1) / totalChars;
+    const wordDurationMs = Math.round(totalWindowMs * wordCharWeight);
+
+    const wordStart = currentStartMs;
+    // Last word snaps strictly to sourceEndMs to prevent floating-point rounding gaps
+    const wordEnd = index === translatedWords.length - 1
+      ? sourceEndMs
+      : wordStart + wordDurationMs;
+
+    currentStartMs = wordEnd + 1; // 1ms offset between words
+
+    return {
+      ...item,
+      start_ms: wordStart,
+      end_ms: wordEnd,
+    };
+  });
+}

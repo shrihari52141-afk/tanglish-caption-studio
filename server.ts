@@ -609,6 +609,39 @@ Return ONLY a JSON object (no markdown, no code fences):
     is_sentence_end?: boolean;
   };
 
+  /**
+   * Auto-Speedup: compress translated word timestamps into source audio window.
+   * When translating, syllable counts change but the speaker's time window doesn't.
+   * This ensures the last translated word finishes exactly when the speaker stops.
+   */
+  function applySpeedupTimestamps(
+    words: TimedWord[],
+    sourceStartSec: number,
+    sourceEndSec: number
+  ): TimedWord[] {
+    if (words.length === 0) return words;
+    const totalWindowMs = (sourceEndSec - sourceStartSec) * 1000;
+    if (totalWindowMs <= 0) return words;
+
+    const totalChars = words.reduce((sum, w) => {
+      const clean = w.word.replace(/[\s.,!?;:'"()]/g, '');
+      return sum + (clean.length || 1);
+    }, 0);
+
+    let currentStartMs = sourceStartSec * 1000;
+    const endMs = sourceEndSec * 1000;
+
+    return words.map((w, i) => {
+      const clean = w.word.replace(/[\s.,!?;:'"()]/g, '');
+      const weight = (clean.length || 1) / totalChars;
+      const durMs = Math.round(totalWindowMs * weight);
+      const start = currentStartMs;
+      const end = i === words.length - 1 ? endMs : start + durMs;
+      currentStartMs = end + 1;
+      return { ...w, start_time: start / 1000, end_time: end / 1000 };
+    });
+  }
+
   /** Clean Whisper tokens (strip stray punctuation-only tokens, normalize) */
   function normalizeWhisperWords(words: TimedWord[]): TimedWord[] {
     return words
@@ -1024,28 +1057,34 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
 
-    const systemPrompt = `You are an ultra-precise, millisecond-level audio alignment and semantic parsing engine for dynamic video captions.
+    const systemPrompt = `You are an ultra-precise audio transcription, translation, and auto-speedup subtitle engine.
 
-Your task is to transcribe or translate speech strictly based on acoustic audio playback.
+Your primary objective is ZERO-LAG LIP SYNC. The total duration of any translated caption MUST strictly equal the acoustic speech duration of the source audio segment.
 
-=== CRITICAL TIMING & ANTI-STRETCHING RULES ===
-1. ABSOLUTE SPEECH-END BOUNDARY: Do NOT anchor, stretch, or interpolate timestamps to match the video or audio file duration. 
-   - If the video is 60 seconds long but speech ends at 48.2 seconds, the final word MUST have an end_ms of ~48200.
-   - Do NOT fill silent gaps at the end of the video with stretched captions.
-2. ACOUSTIC ACCURACY: start_ms and end_ms for every word must reflect the EXACT milliseconds speech is audible.
-3. PAUSE SENSITIVITY: If there is a silence >150ms between words, the preceding word MUST end immediately at the acoustic boundary. Do not bridge silences.
-4. TRANSLATION ALIGNMENT: When translating (e.g., Kanglish/Kannada to English), anchor the translated sentence strictly within the start_ms of the first source word and the end_ms of the last source word of that phrase.
+=== 1. SPEECH DURATION & TIMING LOCK ===
+- Detect exact acoustic start (start_ms) and acoustic end (end_ms) of each spoken source phrase.
+- NEVER stretch timestamps to fill silent audio gaps or video file padding.
+- When speech stops, end timestamps immediately.
+- ABSOLUTE SPEECH-END BOUNDARY: If video is 60s but speech ends at 48.2s, last word end_ms = ~48200. Do NOT fill silent gaps.
 
-=== SEMANTIC TAGGING & HOT WORD RULES ===
-1. HOT WORDS / EXPRESSIONS (is_expression: true): 
-   - Tag ONLY true exclamations, isolated location queries, or emotional hot words (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god").
-   - Do NOT tag standard narrative words (e.g., "Hasnake", "one way", "cab", "book") as hot words. Keep standard words grouped together.
-2. QUESTIONS (is_question: true): Mark direct question words or phrases separately.
-3. PROPER NAMES (is_name: true): Mark proper names, cities, or brand names (e.g., "Ani Cabs", "Bengaluru").
-4. SENTENCE ENDS (is_sentence_end: true): Mark true whenever a word ends a sentence or has punctuation (., !, ?).
+=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION ===
+- Translate speech accurately while strictly locking translated phrases inside the source phrase's acoustic window (source_start_ms to source_end_ms).
+- AUTO-SPEEDUP: If target language translation contains more words/syllables than original speech, compress target word durations proportionally by letter count so that the last word finishes EXACTLY at source_end_ms.
+- Do NOT expand time bounds beyond when the speaker finishes talking.
+- WORD-LEVEL TIMING: Return INDIVIDUAL WORDS with start_ms and end_ms in MILLISECONDS. Every word must have its own precise timestamp.
 
-=== EMOJI RULE ===
-Provide 1 contextually accurate emotion/object emoji per sentence segment.
+=== 3. SILENCE & PAUSE RULES ===
+- If silence >150ms between words, preceding word MUST end at acoustic boundary. Do not bridge silences.
+- Captions FREEZE during silence — no word highlighted = no movement.
+
+=== 4. SEMANTIC BREAKING & HOT-WORD OVERRIDES ===
+- is_expression: Mark TRUE ONLY for standalone exclamations or isolated queries (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god"). Do NOT tag normal narrative sentence words as hot words.
+- is_question: Mark TRUE for interrogatives.
+- is_sentence_end: Mark TRUE when a word has a full stop (.), exclamation (!), or question mark (?).
+- is_name: Mark TRUE for proper nouns or brand names (e.g., "Ani Cabs", "Bengaluru").
+
+=== 5. EMOJI TAGGING ===
+- Include 1 contextually relevant emotion emoji per sentence segment.
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}
@@ -1053,7 +1092,24 @@ ${languageInstruction.trim()}
 - GRAMMAR: 100% natural, idiomatic, grammatically correct. Fix logic errors, brand names, place names from context.
 - EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each sentence (attached to the is_sentence_end word). Match emotion. Never more than one per sentence." : "Do NOT add any emojis."}
 
-Spoken language hint: ${langLabel}.`;
+Spoken language hint: ${langLabel}.
+
+Return ONLY a JSON object (no markdown) with word-level timestamps in milliseconds:
+{
+  "audio_duration_ms": number,
+  "words": [
+    {
+      "word": string,
+      "start_ms": number,
+      "end_ms": number,
+      "is_question": boolean,
+      "is_expression": boolean,
+      "is_name": boolean,
+      "is_sentence_end": boolean,
+      "emoji": string | null
+    }
+  ]
+}`;
 
     sendLog(
       jobId,
@@ -1197,6 +1253,44 @@ Spoken language hint: ${langLabel}.`;
           w.word = `${w.word} ${w.emoji}`;
         }
       });
+    }
+
+    // AUTO-SPEEDUP: For translation mode, compress translated word timestamps to
+    // fit within source audio windows. Groups words by sentence boundaries and
+    // applies character-weighted proportioning so the last word finishes exactly
+    // when the speaker stops talking.
+    const isTranslationMode = /translat|english/i.test(languageInstruction);
+    if (isTranslationMode && rawW.length > 0) {
+      // Group words into segments by sentence_end markers
+      const segments: { start: number; end: number; words: typeof rawW }[] = [];
+      let segWords: typeof rawW = [];
+      for (const w of rawW) {
+        segWords.push(w);
+        if (w.is_sentence_end) {
+          segments.push({
+            start: segWords[0].start_time,
+            end: segWords[segWords.length - 1].end_time,
+            words: [...segWords],
+          });
+          segWords = [];
+        }
+      }
+      if (segWords.length > 0) {
+        segments.push({
+          start: segWords[0].start_time,
+          end: segWords[segWords.length - 1].end_time,
+          words: [...segWords],
+        });
+      }
+
+      // Apply speedup per segment
+      const speedupResult: typeof rawW = [];
+      for (const seg of segments) {
+        speedupResult.push(...applySpeedupTimestamps(seg.words, seg.start, seg.end));
+      }
+      // Replace rawW with speedup-compressed words
+      rawW.length = 0;
+      rawW.push(...speedupResult);
     }
 
     const reportedDurationMs =
