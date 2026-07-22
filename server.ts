@@ -1055,23 +1055,29 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
 
-    const systemPrompt = `You are an ultra-precise audio alignment, semantic parsing, and multi-language subtitle engine. You analyze audio down to millisecond-level acoustic speech boundaries and output structured word-level JSON.
+    const systemPrompt = `You are an ultra-precise audio transcription, translation, and auto-speedup subtitle engine.
+Your primary objective is ZERO-LAG LIP SYNC and ACOUSTIC PRECISION. Every word must lock strictly onto the speaker's acoustic speech boundaries in milliseconds.
 
-CRITICAL RULES — FOLLOW EXACTLY:
-1. WORD-LEVEL TIMESTAMPS: Return INDIVIDUAL WORDS, not phrases. Every single word MUST have its own "start_ms" and "end_ms" in MILLISECONDS reflecting the exact acoustic moment it is spoken.
-2. MILLIMETER PRECISION: timestamps must be in milliseconds (e.g. 1230 means 1.23 seconds). Do NOT round to whole seconds. The difference between words spoken quickly (e.g. "madbeka" at 1500ms-2100ms) vs slowly must be accurately captured.
-3. SILENCE & PAUSES: If there is a silence/pause/breath between words (>150ms gap), the previous word's end_ms MUST end at the exact moment speech stops. Do NOT stretch timestamps across silent gaps. Silence is NOT speech — captions must FREEZE during silence.
-4. TRANSLATION TIMING: When translating (e.g., Kanglish→English, Tamil→Hindi), distribute the translated words' timestamps PROPORTIONALLY across the source audio segment's time window. Use character-weighted allocation: a longer translated word gets more time than a shorter one, but ALL translated words MUST fit within the original source segment's start_ms to end_ms.
-5. COMPLETE COVERAGE: Transcribe from the VERY FIRST spoken sound to the ABSOLUTE LAST. The last word's end_ms MUST reach the actual end of speech. NEVER stop early. NEVER skip words.
-6. SPEED MATCHING: Word timestamps MUST match the ACTUAL speaking rate exactly. If a speaker says 3 words in 1 second, those 3 words' combined duration MUST be ~1000ms. Do NOT slow down or speed up beyond the real speech pace.
-7. EVERY WORD COUNTS: Transcribe ALL words — even quick, mumbled, or overlapping ones. The speaker's speed is the speaker's speed.
-8. METADATA TAGGING per word:
-   - "is_question": true if this word is interrogative or part of a question (e.g. "madbeka?", "Can I?", "why?")
-   - "is_expression": true if this word is an emotional exclamation/hot word (e.g. "Ayyo", "Shut up", "Oh god", "Ouch", "Wow")
-   - "is_name": true if this word is a proper noun — name, brand, place (e.g. "Ani", "Bengaluru", "Izzy")
-   - "is_sentence_end": true if this word ends a sentence/thought (has . or ! or ? or is the last word before a natural pause)
-9. EMOJI: Attach ONE contextually relevant emoji per sentence-end word (match the emotion of that segment).
-10. AUDIO DURATION: Report "audio_duration_ms" as the total audio length in milliseconds.
+=== 1. SPEECH DURATION & TIMING LOCK (NO STRETCHING) ===
+- Detect exact acoustic start ("start_ms") and acoustic end ("end_ms") of each spoken word/phrase in MILLISECONDS (e.g. 2500 for 2.50s).
+- ABSOLUTE SPEECH END BOUNDARY: Do NOT stretch, fill, or interpolate timestamps to match the total video duration or audio file length. If speech ends at 48.2s in a 60s video, the final word MUST end at ~48200ms. Silent gaps at the end of the video get NO captions.
+- PAUSE SENSITIVITY: If there is a silence/pause/breath >150ms between words, the previous word's "end_ms" MUST end at the exact acoustic moment speech stops. Captions FREEZE during silence.
+
+=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION ===
+- When translating (e.g. Kanglish/Kannada to English, Tamil to Hindi), anchor the translated sentence strictly within the acoustic window ("source_start_ms" to "source_end_ms") of the source audio phrase.
+- AUTO-SPEEDUP PACING: If the target translation contains more words/syllables than the source speech, compress target word durations proportionally by character/syllable length so that the final word finishes EXACTLY at "source_end_ms".
+- Do NOT expand time bounds beyond when the speaker finishes talking.
+
+=== 3. ADVANCED SCENARIO & EMOTION EMOJI DETECTION ===
+- Deeply analyze speaker sentiment, tone, excitement, worry, sarcasm, questions, exclamations, and scenario context.
+- Pick 1 highly relevant, expressive emotion/scenario emoji per sentence segment attached to the "is_sentence_end" word.
+- Examples: 😟 for tension/worry, 🔥 for hype/energy, 😂 for humor/laughter, 🚗 for cabs/travel, 💡 for ideas/insights, 💰 for money, 📍 for location queries, 🙏 for requests.
+
+=== 4. SEMANTIC TAGGING RULES ===
+- "is_expression": Mark TRUE ONLY for standalone exclamations or isolated queries (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god"). Do NOT tag normal narrative words.
+- "is_question": Mark TRUE for direct questions or interrogative words.
+- "is_name": Mark TRUE for proper nouns, place names, or brand names (e.g., "Ani Cabs", "Bengaluru").
+- "is_sentence_end": Mark TRUE whenever a word ends a sentence or has punctuation (., !, ?).
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}

@@ -1554,87 +1554,6 @@ export default function App() {
                 onDisplaySizeChange={(size) => { editorDisplayRef.current = size; }}
                 onRemoveVideo={() => setShowRemoveDialog(true)}
               />
-              {state.isProcessing && (
-                <div className="absolute inset-0 bg-black/85 backdrop-blur-md z-20 flex flex-col items-center justify-center p-8">
-                  <div className="w-full max-w-md bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.15)] flex flex-col gap-6 animate-fade-in">
-                    
-                    {state.hasFailed ? (
-                      <>
-                        {/* Header */}
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-[15px] font-black uppercase text-red-500 tracking-wider flex items-center gap-2">
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
-                            </span>
-                            Processing Failed
-                          </h3>
-                        </div>
-
-                        {/* Error details */}
-                        <div className="bg-[#111] border border-red-900/40 p-4 rounded-xl text-left max-h-[160px] overflow-y-auto custom-scrollbar">
-                          <p className="text-[11px] font-mono text-red-400 leading-relaxed whitespace-pre-wrap">
-                            {state.logs[state.logs.length - 1] || "An unexpected API or network issue occurred."}
-                          </p>
-                        </div>
-
-                        {/* Action Buttons */}
-                        <div className="flex flex-col gap-2">
-                          <button
-                            onClick={handleRetry}
-                            className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-black uppercase text-xs tracking-wider py-3.5 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-fuchsia-600/10 active:scale-95"
-                          >
-                            <RefreshCw className="w-4 h-4" /> Retry Subtitle Generation
-                          </button>
-                          <button
-                            onClick={handleCancelProcessing}
-                            className="w-full bg-[#1e1e1e] hover:bg-[#252525] text-gray-300 font-bold uppercase text-xs tracking-wider py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 border border-[#333] active:scale-95"
-                          >
-                            Cancel & Choose New Video
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        {/* Header */}
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-[15px] font-black uppercase text-fuchsia-500 tracking-wider flex items-center gap-2">
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
-                            </span>
-                             AI Caption Studio
-                           </h3>
-                           <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1">
-                             Gemini 3.5 Flash
-                           </span>
-                           <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
-                         </div>
-                        
-                        {/* Progress Bar Container */}
-                        <div className="space-y-3">
-                          <div className="w-full bg-[#0A0A0A] rounded-full h-3.5 overflow-hidden border border-[#222] p-0.5">
-                            <div 
-                              className="bg-gradient-to-r from-purple-600 to-fuchsia-600 h-full rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(219,39,119,0.5)]" 
-                              style={{ width: `${smoothProgress}%` }}
-                            ></div>
-                          </div>
-                          
-                          <p className="text-[12px] font-bold text-center text-[#aaaaaa] uppercase tracking-wide min-h-[18px] animate-pulse">
-                            {getProcessingStatusMessage()}
-                          </p>
-                        </div>
-                      </>
-                    )}
-
-                    {/* Branding */}
-                    <div className="flex items-center justify-center gap-2 pt-4 border-t border-[#252525] mt-1 text-[11px] font-black uppercase tracking-[3px] text-[#444] select-none">
-                      <span>Made with Batman 🦇</span>
-                    </div>
-
-                  </div>
-                </div>
-              )}
             </div>
             
             <div className={`h-auto lg:h-full bg-[#161616] overflow-visible lg:overflow-y-auto ${mobileTab === 'preview' ? 'hidden lg:block' : 'block'}`}>
@@ -1651,6 +1570,88 @@ export default function App() {
               />
             </div>
           </div>
+
+          {state.isProcessing && (
+            <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-4 sm:p-8 overflow-y-auto">
+              <div className="w-full max-w-md bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.25)] flex flex-col gap-6 animate-fade-in my-auto">
+                
+                {state.hasFailed ? (
+                  <>
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[15px] font-black uppercase text-red-500 tracking-wider flex items-center gap-2">
+                        <span className="relative flex h-2.5 w-2.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                        </span>
+                        Processing Failed
+                      </h3>
+                    </div>
+
+                    {/* Error details */}
+                    <div className="bg-[#111] border border-red-900/40 p-4 rounded-xl text-left max-h-[160px] overflow-y-auto custom-scrollbar">
+                      <p className="text-[11px] font-mono text-red-400 leading-relaxed whitespace-pre-wrap">
+                        {state.logs[state.logs.length - 1] || "An unexpected API or network issue occurred."}
+                      </p>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={handleRetry}
+                        className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-black uppercase text-xs tracking-wider py-3.5 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-fuchsia-600/10 active:scale-95"
+                      >
+                        <RefreshCw className="w-4 h-4" /> Retry Subtitle Generation
+                      </button>
+                      <button
+                        onClick={handleCancelProcessing}
+                        className="w-full bg-[#1e1e1e] hover:bg-[#252525] text-gray-[#aaa] font-bold uppercase text-xs tracking-wider py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 border border-[#333] active:scale-95"
+                      >
+                        Cancel & Choose New Video
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[15px] font-black uppercase text-fuchsia-500 tracking-wider flex items-center gap-2">
+                        <span className="relative flex h-2.5 w-2.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
+                        </span>
+                        AI Caption Studio
+                      </h3>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1">
+                        Gemini 3.5 Flash
+                      </span>
+                      <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
+                    </div>
+                    
+                    {/* Progress Bar Container */}
+                    <div className="space-y-3">
+                      <div className="w-full bg-[#0A0A0A] rounded-full h-3.5 overflow-hidden border border-[#222] p-0.5">
+                        <div 
+                          className="bg-gradient-to-r from-purple-600 to-fuchsia-600 h-full rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(219,39,119,0.5)]" 
+                          style={{ width: `${smoothProgress}%` }}
+                        ></div>
+                      </div>
+                      
+                      <p className="text-[12px] font-bold text-center text-[#aaaaaa] uppercase tracking-wide min-h-[18px] animate-pulse">
+                        {getProcessingStatusMessage()}
+                      </p>
+                    </div>
+                  </>
+                )}
+
+                {/* Branding */}
+                <div className="flex items-center justify-center gap-2 pt-4 border-t border-[#252525] mt-1 text-[11px] font-black uppercase tracking-[3px] text-[#444] select-none">
+                  <span>Made with Batman 🦇</span>
+                </div>
+
+              </div>
+            </div>
+          )}
 
           {/* Mobile bottom tab bar — switches between preview and edit on small screens */}
           <div className="lg:hidden flex items-center justify-around bg-[#121212] border-t border-[#333] h-[52px] shrink-0 z-40">
