@@ -128,19 +128,44 @@ export default function VideoPlayer({
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  const togglePlay = async (e?: React.MouseEvent | React.TouchEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      if (video.paused || video.ended) {
+        if (video.ended) {
+          video.currentTime = 0;
+        }
+        await video.play();
+      } else {
+        video.pause();
+      }
+    } catch (err) {
+      console.warn("Video play error:", err);
+    }
+  };
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
+    const handleEnded = () => setIsPlaying(false);
 
     video.addEventListener('play', handlePlay);
+    video.addEventListener('playing', handlePlay);
     video.addEventListener('pause', handlePause);
+    video.addEventListener('ended', handleEnded);
 
     return () => {
       video.removeEventListener('play', handlePlay);
+      video.removeEventListener('playing', handlePlay);
       video.removeEventListener('pause', handlePause);
+      video.removeEventListener('ended', handleEnded);
     };
   }, [videoUrl]);
 
@@ -191,11 +216,12 @@ export default function VideoPlayer({
     };
   }, [videoUrl]);
 
-  // Handle Dragging
+  // Handle Dragging vs Simple Click for Play/Pause
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (editingWord) return; // Disable drag during inline edit
-    e.preventDefault();
+    if (editingWord) return;
+    e.stopPropagation();
     setIsDragging(true);
+    setHasMoved(false);
     setIsSelected(true);
     setDragStart({ x: e.clientX, y: e.clientY });
     setInitialOffset({ x: styleSettings.positionX * scaleFactor, y: styleSettings.positionY * scaleFactor });
@@ -208,6 +234,7 @@ export default function VideoPlayer({
     if (editingWord) return;
     const touch = e.touches[0];
     setIsDragging(true);
+    setHasMoved(false);
     setIsSelected(true);
     setDragStart({ x: touch.clientX, y: touch.clientY });
     setInitialOffset({ x: styleSettings.positionX * scaleFactor, y: styleSettings.positionY * scaleFactor });
@@ -221,6 +248,9 @@ export default function VideoPlayer({
       if (!isDragging) return;
       const dx = e.clientX - dragStart.x;
       const dy = e.clientY - dragStart.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        setHasMoved(true);
+      }
       
       const container = containerRef.current;
       const overlay = captionOverlayRef.current;
@@ -257,6 +287,9 @@ export default function VideoPlayer({
       const touch = e.touches[0];
       const dx = touch.clientX - dragStart.x;
       const dy = touch.clientY - dragStart.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        setHasMoved(true);
+      }
       
       const container = containerRef.current;
       const overlay = captionOverlayRef.current;
@@ -288,7 +321,11 @@ export default function VideoPlayer({
     };
 
     const handleEnd = () => {
+      if (isDragging && !hasMoved) {
+        togglePlay();
+      }
       setIsDragging(false);
+      setHasMoved(false);
     };
 
     if (isDragging) {
@@ -305,7 +342,7 @@ export default function VideoPlayer({
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleEnd);
     };
-  }, [isDragging, dragStart, initialOffset, onUpdateStyleSettings, bottomOffset, scaleFactor]);
+  }, [isDragging, hasMoved, dragStart, initialOffset, onUpdateStyleSettings, bottomOffset, scaleFactor]);
 
   const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const video = e.currentTarget;
@@ -331,19 +368,27 @@ export default function VideoPlayer({
 
   // Active word index from the RAF-driven highlightedWordId (word-level, not phrase-level).
   const activeWordIndex = (() => {
-    if (words.length === 0 || !highlightedWordId) {
-      // No highlight: find closest word for display purposes
-      if (words.length === 0) return -1;
-      let closestIdx = 0;
-      let minDiff = Math.abs(localTime - words[0].start_time);
-      for (let i = 0; i < words.length; i++) {
-        const w = words[i];
-        const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
-        if (diff < minDiff) { minDiff = diff; closestIdx = i; }
-      }
-      return minDiff < 3.0 ? closestIdx : -1;
+    if (words.length === 0) return -1;
+    if (highlightedWordId) {
+      const idx = words.findIndex((w) => w.id === highlightedWordId);
+      if (idx !== -1) return idx;
     }
-    return words.findIndex((w) => w.id === highlightedWordId);
+    // If localTime is after the last word, display the last word's frame until video end
+    if (localTime >= words[words.length - 1].end_time) {
+      return words.length - 1;
+    }
+    // If localTime is before the first word, display the first word's frame
+    if (localTime <= words[0].start_time) {
+      return 0;
+    }
+    // Inside a pause: find last spoken word so captions freeze gracefully
+    let lastIdx = 0;
+    for (let i = 0; i < words.length; i++) {
+      if (words[i].start_time <= localTime) {
+        lastIdx = i;
+      }
+    }
+    return lastIdx;
   })();
 
   // Construct displayWords based on styleSettings.maxWordsPerScreen in a stable chunked block
@@ -427,15 +472,7 @@ export default function VideoPlayer({
             onLoadedMetadata={handleLoadedMetadata}
             className="w-full h-full object-contain cursor-pointer"
             playsInline
-            onClick={() => {
-              if (videoRef.current) {
-                if (isPlaying) {
-                  videoRef.current.pause();
-                } else {
-                  videoRef.current.play();
-                }
-              }
-            }}
+            onClick={togglePlay}
           />
           {/* Floating play/pause + speed control — always visible on top of video */}
           <div className="absolute top-2 right-2 flex items-center gap-2 z-40">
@@ -461,11 +498,7 @@ export default function VideoPlayer({
               <option value="2">2x</option>
             </select>
             <button
-              onClick={() => {
-                if (videoRef.current) {
-                  isPlaying ? videoRef.current.pause() : videoRef.current.play();
-                }
-              }}
+              onClick={togglePlay}
               className="bg-black/60 backdrop-blur-sm text-white p-2.5 rounded-lg border border-white/20 hover:bg-black/80 transition-colors cursor-pointer"
             >
               {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-current" />}

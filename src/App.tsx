@@ -78,20 +78,18 @@ function drawSubtitlesOnCanvas(
   
   let targetIndex = activeWordIndex;
   if (targetIndex === -1) {
-    let closestIdx = 0;
-    let minDiff = Math.abs(time - words[0].start_time);
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      const diff = Math.min(Math.abs(time - w.start_time), Math.abs(time - w.end_time));
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIdx = i;
-      }
-    }
-    if (minDiff < 3.0) {
-      targetIndex = closestIdx;
+    if (time <= words[0].start_time) {
+      targetIndex = 0;
+    } else if (time >= words[words.length - 1].end_time) {
+      targetIndex = words.length - 1;
     } else {
-      return;
+      let lastSpokenIdx = 0;
+      for (let i = 0; i < words.length; i++) {
+        if (words[i].start_time <= time) {
+          lastSpokenIdx = i;
+        }
+      }
+      targetIndex = lastSpokenIdx;
     }
   }
 
