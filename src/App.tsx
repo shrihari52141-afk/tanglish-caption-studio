@@ -15,7 +15,7 @@ function getAnimationTransform(preset: string, elapsedSec: number, scaleX: numbe
   switch (preset) {
     case 'bounce': {
       const phase = Math.abs(Math.sin(t * 4));
-      return { dx: 0, dy: 0, scale: 1 + 0.18 * phase, rotation: 0 };
+      return { dx: 0, dy: -8 * scaleX * phase, scale: 1 + 0.18 * phase, rotation: 0 };
     }
     case 'pop': {
       if (t < 0.1) return { dx: 0, dy: 0, scale: 0.8 + (t / 0.1) * 0.3, rotation: 0 };
@@ -26,7 +26,8 @@ function getAnimationTransform(preset: string, elapsedSec: number, scaleX: numbe
       return { dx: 0, dy: 0, scale: 1.2, rotation: -2 * Math.PI / 180, colorOverride: '#FF4500' };
     case 'glitch': {
       const jx = Math.sin(t * 37) * 4 * scaleX;
-      return { dx: jx, dy: 0, scale: 1.0, rotation: 0 };
+      const jy = Math.cos(t * 53) * 4 * scaleX;
+      return { dx: jx, dy: jy, scale: 1.0, rotation: 0 };
     }
     case 'neon':
     case 'neon_glow': {
@@ -57,7 +58,6 @@ import {
   getSessionId,
 } from './utils/sessionTracker';
 
-// Track previous frame for smooth transitions (avoids word popping)
 function drawSubtitlesOnCanvas(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
@@ -78,18 +78,20 @@ function drawSubtitlesOnCanvas(
   
   let targetIndex = activeWordIndex;
   if (targetIndex === -1) {
-    if (time <= words[0].start_time) {
-      targetIndex = 0;
-    } else if (time >= words[words.length - 1].end_time) {
-      targetIndex = words.length - 1;
-    } else {
-      let lastSpokenIdx = 0;
-      for (let i = 0; i < words.length; i++) {
-        if (words[i].start_time <= time) {
-          lastSpokenIdx = i;
-        }
+    let closestIdx = 0;
+    let minDiff = Math.abs(time - words[0].start_time);
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      const diff = Math.min(Math.abs(time - w.start_time), Math.abs(time - w.end_time));
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
       }
-      targetIndex = lastSpokenIdx;
+    }
+    if (minDiff < 3.0) {
+      targetIndex = closestIdx;
+    } else {
+      return;
     }
   }
 
@@ -97,8 +99,6 @@ function drawSubtitlesOnCanvas(
   const displayWords = frames.find(frame => frame.some(w => w.id === words[targetIndex].id)) || frames[0] || [];
 
   if (displayWords.length === 0) return;
-
-  // ---- EDITOR-MATCHED SCALING ----
 
   // ---- EDITOR-MATCHED SCALING ----
   // The editor sizes captions with: scaleFactor = containerWidth / 340, and the
@@ -189,32 +189,20 @@ function drawSubtitlesOnCanvas(
   const lineHeight = baseFontSize * 1.25; // matches typical line-box height
 
   const formattedTexts = displayWords.map(w => formatWordText(w.word));
+  const wordWidths = formattedTexts.map(txt => ctx.measureText(txt).width);
 
-  // Compute animation elapsed time for the active word
-  const activeWord = words[activeWordIndex];
-  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
-  const activeWordId = activeWord?.id;
-
-  // 1. Group words into stable lines based on base text width (prevents line jumping)
-  type WordItem = { text: string; textWidth: number; wordRef: CaptionWord; isActive: boolean };
-
-  const wordItems: WordItem[] = displayWords.map((w, i) => ({
-    text: formattedTexts[i],
-    textWidth: ctx.measureText(formattedTexts[i]).width,
-    wordRef: w,
-    isActive: w.id === activeWordId,
-  }));
-
-  const lines: WordItem[][] = [];
-  let curLine: WordItem[] = [];
+  // Group words into wrapped lines exactly like CSS flex-wrap would.
+  type LineItem = { text: string; width: number; wordRef: CaptionWord };
+  const lines: LineItem[][] = [];
+  let curLine: LineItem[] = [];
   let curLineWidth = 0;
-
-  wordItems.forEach((item) => {
-    const projected = curLine.length === 0 ? item.textWidth : curLineWidth + gap + item.textWidth;
+  displayWords.forEach((w, index) => {
+    const item: LineItem = { text: formattedTexts[index], width: wordWidths[index], wordRef: w };
+    const projected = curLine.length === 0 ? item.width : curLineWidth + gap + item.width;
     if (curLine.length > 0 && projected > maxLineWidth) {
       lines.push(curLine);
       curLine = [item];
-      curLineWidth = item.textWidth;
+      curLineWidth = item.width;
     } else {
       curLine.push(item);
       curLineWidth = projected;
@@ -222,11 +210,21 @@ function drawSubtitlesOnCanvas(
   });
   if (curLine.length > 0) lines.push(curLine);
 
+  // Editor: the caption box is anchored at its BOTTOM (bottom:offset) and grows
+  // UPWARD as more lines wrap. The translate origin (0,0) is the single-line
+  // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
   const firstLineY = -(lines.length - 1) * lineHeight;
 
-  const drawWord = (wordText: string, textWidth: number, curX: number, curY: number, isActive: boolean) => {
+  // Compute animation elapsed time for the active word
+  const activeWord = words[activeWordIndex];
+  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
+
+  const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
     ctx.save();
     if (isActive) {
+      // Apply preset animation transforms only when enabled (editor preview).
+      // Export rendering uses static highlighting so the output matches the
+      // editor's base style without motion.
       const anim = enableAnimation !== false
         ? getAnimationTransform(styleSettings.preset, animElapsed, scaleX)
         : { dx: 0, dy: 0, scale: 1.0, rotation: 0, colorOverride: undefined };
@@ -238,12 +236,13 @@ function drawSubtitlesOnCanvas(
       }
       if (styleSettings.showBackground) {
         ctx.fillStyle = '#000000';
+        // Padding matches CSS px-3 py-1.5 proportionally — use editor display
+        // ratio (not scaleX) so the visual ratio matches the editor's viewport.
         const paddingX = 12 * canvasToEditorRatio;
         const paddingY = 6 * canvasToEditorRatio;
-        const borderWidth = 2 * canvasToEditorRatio;
-        const rx = curX - textWidth / 2 - paddingX;
+        const rx = curX - wordWidth / 2 - paddingX;
         const ry = curY - baseFontSize / 2 - paddingY;
-        const rw = textWidth + paddingX * 2;
+        const rw = wordWidth + paddingX * 2;
         const rh = baseFontSize + paddingY * 2;
         const radius = 8 * canvasToEditorRatio;
         ctx.beginPath();
@@ -259,10 +258,11 @@ function drawSubtitlesOnCanvas(
         ctx.closePath();
         ctx.fill();
         ctx.strokeStyle = anim.colorOverride || styleSettings.highlightColor;
-        ctx.lineWidth = borderWidth;
+        ctx.lineWidth = 2 * canvasToEditorRatio;
         ctx.stroke();
       }
       if (styleSettings.showBacklight) {
+        // Dual-stage glow matching CSS: 0 0 12px color, 0 0 24px color
         ctx.shadowColor = anim.colorOverride || styleSettings.highlightColor;
         ctx.shadowBlur = 24 * scaleX;
         ctx.shadowOffsetX = 0;
@@ -273,6 +273,7 @@ function drawSubtitlesOnCanvas(
         ctx.fillText(wordText, curX, curY);
         ctx.shadowBlur = 0;
       } else if (styleSettings.showShadow) {
+        // Offset drop shadow matching CSS: 4px 4px 0px #000
         ctx.fillStyle = '#000000';
         ctx.fillText(wordText, curX + 4 * scaleX, curY + 4 * scaleX);
         ctx.strokeStyle = '#000000';
@@ -304,35 +305,15 @@ function drawSubtitlesOnCanvas(
     ctx.restore();
   };
 
-  const pillPaddingX = 12 * canvasToEditorRatio;
-  const pillBorderWidth = 2 * canvasToEditorRatio;
-  const pillExtraWidth = styleSettings.showBackground ? (pillPaddingX * 2 + pillBorderWidth * 2) : 0;
-
   lines.forEach((line, lineIdx) => {
-    const lineLayoutItems = line.map((item) => {
-      let extra = 0;
-      if (item.isActive) {
-        extra = pillExtraWidth;
-        if (enableAnimation !== false) {
-          const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
-          if (anim.scale && anim.scale !== 1.0) {
-            extra += item.textWidth * (anim.scale - 1.0);
-          }
-        }
-      }
-      return {
-        ...item,
-        layoutWidth: item.textWidth + extra,
-      };
-    });
-
-    const lineLayoutWidth = lineLayoutItems.reduce((a, it) => a + it.layoutWidth, 0) + (lineLayoutItems.length - 1) * gap;
-    let startX = -lineLayoutWidth / 2;
+    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
+    let startX = -lineWidth / 2;
     const curY = firstLineY + lineIdx * lineHeight;
-    lineLayoutItems.forEach((it) => {
-      const curX = startX + it.layoutWidth / 2;
-      drawWord(it.text, it.textWidth, curX, curY, it.isActive);
-      startX += it.layoutWidth + gap;
+    line.forEach((it) => {
+      const curX = startX + it.width / 2;
+      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
+      drawWord(it.text, it.width, curX, curY, isActive);
+      startX += it.width + gap;
     });
   });
 
@@ -392,14 +373,12 @@ export default function App() {
   const newProjectFileInputRef = useRef<HTMLInputElement>(null);
   const replaceVideoInputRef = useRef<HTMLInputElement>(null);
 
-  // Undo/Redo history — capture full snapshot (words + styleSettings)
-  const [undoStack, setUndoStack] = useState<{words: CaptionWord[]; styleSettings: SubtitleStyleSettings}[]>([]);
-  const [redoStack, setRedoStack] = useState<{words: CaptionWord[]; styleSettings: SubtitleStyleSettings}[]>([]);
+  // Undo/Redo history
+  const [undoStack, setUndoStack] = useState<CaptionWord[][]>([]);
+  const [redoStack, setRedoStack] = useState<CaptionWord[][]>([]);
 
-  const snapState = () => ({ words: state.words, styleSettings: state.styleSettings });
-
-  const pushUndo = () => {
-    setUndoStack(prev => [...prev.slice(-50), snapState()]);
+  const pushUndo = (currentWords: CaptionWord[]) => {
+    setUndoStack(prev => [...prev.slice(-50), currentWords]);
     setRedoStack([]);
   };
 
@@ -407,33 +386,17 @@ export default function App() {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
     setUndoStack(s => s.slice(0, -1));
-    setRedoStack(r => [...r, snapState()]);
-    setState(s => ({ ...s, words: prev.words, styleSettings: prev.styleSettings }));
+    setRedoStack(r => [...r, state.words]);
+    setState(s => ({ ...s, words: prev }));
   };
 
   const handleRedo = () => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
     setRedoStack(r => r.slice(0, -1));
-    setUndoStack(u => [...u, snapState()]);
-    setState(s => ({ ...s, words: next.words, styleSettings: next.styleSettings }));
+    setUndoStack(u => [...u, state.words]);
+    setState(s => ({ ...s, words: next }));
   };
-
-  // Remove video confirmation
-  const [showRemoveDialog, setShowRemoveDialog] = useState(false);
-  const handleRemoveVideo = (mode: 'video' | 'audio' | 'both') => {
-    if (mode === 'both') {
-      setState(s => ({ ...s, videoUrl: '', videoFile: null, audioFile: null, words: [], currentTime: 0 }));
-    } else if (mode === 'video') {
-      setState(s => ({ ...s, videoUrl: '', videoFile: null }));
-    } else if (mode === 'audio') {
-      setState(s => ({ ...s, audioFile: null }));
-    }
-    setShowRemoveDialog(false);
-  };
-
-  // Mobile responsive: toggle between preview and edit tabs on small screens
-  const [mobileTab, setMobileTab] = useState<'preview' | 'edit'>('preview');
 
   // Replace video (keep audio/captions)
   const handleReplaceVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -543,7 +506,7 @@ export default function App() {
   };
 
   const handleUpdateWords = (updatedWords: CaptionWord[]) => {
-    pushUndo();
+    pushUndo(state.words);
     setState(s => ({ ...s, words: sanitizeCaptionWords(updatedWords) }));
   };
 
@@ -730,7 +693,7 @@ export default function App() {
       state.videoFile.name.endsWith('.mp3') ||
       state.videoFile.name.endsWith('.wav') ||
       state.videoFile.name.endsWith('.m4a')
-    ) || !state.videoUrl;
+    );
 
     // Use a dedicated, isolated media element so we control playback precisely
     // and don't disturb the on-screen player.
@@ -841,21 +804,30 @@ export default function App() {
       await videoEl.play().catch(() => { /* some browsers need muted; retry */ });
 
       let stopped = false;
-      const targetFps = fps;
+      const targetFps = 30;
       const frameMs = 1000 / targetFps;
+      // Track real elapsed time so the caption timing does NOT drift if video
+      // playback stutters or canvas rendering takes too long.
+      const exportStartTime = performance.now();
       const drawFrame = () => {
         if (stopped) return;
-        const currentVideoTime = videoEl.currentTime;
+        const realElapsedMs = performance.now() - exportStartTime;
+        const captionTime = realElapsedMs / 1000;
         if (isAudioOnly) {
           ctx.fillStyle = exportBgColor || '#000000';
           ctx.fillRect(0, 0, width, height);
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, currentVideoTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, true);
-        const pct = Math.min(99, Math.round((currentVideoTime / duration) * 100));
+        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
+        const pct = Math.min(99, Math.round((captionTime / duration) * 100));
         setLocalProgress(pct);
-        setTimeout(drawFrame, frameMs);
+        // Schedule next frame at FIXED interval — do NOT use requestAnimationFrame
+        // which drifts when rendering is slow. A fixed setTimeout gives stable
+        // 30fps and prevents the video from appearing to slow down.
+        const nextAt = (Math.floor(realElapsedMs / frameMs) + 1) * frameMs;
+        const delay = Math.max(0, nextAt - performance.now());
+        setTimeout(drawFrame, delay);
       };
       setTimeout(drawFrame, frameMs);
 
@@ -939,10 +911,7 @@ export default function App() {
       const displayHeight = videoEl?.clientHeight || 604;
 
       const formData = new FormData();
-      if (!state.videoFile) {
-        throw new Error("No video file available for cloud export. Use local (on-device) export instead.");
-      }
-      formData.append('video', state.videoFile);
+      formData.append('video', state.videoFile!);
       setExportLogs(l => [...l, "Uploading original video file to cloud render cluster (may take a moment)..."]);
       
       formData.append('words', JSON.stringify(state.words));
@@ -1118,10 +1087,7 @@ export default function App() {
     const videoUrl = URL.createObjectURL(file);
     const jobId = Math.random().toString(36).substring(7);
     
-    // Automatically switch mobile view tab to preview so mobile screens display the video/progress
-    setMobileTab('preview');
-
-    // Set state IMMEDIATELY (0ms instant response) so progress screen opens at once!
+    await wakeServer();
     setState(s => ({ 
       ...s, 
       videoFile: file, 
@@ -1150,19 +1116,12 @@ export default function App() {
       }
     }));
 
-    // Wake server in background without blocking state transition!
-    wakeServer().catch(() => {});
-
     // Subscribe to SSE logs
     const eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
     eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.message) {
-          setState(s => ({ ...s, logs: [...s.logs, data.message] }));
-        }
-      } catch {
-        /* ignore */
+      const data = JSON.parse(event.data);
+      if (data.message) {
+        setState(s => ({ ...s, logs: [...s.logs, data.message] }));
       }
     };
 
@@ -1377,7 +1336,6 @@ export default function App() {
   };
 
   const handleUpdateStyleSettings = (newSettings: Partial<SubtitleStyleSettings>) => {
-    pushUndo();
     setState(s => ({
       ...s,
       styleSettings: {
@@ -1388,7 +1346,7 @@ export default function App() {
   };
 
   const handleUpdateWordText = (id: string, text: string) => {
-    pushUndo();
+    pushUndo(state.words);
     const cleaned = stripASSTags(text);
     setState(s => ({
       ...s,
@@ -1541,9 +1499,9 @@ export default function App() {
               )}
             </>
           </div>
-        ) : (<>
+        ) : (
           <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] h-[calc(100vh-48px)] overflow-y-auto lg:overflow-hidden w-full max-w-full">
-            <div className={`flex flex-col items-center justify-center bg-black border-r border-[#333] relative p-2 md:p-3 lg:p-4 ${mobileTab === 'edit' ? 'hidden lg:flex' : 'flex'}`}>
+            <div className="flex flex-col items-center justify-center bg-black border-r border-[#333] relative p-2 md:p-3 lg:p-4">
               <VideoPlayer 
                 videoUrl={state.videoUrl}
                 words={state.words}
@@ -1556,11 +1514,91 @@ export default function App() {
                 onSeekComplete={handleSeekComplete}
                 onCaptionClick={() => setEditorTab('decorations')}
                 onDisplaySizeChange={(size) => { editorDisplayRef.current = size; }}
-                onRemoveVideo={() => setShowRemoveDialog(true)}
               />
+              {state.isProcessing && (
+                <div className="absolute inset-0 bg-black/85 backdrop-blur-md z-20 flex flex-col items-center justify-center p-8">
+                  <div className="w-full max-w-md bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.15)] flex flex-col gap-6 animate-fade-in">
+                    
+                    {state.hasFailed ? (
+                      <>
+                        {/* Header */}
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-[15px] font-black uppercase text-red-500 tracking-wider flex items-center gap-2">
+                            <span className="relative flex h-2.5 w-2.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                            </span>
+                            Processing Failed
+                          </h3>
+                        </div>
+
+                        {/* Error details */}
+                        <div className="bg-[#111] border border-red-900/40 p-4 rounded-xl text-left max-h-[160px] overflow-y-auto custom-scrollbar">
+                          <p className="text-[11px] font-mono text-red-400 leading-relaxed whitespace-pre-wrap">
+                            {state.logs[state.logs.length - 1] || "An unexpected API or network issue occurred."}
+                          </p>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex flex-col gap-2">
+                          <button
+                            onClick={handleRetry}
+                            className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-black uppercase text-xs tracking-wider py-3.5 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-fuchsia-600/10 active:scale-95"
+                          >
+                            <RefreshCw className="w-4 h-4" /> Retry Subtitle Generation
+                          </button>
+                          <button
+                            onClick={handleCancelProcessing}
+                            className="w-full bg-[#1e1e1e] hover:bg-[#252525] text-gray-300 font-bold uppercase text-xs tracking-wider py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 border border-[#333] active:scale-95"
+                          >
+                            Cancel & Choose New Video
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {/* Header */}
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-[15px] font-black uppercase text-fuchsia-500 tracking-wider flex items-center gap-2">
+                            <span className="relative flex h-2.5 w-2.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
+                            </span>
+                             AI Caption Studio
+                           </h3>
+                           <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1">
+                             Gemini 3.5 Flash
+                           </span>
+                           <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
+                         </div>
+                        
+                        {/* Progress Bar Container */}
+                        <div className="space-y-3">
+                          <div className="w-full bg-[#0A0A0A] rounded-full h-3.5 overflow-hidden border border-[#222] p-0.5">
+                            <div 
+                              className="bg-gradient-to-r from-purple-600 to-fuchsia-600 h-full rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(219,39,119,0.5)]" 
+                              style={{ width: `${smoothProgress}%` }}
+                            ></div>
+                          </div>
+                          
+                          <p className="text-[12px] font-bold text-center text-[#aaaaaa] uppercase tracking-wide min-h-[18px] animate-pulse">
+                            {getProcessingStatusMessage()}
+                          </p>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Branding */}
+                    <div className="flex items-center justify-center gap-2 pt-4 border-t border-[#252525] mt-1 text-[11px] font-black uppercase tracking-[3px] text-[#444] select-none">
+                      <span>Made with Batman 🦇</span>
+                    </div>
+
+                  </div>
+                </div>
+              )}
             </div>
             
-            <div className={`h-auto lg:h-full bg-[#161616] overflow-visible lg:overflow-y-auto ${mobileTab === 'preview' ? 'hidden lg:block' : 'block'}`}>
+            <div className="h-auto lg:h-full bg-[#161616] overflow-visible lg:overflow-y-auto">
               <EditorPanel 
                 styleSettings={state.styleSettings}
                 onUpdateStyleSettings={handleUpdateStyleSettings}
@@ -1574,111 +1612,7 @@ export default function App() {
               />
             </div>
           </div>
-
-          {state.isProcessing && (
-            <div className="fixed inset-0 bg-black z-50 flex flex-col items-center justify-center p-4 sm:p-8 overflow-y-auto">
-              <div className="w-full max-w-md bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.25)] flex flex-col gap-6 animate-fade-in my-auto">
-                
-                {state.hasFailed ? (
-                  <>
-                    {/* Header */}
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-[15px] font-black uppercase text-red-500 tracking-wider flex items-center gap-2">
-                        <span className="relative flex h-2.5 w-2.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
-                        </span>
-                        Processing Failed
-                      </h3>
-                    </div>
-
-                    {/* Error details */}
-                    <div className="bg-[#111] border border-red-900/40 p-4 rounded-xl text-left max-h-[160px] overflow-y-auto custom-scrollbar">
-                      <p className="text-[11px] font-mono text-red-400 leading-relaxed whitespace-pre-wrap">
-                        {state.logs[state.logs.length - 1] || "An unexpected API or network issue occurred."}
-                      </p>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex flex-col gap-2">
-                      <button
-                        onClick={handleRetry}
-                        className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-black uppercase text-xs tracking-wider py-3.5 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-fuchsia-600/10 active:scale-95"
-                      >
-                        <RefreshCw className="w-4 h-4" /> Retry Subtitle Generation
-                      </button>
-                      <button
-                        onClick={handleCancelProcessing}
-                        className="w-full bg-[#1e1e1e] hover:bg-[#252525] text-gray-[#aaa] font-bold uppercase text-xs tracking-wider py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 border border-[#333] active:scale-95"
-                      >
-                        Cancel & Choose New Video
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    {/* Header */}
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-[15px] font-black uppercase text-fuchsia-500 tracking-wider flex items-center gap-2">
-                        <span className="relative flex h-2.5 w-2.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
-                        </span>
-                        AI Caption Studio
-                      </h3>
-                      <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1">
-                        Gemini 3.5 Flash
-                      </span>
-                      <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
-                    </div>
-                    
-                    {/* Progress Bar Container */}
-                    <div className="space-y-3">
-                      <div className="w-full bg-[#0A0A0A] rounded-full h-3.5 overflow-hidden border border-[#222] p-0.5">
-                        <div 
-                          className="bg-gradient-to-r from-purple-600 to-fuchsia-600 h-full rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(219,39,119,0.5)]" 
-                          style={{ width: `${smoothProgress}%` }}
-                        ></div>
-                      </div>
-                      
-                      <p className="text-[12px] font-bold text-center text-[#aaaaaa] uppercase tracking-wide min-h-[18px] animate-pulse">
-                        {getProcessingStatusMessage()}
-                      </p>
-                    </div>
-                  </>
-                )}
-
-                {/* Branding */}
-                <div className="flex items-center justify-center gap-2 pt-4 border-t border-[#252525] mt-1 text-[11px] font-black uppercase tracking-[3px] text-[#444] select-none">
-                  <span>Made with Batman 🦇</span>
-                </div>
-
-              </div>
-            </div>
-          )}
-
-          {/* Mobile bottom tab bar — switches between preview and edit on small screens */}
-          <div className="lg:hidden flex items-center justify-around bg-[#121212] border-t border-[#333] h-[52px] shrink-0 z-40">
-            <button
-              onClick={() => setMobileTab('preview')}
-              className={`flex-1 flex items-center justify-center gap-1.5 h-full text-[11px] font-bold uppercase tracking-wider cursor-pointer transition-colors ${
-                mobileTab === 'preview' ? 'text-fuchsia-500 border-t-2 border-fuchsia-500 bg-fuchsia-500/5' : 'text-[#666] hover:text-white'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-              Preview
-            </button>
-            <button
-              onClick={() => setMobileTab('edit')}
-              className={`flex-1 flex items-center justify-center gap-1.5 h-full text-[11px] font-bold uppercase tracking-wider cursor-pointer transition-colors ${
-                mobileTab === 'edit' ? 'text-fuchsia-500 border-t-2 border-fuchsia-500 bg-fuchsia-500/5' : 'text-[#666] hover:text-white'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              Edit
-            </button>
-          </div>
-          </>)}
+        )}
       </main>
 
       {isExporting && (
@@ -1836,31 +1770,6 @@ export default function App() {
                 </div>
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Remove video/audio confirmation dialog */}
-      {showRemoveDialog && (
-        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#161616] border border-[#333] rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-[15px] font-black uppercase tracking-wider text-white">Remove Media</h3>
-              <button onClick={() => setShowRemoveDialog(false)} className="text-[#888] hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
-            </div>
-            <p className="text-[12px] text-[#aaa] leading-relaxed">What would you like to remove?</p>
-            <div className="flex flex-col gap-2">
-              <button onClick={() => handleRemoveVideo('video')} className="w-full bg-[#222] hover:bg-red-950/40 hover:text-red-400 text-left px-4 py-3 rounded-xl border border-[#333] hover:border-red-500/30 text-[12px] font-bold text-white cursor-pointer transition-colors flex items-center gap-3">
-                <FileVideo className="w-4 h-4 text-red-400" /> Remove Video Only <span className="text-[10px] text-[#666] ml-auto">(keeps audio)</span>
-              </button>
-              <button onClick={() => handleRemoveVideo('audio')} className="w-full bg-[#222] hover:bg-amber-950/40 hover:text-amber-400 text-left px-4 py-3 rounded-xl border border-[#333] hover:border-amber-500/30 text-[12px] font-bold text-white cursor-pointer transition-colors flex items-center gap-3">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-amber-400"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg> Remove Audio Only <span className="text-[10px] text-[#666] ml-auto">(keeps video)</span>
-              </button>
-              <button onClick={() => handleRemoveVideo('both')} className="w-full bg-[#222] hover:bg-red-950/40 hover:text-red-400 text-left px-4 py-3 rounded-xl border border-[#333] hover:border-red-500/30 text-[12px] font-bold text-white cursor-pointer transition-colors flex items-center gap-3">
-                <XCircle className="w-4 h-4 text-red-500" /> Remove Both
-              </button>
-            </div>
-            <button onClick={() => setShowRemoveDialog(false)} className="text-[11px] text-[#666] hover:text-[#aaa] font-bold uppercase text-center cursor-pointer">Cancel</button>
           </div>
         </div>
       )}

@@ -74,8 +74,8 @@ video::cue {
 }
 
 @keyframes wave-jump {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.15); }
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
 }
 
 @keyframes heartbeat-pulse {
@@ -221,8 +221,8 @@ video::cue {
 }
 
 @keyframes bounce-word {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.18); }
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-8px) scale(1.18); }
 }
 
 @keyframes neon-pulse {

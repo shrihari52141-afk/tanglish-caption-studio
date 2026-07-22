@@ -238,18 +238,24 @@ export async function startServer() {
    */
   function normalizeTranscriptionTiming(
     words: TimedWord[],
-    _targetDuration: number  // unused — preserve exact acoustic speech timeline
+    _targetDuration: number  // unused — we NEVER stretch beyond actual speech end
   ): TimedWord[] {
     if (words.length === 0) return words;
 
-    // CRITICAL: Preserve exact acoustic timestamps matching the video/audio timeline.
-    // Do NOT subtract rawStart, which causes speech that begins at 2s to be shifted
-    // early to 0s, desyncing all subsequent words from the speaker.
+    // Work on a copy sorted by start
     const sorted = [...words].sort((a, b) => a.start_time - b.start_time);
+    const rawStart = sorted[0].start_time;
+    const rawEnd = Math.max(...sorted.map((w) => w.end_time), rawStart + 0.1);
+
+    // CRITICAL: Do NOT stretch timestamps to fill the video duration.
+    // Captions must only cover the actual speech window. Silent gaps at
+    // the end of the video get NO captions — highlighted word freezes.
+    // Only shift so the first word starts at 0 (beginning of speech).
+    const offset = -rawStart;
     return sorted.map((w) => ({
       ...w,
-      start_time: +Math.max(0, w.start_time).toFixed(3),
-      end_time: +Math.max(w.start_time + 0.01, w.end_time).toFixed(3),
+      start_time: +Math.max(0, (w.start_time + offset)).toFixed(3),
+      end_time: +Math.max(0.001, (w.end_time + offset)).toFixed(3),
     }));
   }
 
@@ -1056,28 +1062,37 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         : String(language);
 
     const systemPrompt = `You are an ultra-precise audio transcription, translation, and auto-speedup subtitle engine.
-Your primary objective is ZERO-LAG LIP SYNC and ACOUSTIC PRECISION. Every word must lock strictly onto the speaker's acoustic speech boundaries in milliseconds.
 
-=== 1. SPEECH DURATION & TIMING LOCK (NO STRETCHING) ===
-- Detect exact acoustic start ("start_ms") and acoustic end ("end_ms") of each spoken word/phrase in MILLISECONDS (e.g. 2500 for 2.50s).
-- ABSOLUTE SPEECH END BOUNDARY: Do NOT stretch, fill, or interpolate timestamps to match the total video duration or audio file length. If speech ends at 48.2s in a 60s video, the final word MUST end at ~48200ms. Silent gaps at the end of the video get NO captions.
-- PAUSE SENSITIVITY: If there is a silence/pause/breath >150ms between words, the previous word's "end_ms" MUST end at the exact acoustic moment speech stops. Captions FREEZE during silence.
+Your primary objective is ZERO-LAG LIP SYNC. Captions must cover ONLY the speech — NOT the entire video duration. Silent gaps at the end of video must have NO captions.
 
-=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION ===
-- When translating (e.g. Kanglish/Kannada to English, Tamil to Hindi), anchor the translated sentence strictly within the acoustic window ("source_start_ms" to "source_end_ms") of the source audio phrase.
-- AUTO-SPEEDUP PACING: If the target translation contains more words/syllables than the source speech, compress target word durations proportionally by character/syllable length so that the final word finishes EXACTLY at "source_end_ms".
+=== 1. SPEECH DURATION & TIMING LOCK (CRITICAL) ===
+- Detect exact acoustic start (start_ms) and acoustic end (end_ms) of EACH spoken word in the audio.
+- CRITICAL: Captions must COVER ONLY SPEECH, NOT the video duration. If the video is 60 seconds but speech only lasts 48.2 seconds, your last word's end_ms MUST be ~48200. Do NOT stretch timestamps to fill the video file's total length.
+- When there is silence at the end of the video with no speech, return NO words for that silence period. Do NOT invent words or stretch existing words to fill the gap.
+- ABSOLUTE SPEECH-END BOUNDARY: Never extend captions beyond where speech actually stops.
+
+=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION (SYLLABLE-WEIGHTED) ===
+- Translate speech accurately while strictly locking translated phrases inside the source phrase's acoustic window (source_start_ms to source_end_ms).
+- SYLLABLE-WEIGHTED AUTO-SPEEDUP: Target language often has more syllables than source (e.g., 8 English syllables vs 7 Kanglish syllables in the same 1.2s window). This causes 0.3s lag per sentence. To eliminate lag:
+  * Count syllables in each target word (e.g., "Tension"=2, "that"=1, "booking"=2, "might"=1, "cancel."=2 = total 8).
+  * Total syllables fit into the source window: ms_per_syllable = source_window_ms / total_target_syllables.
+  * Each word duration = word_syllables × ms_per_syllable.
+  * Last word snaps EXACTLY to source_end_ms — no rounding gaps.
 - Do NOT expand time bounds beyond when the speaker finishes talking.
+- WORD-LEVEL TIMING: Return INDIVIDUAL WORDS with start_ms and end_ms in MILLISECONDS.
 
-=== 3. ADVANCED SCENARIO & EMOTION EMOJI DETECTION ===
-- Deeply analyze speaker sentiment, tone, excitement, worry, sarcasm, questions, exclamations, and scenario context.
-- Pick 1 highly relevant, expressive emotion/scenario emoji per sentence segment attached to the "is_sentence_end" word.
-- Examples: 😟 for tension/worry, 🔥 for hype/energy, 😂 for humor/laughter, 🚗 for cabs/travel, 💡 for ideas/insights, 💰 for money, 📍 for location queries, 🙏 for requests.
+=== 3. SILENCE & PAUSE RULES ===
+- If silence >150ms between words, preceding word MUST end at acoustic boundary. Do not bridge silences.
+- Captions FREEZE during silence — no word highlighted = no movement.
 
-=== 4. SEMANTIC TAGGING RULES ===
-- "is_expression": Mark TRUE ONLY for standalone exclamations or isolated queries (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god"). Do NOT tag normal narrative words.
-- "is_question": Mark TRUE for direct questions or interrogative words.
-- "is_name": Mark TRUE for proper nouns, place names, or brand names (e.g., "Ani Cabs", "Bengaluru").
-- "is_sentence_end": Mark TRUE whenever a word ends a sentence or has punctuation (., !, ?).
+=== 4. SEMANTIC BREAKING & HOT-WORD OVERRIDES ===
+- is_expression: Mark TRUE ONLY for standalone exclamations or isolated queries (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god"). Do NOT tag normal narrative sentence words as hot words.
+- is_question: Mark TRUE ONLY for the FINAL word of an interrogative phrase (e.g., only "ready?" in "are you ready?"). Do NOT mark every word in a question sentence — mark only the LAST word that carries the question intonation.
+- is_sentence_end: Mark TRUE when a word has a full stop (.), exclamation (!), or question mark (?).
+- is_name: Mark TRUE for proper nouns or brand names (e.g., "Ani Cabs", "Bengaluru").
+
+=== 5. EMOJI TAGGING ===
+- Include 1 contextually relevant emotion emoji per sentence segment.
 
 CAPTION / LANGUAGE RULES:
 ${languageInstruction.trim()}
