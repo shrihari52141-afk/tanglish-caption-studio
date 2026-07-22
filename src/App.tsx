@@ -192,20 +192,56 @@ function drawSubtitlesOnCanvas(
   const lineHeight = baseFontSize * 1.25; // matches typical line-box height
 
   const formattedTexts = displayWords.map(w => formatWordText(w.word));
-  const wordWidths = formattedTexts.map(txt => ctx.measureText(txt).width);
 
-  // Group words into wrapped lines exactly like CSS flex-wrap would.
-  type LineItem = { text: string; width: number; wordRef: CaptionWord };
+  // Compute animation elapsed time for the active word
+  const activeWord = words[activeWordIndex];
+  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
+  const activeWordId = activeWord?.id;
+
+  // Group words into wrapped lines using dynamic layoutWidth (Dynamic Text Reflow)
+  type LineItem = { text: string; textWidth: number; layoutWidth: number; wordRef: CaptionWord; isActive: boolean };
+
+  const lineItems: LineItem[] = displayWords.map((w, index) => {
+    const text = formattedTexts[index];
+    const textWidth = ctx.measureText(text).width;
+    const isActive = w.id === activeWordId;
+    let layoutWidth = textWidth;
+
+    if (isActive) {
+      // 1. Activation Phase: background box wraps around active word with internal padding
+      if (styleSettings.showBackground) {
+        const paddingX = 12 * canvasToEditorRatio;
+        const borderWidth = 2 * canvasToEditorRatio;
+        layoutWidth += (paddingX * 2) + (borderWidth * 2);
+      }
+
+      // 2. Preset animation scale (e.g. bounce, pop, beast)
+      if (enableAnimation !== false) {
+        const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
+        if (anim.scale) {
+          layoutWidth *= anim.scale;
+        }
+      }
+    }
+
+    return {
+      text,
+      textWidth,
+      layoutWidth,
+      wordRef: w,
+      isActive
+    };
+  });
+
   const lines: LineItem[][] = [];
   let curLine: LineItem[] = [];
   let curLineWidth = 0;
-  displayWords.forEach((w, index) => {
-    const item: LineItem = { text: formattedTexts[index], width: wordWidths[index], wordRef: w };
-    const projected = curLine.length === 0 ? item.width : curLineWidth + gap + item.width;
+  lineItems.forEach((item) => {
+    const projected = curLine.length === 0 ? item.layoutWidth : curLineWidth + gap + item.layoutWidth;
     if (curLine.length > 0 && projected > maxLineWidth) {
       lines.push(curLine);
       curLine = [item];
-      curLineWidth = item.width;
+      curLineWidth = item.layoutWidth;
     } else {
       curLine.push(item);
       curLineWidth = projected;
@@ -218,16 +254,9 @@ function drawSubtitlesOnCanvas(
   // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
   const firstLineY = -(lines.length - 1) * lineHeight;
 
-  // Compute animation elapsed time for the active word
-  const activeWord = words[activeWordIndex];
-  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
-
-  const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
+  const drawWord = (wordText: string, textWidth: number, curX: number, curY: number, isActive: boolean) => {
     ctx.save();
     if (isActive) {
-      // Apply preset animation transforms only when enabled (editor preview).
-      // Export rendering uses static highlighting so the output matches the
-      // editor's base style without motion.
       const anim = enableAnimation !== false
         ? getAnimationTransform(styleSettings.preset, animElapsed, scaleX)
         : { dx: 0, dy: 0, scale: 1.0, rotation: 0, colorOverride: undefined };
@@ -239,13 +268,12 @@ function drawSubtitlesOnCanvas(
       }
       if (styleSettings.showBackground) {
         ctx.fillStyle = '#000000';
-        // Padding matches CSS px-3 py-1.5 proportionally — use editor display
-        // ratio (not scaleX) so the visual ratio matches the editor's viewport.
         const paddingX = 12 * canvasToEditorRatio;
         const paddingY = 6 * canvasToEditorRatio;
-        const rx = curX - wordWidth / 2 - paddingX;
+        const borderWidth = 2 * canvasToEditorRatio;
+        const rx = curX - textWidth / 2 - paddingX;
         const ry = curY - baseFontSize / 2 - paddingY;
-        const rw = wordWidth + paddingX * 2;
+        const rw = textWidth + paddingX * 2;
         const rh = baseFontSize + paddingY * 2;
         const radius = 8 * canvasToEditorRatio;
         ctx.beginPath();
@@ -261,11 +289,10 @@ function drawSubtitlesOnCanvas(
         ctx.closePath();
         ctx.fill();
         ctx.strokeStyle = anim.colorOverride || styleSettings.highlightColor;
-        ctx.lineWidth = 2 * canvasToEditorRatio;
+        ctx.lineWidth = borderWidth;
         ctx.stroke();
       }
       if (styleSettings.showBacklight) {
-        // Dual-stage glow matching CSS: 0 0 12px color, 0 0 24px color
         ctx.shadowColor = anim.colorOverride || styleSettings.highlightColor;
         ctx.shadowBlur = 24 * scaleX;
         ctx.shadowOffsetX = 0;
@@ -276,7 +303,6 @@ function drawSubtitlesOnCanvas(
         ctx.fillText(wordText, curX, curY);
         ctx.shadowBlur = 0;
       } else if (styleSettings.showShadow) {
-        // Offset drop shadow matching CSS: 4px 4px 0px #000
         ctx.fillStyle = '#000000';
         ctx.fillText(wordText, curX + 4 * scaleX, curY + 4 * scaleX);
         ctx.strokeStyle = '#000000';
@@ -309,14 +335,13 @@ function drawSubtitlesOnCanvas(
   };
 
   lines.forEach((line, lineIdx) => {
-    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
-    let startX = -lineWidth / 2;
+    const lineLayoutWidth = line.reduce((a, it) => a + it.layoutWidth, 0) + (line.length - 1) * gap;
+    let startX = -lineLayoutWidth / 2;
     const curY = firstLineY + lineIdx * lineHeight;
     line.forEach((it) => {
-      const curX = startX + it.width / 2;
-      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
-      drawWord(it.text, it.width, curX, curY, isActive);
-      startX += it.width + gap;
+      const curX = startX + it.layoutWidth / 2;
+      drawWord(it.text, it.textWidth, curX, curY, it.isActive);
+      startX += it.layoutWidth + gap;
     });
   });
 
@@ -836,7 +861,7 @@ export default function App() {
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, currentVideoTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
+        drawSubtitlesOnCanvas(ctx, width, height, currentVideoTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, true);
         const pct = Math.min(99, Math.round((currentVideoTime / duration) * 100));
         setLocalProgress(pct);
         setTimeout(drawFrame, frameMs);
