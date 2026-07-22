@@ -1087,20 +1087,36 @@ Execute caption generation based on the specified OUTPUT_MODE:
 
 === 4. CONTEXT, EMOTION, SLANG & ENTITY INTELLIGENCE ===
 - SLANG & FILLER FIDELITY: Never censor, filter, or skip regional slang, swear words, interjections, or colloquialisms (e.g., "maa behen", "machi", "ayyo", "da", "yaar", "solra", "chalta hai").
-- EMOTIONAL & SITUATIONAL DECODING: Analyze vocal inflection, pitch rises, background context, and visual scenes to capture sarcastic queries, anger, sorrow, hype, or tension accurately.
+- EMOTIONAL & SITUATIONAL DECODING: Analyze vocal inflection (pitch rises, sad cadences, aggressive cadence), background context, and visual scenes to capture sarcastic queries, anger, sorrow, gossip, hype, or tension accurately.
 - PROPER NOUNS & LOCATIONS: Identify proper names, movie titles, places, and brands accurately from contextual audio (e.g., "Rekha", "Maa Behen", "Hassan", "Bengaluru", "Ujire"). Always tag proper nouns with is_name: true.
 
-=== 5. TAGGING & EMOJI ATTACHMENT RULES ===
+=== 5. DEEP EMOJI MAPPING & ATTACHMENT RULES ===
+When USE_EMOJIS is set to true, select emojis dynamically by analyzing vocal inflections, spoken slang, and situational scene context:
+
+EMOJI SELECTION MATRIX:
+- Gossip / Bad-Mouth / Backstabbing (e.g., "people talk badly", "tappa pesuvanga"): 🗣️ | 🐍 | 😒 | 🤐
+- Heartbreak / Hurt / Emotional Pain (e.g., "hurts her so much", "kashtam", "kasto"): 💔 | 😭 | 😔 | 🥺
+- Movies / Shows / Media Titles (e.g., "Maa Behen movie"): 🎬 | 🍿 | 🎭
+- Family / Mothers / Daughters (e.g., "her own daughters", "amma", "ponnungale"): 👩‍👧‍👧 | 👩‍👦 | 🏠
+- Anger / Frustration / Censored Slang (e.g., profanity, "maa behen"): 🤬 | 😤 | 💥
+- Exclamations / Reactions / Hype (e.g., "Ayyo!", "Boss!", "Machi!"): 🔥 | 🤯 | 😱 | 🙏
+- Interrogative / Confusion / Sarcasm (e.g., "Why she wears a sleeve?"): ❓ | 🤔 | 🧐
+
+STRICT EMOJI ATTACHMENT CONSTRAINTS:
+1. ATTACHMENT POINT: An emoji MUST ONLY be attached to the word where is_sentence_end: true.
+2. QUANTITY: Exactly ONE single emoji per completed sentence or clause.
+3. NULL RULE: For every word where is_sentence_end: false, the emoji field MUST strictly be null.
+4. DISABLE OVERRIDE: If USE_EMOJIS is false, set the emoji field to null for ALL words without exception.
+
+=== 6. TAGGING RULES ===
 - is_expression: true ONLY for standalone interjections, slang reactions, or isolated exclamations (e.g., "Ayyo!", "Hassan?", "Shut up"). Otherwise false.
 - is_question: true if the word forms part of an interrogative sentence or carries a rising question pitch.
 - is_name: true for people, places, movies, brands, or distinct entities.
 - is_sentence_end: true ONLY on the last word of a completed grammatical phrase or sentence.
-- EMOJI RULES:
-  - If EMOJIS_ENABLED is true: Attach EXACTLY ONE contextually relevant emoji matching the emotional/situational tone of the sentence.
-  - CRITICAL: The emoji field MUST be null for every word EXCEPT when is_sentence_end: true.
 
 === CAPTION CONFIGURATION ===
-- TARGET_LANGUAGE: ${langLabel}
+- OUTPUT_MODE: ${outputMode} ("TRANSCRIPTION_NATIVE" | "TRANSLITERATION_ROMAN" | "TRANSLATION")
+- TARGET_LANGUAGE: ${targetLanguage}
 - USE_PUNCTUATION: ${usePunctuation}
 - USE_EMOJIS: ${useEmojis}
 - SPOKEN_LANGUAGE_HINT: ${langLabel}
