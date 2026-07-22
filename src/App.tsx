@@ -58,6 +58,11 @@ import {
   getSessionId,
 } from './utils/sessionTracker';
 
+// Track previous frame for smooth transitions (avoids word popping)
+// Track previous frame for smooth transitions (avoids word popping)
+let _prevFrameData: { formattedTexts: string[]; wordWidths: number[]; wordRefs: CaptionWord[] } | null = null;
+let _prevFrameTime = 0;
+
 function drawSubtitlesOnCanvas(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
@@ -99,6 +104,22 @@ function drawSubtitlesOnCanvas(
   const displayWords = frames.find(frame => frame.some(w => w.id === words[targetIndex].id)) || frames[0] || [];
 
   if (displayWords.length === 0) return;
+
+  // ---- SMOOTH FRAME TRANSITIONS (anti-pop) ----
+  // When the display frame changes, keep the previous frame visible with fading
+  // opacity for 300ms so words don't snap on/off abruptly.
+  const nowMs = performance.now();
+  const prevIds = _prevFrameData?.wordRefs.map(w => w.id) || [];
+  const curIds = displayWords.map(w => w.id);
+  const frameChanged = prevIds.length > 0 && (
+    curIds.length !== prevIds.length ||
+    curIds.some((id, i) => id !== prevIds[i])
+  );
+  if (frameChanged) _prevFrameTime = nowMs;
+  const fadeElapsed = nowMs - _prevFrameTime;
+  const fadeAlpha = Math.max(0, 1 - fadeElapsed / 300);
+
+  // ---- EDITOR-MATCHED SCALING ----
 
   // ---- EDITOR-MATCHED SCALING ----
   // The editor sizes captions with: scaleFactor = containerWidth / 340, and the
@@ -305,17 +326,65 @@ function drawSubtitlesOnCanvas(
     ctx.restore();
   };
 
+  // ---- DRAW FADING PREVIOUS FRAME (anti-pop) ----
+  if (_prevFrameData && fadeAlpha > 0) {
+    const pfLines: LineItem[][] = [];
+    let pfCurLine: LineItem[] = [];
+    let pfCurLineWidth = 0;
+    _prevFrameData.formattedTexts.forEach((txt, i) => {
+      const item: LineItem = { text: txt, width: _prevFrameData.wordWidths[i], wordRef: _prevFrameData.wordRefs[i] };
+      const projected = pfCurLine.length === 0 ? item.width : pfCurLineWidth + gap + item.width;
+      if (pfCurLine.length > 0 && projected > maxLineWidth) {
+        pfLines.push(pfCurLine);
+        pfCurLine = [item];
+        pfCurLineWidth = item.width;
+      } else {
+        pfCurLine.push(item);
+        pfCurLineWidth = projected;
+      }
+    });
+    if (pfCurLine.length > 0) pfLines.push(pfCurLine);
+    ctx.save();
+    ctx.globalAlpha = fadeAlpha * 0.5;
+    const pfFirstLineY = -(pfLines.length - 1) * lineHeight;
+    pfLines.forEach((line, lineIdx) => {
+      const pfLineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
+      let pfStartX = -pfLineWidth / 2;
+      const pfCurY = pfFirstLineY + lineIdx * lineHeight;
+      line.forEach((it) => {
+        const pfCurX = pfStartX + it.width / 2;
+        const wasActive = _prevFrameData.wordRefs.some(r => r.id === it.wordRef.id && r.start_time <= time && r.end_time >= time);
+        drawWord(it.text, it.width, pfCurX, pfCurY, wasActive);
+        pfStartX += it.width + gap;
+      });
+    });
+    ctx.restore();
+  }
+
+  // ---- DRAW CURRENT FRAME ----
   lines.forEach((line, lineIdx) => {
-    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
+    // Compute total line width accounting for dynamic reflow (active word with
+    // background gets extra padding that pushes adjacent words — matching the
+    // editor's px-3 py-1.5 CSS).
+    const reflowExtra = styleSettings.showBackground ? 24 * canvasToEditorRatio : 0;
+    const lineWidth = line.reduce((a, it) => {
+      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
+      return a + it.width + (isActive ? reflowExtra : 0);
+    }, 0) + (line.length - 1) * gap;
     let startX = -lineWidth / 2;
     const curY = firstLineY + lineIdx * lineHeight;
-    line.forEach((it) => {
-      const curX = startX + it.width / 2;
+    line.forEach((it, idx) => {
       const isActive = words[activeWordIndex]?.id === it.wordRef.id;
+      const curX = startX + it.width / 2;
       drawWord(it.text, it.width, curX, curY, isActive);
-      startX += it.width + gap;
+      // After active word with background, add extra gap so the next word gets
+      // pushed right just like the editor's px-3 on the active word span.
+      startX += it.width + gap + (isActive ? reflowExtra : 0);
     });
   });
+
+  // Store current frame for next call's fade transition
+  _prevFrameData = { formattedTexts, wordWidths, wordRefs: displayWords };
 
   ctx.restore();
 }
@@ -711,7 +780,7 @@ export default function App() {
       state.videoFile.name.endsWith('.mp3') ||
       state.videoFile.name.endsWith('.wav') ||
       state.videoFile.name.endsWith('.m4a')
-    );
+    ) || !state.videoUrl;
 
     // Use a dedicated, isolated media element so we control playback precisely
     // and don't disturb the on-screen player.
@@ -721,17 +790,6 @@ export default function App() {
     videoEl.muted = false;
     videoEl.playsInline = true;
     (videoEl as any).preload = 'auto';
-    
-    // To ensure mobile devices and WebViews decode video frames during offscreen playback,
-    // we must temporarily append it to the document body with hidden/invisible styling.
-    videoEl.style.position = 'fixed';
-    videoEl.style.left = '-9999px';
-    videoEl.style.top = '-9999px';
-    videoEl.style.width = '1px';
-    videoEl.style.height = '1px';
-    videoEl.style.opacity = '0';
-    videoEl.style.pointerEvents = 'none';
-    document.body.appendChild(videoEl);
 
     await new Promise<void>((resolve) => {
       let done = false;
@@ -752,23 +810,6 @@ export default function App() {
         throw new Error("Could not determine media duration.");
       }
 
-      // --- Measure source frame rate by playing a short sample ---
-      // We seek to ~10% in (avoids intro freeze-frames), play for 1s, count
-      // decoded frames via getVideoPlaybackQuality, then seek back to 0.
-      let sourceFps = 30; // safe fallback
-      try {
-        videoEl.currentTime = Math.min(duration * 0.1, 3);
-        await videoEl.play();
-        await new Promise(r => setTimeout(r, 200));
-        const qStart = videoEl.getVideoPlaybackQuality().totalVideoFrames;
-        await new Promise(r => setTimeout(r, 800));
-        const qEnd = videoEl.getVideoPlaybackQuality().totalVideoFrames;
-        const measured = Math.round((qEnd - qStart) / 0.8);
-        if (measured >= 15 && measured <= 120) sourceFps = measured;
-        videoEl.pause();
-        videoEl.currentTime = 0;
-      } catch { /* use fallback */ }
-
       // --- Canvas that we draw each frame onto ---
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -776,8 +817,10 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error("Canvas 2D context unavailable.");
 
-      const fps = sourceFps;
-      const frameMs = 1000 / fps;
+      // Use 30 fps for canvas capture — this is sufficient for captions and
+      // keeps performance good on mobile. The fixed-interval draw loop (see below)
+      // ensures caption timing is independent of the capture frame rate.
+      const fps = 30;
       const canvasStream = canvas.captureStream(fps);
 
       // --- Pull the audio track from the video into the recording ---
@@ -817,11 +860,11 @@ export default function App() {
         ? `Encoding natively as MP4 (${chosenMime})...`
         : `Device cannot record MP4 natively; recording then packaging as .mp4...`]);
 
-      // Near-lossless bitrate: ~0.3 bits/pixel/frame (double the old value),
-      // clamped to 20-100 Mbps so high-res exports retain original quality.
+      // High bitrate scaled to resolution so exports aren't visibly compressed
+      // (roughly 0.15 bits/pixel/frame; clamped to a sane 8–40 Mbps range).
       const targetBitrate = Math.min(
-        100_000_000,
-        Math.max(20_000_000, Math.round(width * height * fps * 0.3))
+        40_000_000,
+        Math.max(8_000_000, Math.round(width * height * fps * 0.15))
       );
       const recorderOpts: MediaRecorderOptions = {
         videoBitsPerSecond: targetBitrate,
@@ -848,18 +891,24 @@ export default function App() {
       await videoEl.play().catch(() => { /* some browsers need muted; retry */ });
 
       let stopped = false;
+      // Use the detected fps so caption timing matches the source video's rate.
+      const targetFps = fps;
+      const frameMs = 1000 / targetFps;
+      // Track real elapsed time so the caption timing does NOT drift if video
+      // playback stutters or canvas rendering takes too long.
       const exportStartTime = performance.now();
       const drawFrame = () => {
         if (stopped) return;
-        const currentVideoTime = videoEl.currentTime;
+        const realElapsedMs = performance.now() - exportStartTime;
+        const captionTime = realElapsedMs / 1000;
         if (isAudioOnly) {
           ctx.fillStyle = exportBgColor || '#000000';
           ctx.fillRect(0, 0, width, height);
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, currentVideoTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
-        const pct = Math.min(99, Math.round((currentVideoTime / duration) * 100));
+        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, true);
+        const pct = Math.min(99, Math.round((captionTime / duration) * 100));
         setLocalProgress(pct);
         // Schedule next frame at FIXED interval — do NOT use requestAnimationFrame
         // which drifts when rendering is slow. A fixed setTimeout gives stable
@@ -922,14 +971,7 @@ export default function App() {
       setExportLogs(l => [...l, `Error: ${err?.message || err}`]);
       alert("On-device render failed. You can try Cloud Export instead.");
     } finally {
-      try {
-        videoEl.pause();
-        videoEl.removeAttribute('src');
-        videoEl.load();
-        if (videoEl.parentNode) {
-          videoEl.parentNode.removeChild(videoEl);
-        }
-      } catch { /* ignore */ }
+      try { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); } catch { /* ignore */ }
     }
   };
 
@@ -957,7 +999,10 @@ export default function App() {
       const displayHeight = videoEl?.clientHeight || 604;
 
       const formData = new FormData();
-      formData.append('video', state.videoFile!);
+      if (!state.videoFile) {
+        throw new Error("No video file available for cloud export. Use local (on-device) export instead.");
+      }
+      formData.append('video', state.videoFile);
       setExportLogs(l => [...l, "Uploading original video file to cloud render cluster (may take a moment)..."]);
       
       formData.append('words', JSON.stringify(state.words));
@@ -1546,9 +1591,9 @@ export default function App() {
               )}
             </>
           </div>
-        ) : (
+        ) : (<>
           <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] h-[calc(100vh-48px)] overflow-y-auto lg:overflow-hidden w-full max-w-full">
-            <div className="flex flex-col items-center justify-center bg-black border-r border-[#333] relative p-2 md:p-3 lg:p-4">
+            <div className={`flex flex-col items-center justify-center bg-black border-r border-[#333] relative p-2 md:p-3 lg:p-4 ${mobileTab === 'edit' ? 'hidden lg:flex' : 'flex'}`}>
               <VideoPlayer 
                 videoUrl={state.videoUrl}
                 words={state.words}
@@ -1646,7 +1691,7 @@ export default function App() {
               )}
             </div>
             
-            <div className="h-auto lg:h-full bg-[#161616] overflow-visible lg:overflow-y-auto">
+            <div className={`h-auto lg:h-full bg-[#161616] overflow-visible lg:overflow-y-auto ${mobileTab === 'preview' ? 'hidden lg:block' : 'block'}`}>
               <EditorPanel 
                 styleSettings={state.styleSettings}
                 onUpdateStyleSettings={handleUpdateStyleSettings}
@@ -1660,7 +1705,29 @@ export default function App() {
               />
             </div>
           </div>
-        )}
+
+          {/* Mobile bottom tab bar — switches between preview and edit on small screens */}
+          <div className="lg:hidden flex items-center justify-around bg-[#121212] border-t border-[#333] h-[52px] shrink-0 z-40">
+            <button
+              onClick={() => setMobileTab('preview')}
+              className={`flex-1 flex items-center justify-center gap-1.5 h-full text-[11px] font-bold uppercase tracking-wider cursor-pointer transition-colors ${
+                mobileTab === 'preview' ? 'text-fuchsia-500 border-t-2 border-fuchsia-500 bg-fuchsia-500/5' : 'text-[#666] hover:text-white'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+              Preview
+            </button>
+            <button
+              onClick={() => setMobileTab('edit')}
+              className={`flex-1 flex items-center justify-center gap-1.5 h-full text-[11px] font-bold uppercase tracking-wider cursor-pointer transition-colors ${
+                mobileTab === 'edit' ? 'text-fuchsia-500 border-t-2 border-fuchsia-500 bg-fuchsia-500/5' : 'text-[#666] hover:text-white'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              Edit
+            </button>
+          </div>
+          </>)}
       </main>
 
       {isExporting && (
@@ -1725,24 +1792,6 @@ export default function App() {
                       </h4>
                       <p className="text-[11px] text-[#aaa] leading-relaxed">
                         100% private & instant. Renders directly in your browser using GPU acceleration. <strong>No video uploads required!</strong>
-                      </p>
-                    </div>
-                  </button>
-
-                  {/* Cloud Option */}
-                  <button
-                    onClick={startCloudExport}
-                    className="p-5 rounded-2xl border-2 border-[#2c2c2c] hover:border-fuchsia-500 bg-[#121212] hover:bg-fuchsia-600/5 text-left transition-all flex flex-col gap-3 group cursor-pointer"
-                  >
-                    <div className="p-2 bg-fuchsia-600/20 rounded-xl w-max text-fuchsia-400 group-hover:scale-110 transition-transform">
-                      <Cloud className="w-6 h-6" />
-                    </div>
-                    <div>
-                      <h4 className="text-[14px] font-black text-white uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                        Cloud Burner <span className="text-[9px] bg-[#333] text-gray-400 font-black px-1.5 py-0.5 rounded uppercase">Original Quality</span>
-                      </h4>
-                      <p className="text-[11px] text-[#aaa] leading-relaxed">
-                        Burns subtitles directly on our high-speed render cluster. <strong>Retains original resolution, codecs, frame rate, and maximum quality.</strong>
                       </p>
                     </div>
                   </button>
