@@ -342,6 +342,16 @@ export default function VideoPlayer({
     const video = e.currentTarget;
     if (video.videoWidth && video.videoHeight) {
       setVideoRatio(video.videoWidth / video.videoHeight);
+      // Force mobile browsers to decode and render first frame (prevents black screen)
+      if (video.currentTime === 0 && !isNaN(video.duration) && video.duration > 0) {
+        try {
+          video.currentTime = 0.01;
+        } catch {
+          /* ignore */
+        }
+      }
+    } else {
+      setVideoRatio(1.0);
     }
   };
 
@@ -466,6 +476,7 @@ export default function VideoPlayer({
             onLoadedMetadata={handleLoadedMetadata}
             className="w-full h-full object-contain cursor-pointer"
             playsInline
+            preload="auto"
             onClick={togglePlay}
           />
           {/* Floating play/pause + speed control — always visible on top of video */}

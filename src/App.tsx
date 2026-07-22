@@ -1124,6 +1124,9 @@ export default function App() {
     const videoUrl = URL.createObjectURL(file);
     const jobId = Math.random().toString(36).substring(7);
     
+    // Automatically switch mobile view tab to preview so mobile screens display the video/progress
+    setMobileTab('preview');
+
     await wakeServer();
     setState(s => ({ 
       ...s, 
