@@ -15,7 +15,7 @@ function getAnimationTransform(preset: string, elapsedSec: number, scaleX: numbe
   switch (preset) {
     case 'bounce': {
       const phase = Math.abs(Math.sin(t * 4));
-      return { dx: 0, dy: -8 * scaleX * phase, scale: 1 + 0.18 * phase, rotation: 0 };
+      return { dx: 0, dy: 0, scale: 1 + 0.18 * phase, rotation: 0 };
     }
     case 'pop': {
       if (t < 0.1) return { dx: 0, dy: 0, scale: 0.8 + (t / 0.1) * 0.3, rotation: 0 };
@@ -189,20 +189,32 @@ function drawSubtitlesOnCanvas(
   const lineHeight = baseFontSize * 1.25; // matches typical line-box height
 
   const formattedTexts = displayWords.map(w => formatWordText(w.word));
-  const wordWidths = formattedTexts.map(txt => ctx.measureText(txt).width);
 
-  // Group words into wrapped lines exactly like CSS flex-wrap would.
-  type LineItem = { text: string; width: number; wordRef: CaptionWord };
-  const lines: LineItem[][] = [];
-  let curLine: LineItem[] = [];
+  // Compute animation elapsed time for the active word
+  const activeWord = words[activeWordIndex];
+  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
+  const activeWordId = activeWord?.id;
+
+  // 1. Group words into stable lines based on base text width (prevents line jumping)
+  type WordItem = { text: string; textWidth: number; wordRef: CaptionWord; isActive: boolean };
+
+  const wordItems: WordItem[] = displayWords.map((w, i) => ({
+    text: formattedTexts[i],
+    textWidth: ctx.measureText(formattedTexts[i]).width,
+    wordRef: w,
+    isActive: w.id === activeWordId,
+  }));
+
+  const lines: WordItem[][] = [];
+  let curLine: WordItem[] = [];
   let curLineWidth = 0;
-  displayWords.forEach((w, index) => {
-    const item: LineItem = { text: formattedTexts[index], width: wordWidths[index], wordRef: w };
-    const projected = curLine.length === 0 ? item.width : curLineWidth + gap + item.width;
+
+  wordItems.forEach((item) => {
+    const projected = curLine.length === 0 ? item.textWidth : curLineWidth + gap + item.textWidth;
     if (curLine.length > 0 && projected > maxLineWidth) {
       lines.push(curLine);
       curLine = [item];
-      curLineWidth = item.width;
+      curLineWidth = item.textWidth;
     } else {
       curLine.push(item);
       curLineWidth = projected;
@@ -210,14 +222,7 @@ function drawSubtitlesOnCanvas(
   });
   if (curLine.length > 0) lines.push(curLine);
 
-  // Editor: the caption box is anchored at its BOTTOM (bottom:offset) and grows
-  // UPWARD as more lines wrap. The translate origin (0,0) is the single-line
-  // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
   const firstLineY = -(lines.length - 1) * lineHeight;
-
-  // Compute animation elapsed time for the active word
-  const activeWord = words[activeWordIndex];
-  const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
 
   const drawWord = (wordText: string, wordWidth: number, curX: number, curY: number, isActive: boolean) => {
     ctx.save();
@@ -305,15 +310,35 @@ function drawSubtitlesOnCanvas(
     ctx.restore();
   };
 
+  const pillPaddingX = 12 * canvasToEditorRatio;
+  const pillBorderWidth = 2 * canvasToEditorRatio;
+  const pillExtraWidth = styleSettings.showBackground ? (pillPaddingX * 2 + pillBorderWidth * 2) : 0;
+
   lines.forEach((line, lineIdx) => {
-    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
-    let startX = -lineWidth / 2;
+    const lineLayoutItems = line.map((item) => {
+      let extra = 0;
+      if (item.isActive) {
+        extra = pillExtraWidth;
+        if (enableAnimation !== false) {
+          const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
+          if (anim.scale && anim.scale !== 1.0) {
+            extra += item.textWidth * (anim.scale - 1.0);
+          }
+        }
+      }
+      return {
+        ...item,
+        layoutWidth: item.textWidth + extra,
+      };
+    });
+
+    const lineLayoutWidth = lineLayoutItems.reduce((a, it) => a + it.layoutWidth, 0) + (lineLayoutItems.length - 1) * gap;
+    let startX = -lineLayoutWidth / 2;
     const curY = firstLineY + lineIdx * lineHeight;
-    line.forEach((it) => {
-      const curX = startX + it.width / 2;
-      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
-      drawWord(it.text, it.width, curX, curY, isActive);
-      startX += it.width + gap;
+    lineLayoutItems.forEach((it) => {
+      const curX = startX + it.layoutWidth / 2;
+      drawWord(it.text, it.textWidth, curX, curY, it.isActive);
+      startX += it.layoutWidth + gap;
     });
   });
 
@@ -1087,7 +1112,10 @@ export default function App() {
     const videoUrl = URL.createObjectURL(file);
     const jobId = Math.random().toString(36).substring(7);
     
-    await wakeServer();
+    // Automatically switch mobile view tab to preview so mobile screens display the video/progress
+    setMobileTab('preview');
+
+    // Set state IMMEDIATELY (0ms instant response) so progress screen opens at once!
     setState(s => ({ 
       ...s, 
       videoFile: file, 
@@ -1116,12 +1144,19 @@ export default function App() {
       }
     }));
 
+    // Wake server in background without blocking state transition!
+    wakeServer().catch(() => {});
+
     // Subscribe to SSE logs
     const eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
     eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.message) {
-        setState(s => ({ ...s, logs: [...s.logs, data.message] }));
+      try {
+        const data = JSON.parse(event.data);
+        if (data.message) {
+          setState(s => ({ ...s, logs: [...s.logs, data.message] }));
+        }
+      } catch {
+        /* ignore */
       }
     };
 
