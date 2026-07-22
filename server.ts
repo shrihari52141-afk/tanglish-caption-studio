@@ -238,24 +238,18 @@ export async function startServer() {
    */
   function normalizeTranscriptionTiming(
     words: TimedWord[],
-    _targetDuration: number  // unused — we NEVER stretch beyond actual speech end
+    _targetDuration: number  // unused — preserve exact acoustic speech timeline
   ): TimedWord[] {
     if (words.length === 0) return words;
 
-    // Work on a copy sorted by start
+    // CRITICAL: Preserve exact acoustic timestamps matching the video/audio timeline.
+    // Do NOT subtract rawStart, which causes speech that begins at 2s to be shifted
+    // early to 0s, desyncing all subsequent words from the speaker.
     const sorted = [...words].sort((a, b) => a.start_time - b.start_time);
-    const rawStart = sorted[0].start_time;
-    const rawEnd = Math.max(...sorted.map((w) => w.end_time), rawStart + 0.1);
-
-    // CRITICAL: Do NOT stretch timestamps to fill the video duration.
-    // Captions must only cover the actual speech window. Silent gaps at
-    // the end of the video get NO captions — highlighted word freezes.
-    // Only shift so the first word starts at 0 (beginning of speech).
-    const offset = -rawStart;
     return sorted.map((w) => ({
       ...w,
-      start_time: +Math.max(0, (w.start_time + offset)).toFixed(3),
-      end_time: +Math.max(0.001, (w.end_time + offset)).toFixed(3),
+      start_time: +Math.max(0, w.start_time).toFixed(3),
+      end_time: +Math.max(w.start_time + 0.01, w.end_time).toFixed(3),
     }));
   }
 

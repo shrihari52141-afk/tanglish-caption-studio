@@ -57,24 +57,18 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     let rafId: number;
-    let frameCount = 0;
     const tick = () => {
-      frameCount++;
-      // Update every 2nd frame (~30fps) — smooth enough for word-level sync,
-      // light enough for low-end devices.
-      if (frameCount % 2 === 0) {
-        const t = video.currentTime;
-        setLocalTime(t);
-        let found: string | null = null;
-        for (let i = 0; i < words.length; i++) {
-          const w = words[i];
-          if (t >= w.start_time && t <= w.end_time) {
-            found = w.id;
-            break;
-          }
+      const t = video.currentTime;
+      setLocalTime(t);
+      let found: string | null = null;
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        if (t >= w.start_time && t <= w.end_time) {
+          found = w.id;
+          break;
         }
-        setHighlightedWordId(found);
       }
+      setHighlightedWordId(found);
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
