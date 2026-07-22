@@ -1121,7 +1121,7 @@ export default function App() {
     // Automatically switch mobile view tab to preview so mobile screens display the video/progress
     setMobileTab('preview');
 
-    await wakeServer();
+    // Set state IMMEDIATELY (0ms instant response) so progress screen opens at once!
     setState(s => ({ 
       ...s, 
       videoFile: file, 
@@ -1150,12 +1150,19 @@ export default function App() {
       }
     }));
 
+    // Wake server in background without blocking state transition!
+    wakeServer().catch(() => {});
+
     // Subscribe to SSE logs
     const eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
     eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.message) {
-        setState(s => ({ ...s, logs: [...s.logs, data.message] }));
+      try {
+        const data = JSON.parse(event.data);
+        if (data.message) {
+          setState(s => ({ ...s, logs: [...s.logs, data.message] }));
+        }
+      } catch {
+        /* ignore */
       }
     };
 
