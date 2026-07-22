@@ -59,10 +59,6 @@ import {
 } from './utils/sessionTracker';
 
 // Track previous frame for smooth transitions (avoids word popping)
-// Track previous frame for smooth transitions (avoids word popping)
-let _prevFrameData: { formattedTexts: string[]; wordWidths: number[]; wordRefs: CaptionWord[] } | null = null;
-let _prevFrameTime = 0;
-
 function drawSubtitlesOnCanvas(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
@@ -104,20 +100,6 @@ function drawSubtitlesOnCanvas(
   const displayWords = frames.find(frame => frame.some(w => w.id === words[targetIndex].id)) || frames[0] || [];
 
   if (displayWords.length === 0) return;
-
-  // ---- SMOOTH FRAME TRANSITIONS (anti-pop) ----
-  // When the display frame changes, keep the previous frame visible with fading
-  // opacity for 300ms so words don't snap on/off abruptly.
-  const nowMs = performance.now();
-  const prevIds = _prevFrameData?.wordRefs.map(w => w.id) || [];
-  const curIds = displayWords.map(w => w.id);
-  const frameChanged = prevIds.length > 0 && (
-    curIds.length !== prevIds.length ||
-    curIds.some((id, i) => id !== prevIds[i])
-  );
-  if (frameChanged) _prevFrameTime = nowMs;
-  const fadeElapsed = nowMs - _prevFrameTime;
-  const fadeAlpha = Math.max(0, 1 - fadeElapsed / 300);
 
   // ---- EDITOR-MATCHED SCALING ----
 
@@ -326,65 +308,17 @@ function drawSubtitlesOnCanvas(
     ctx.restore();
   };
 
-  // ---- DRAW FADING PREVIOUS FRAME (anti-pop) ----
-  if (_prevFrameData && fadeAlpha > 0) {
-    const pfLines: LineItem[][] = [];
-    let pfCurLine: LineItem[] = [];
-    let pfCurLineWidth = 0;
-    _prevFrameData.formattedTexts.forEach((txt, i) => {
-      const item: LineItem = { text: txt, width: _prevFrameData.wordWidths[i], wordRef: _prevFrameData.wordRefs[i] };
-      const projected = pfCurLine.length === 0 ? item.width : pfCurLineWidth + gap + item.width;
-      if (pfCurLine.length > 0 && projected > maxLineWidth) {
-        pfLines.push(pfCurLine);
-        pfCurLine = [item];
-        pfCurLineWidth = item.width;
-      } else {
-        pfCurLine.push(item);
-        pfCurLineWidth = projected;
-      }
-    });
-    if (pfCurLine.length > 0) pfLines.push(pfCurLine);
-    ctx.save();
-    ctx.globalAlpha = fadeAlpha * 0.5;
-    const pfFirstLineY = -(pfLines.length - 1) * lineHeight;
-    pfLines.forEach((line, lineIdx) => {
-      const pfLineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
-      let pfStartX = -pfLineWidth / 2;
-      const pfCurY = pfFirstLineY + lineIdx * lineHeight;
-      line.forEach((it) => {
-        const pfCurX = pfStartX + it.width / 2;
-        const wasActive = _prevFrameData.wordRefs.some(r => r.id === it.wordRef.id && r.start_time <= time && r.end_time >= time);
-        drawWord(it.text, it.width, pfCurX, pfCurY, wasActive);
-        pfStartX += it.width + gap;
-      });
-    });
-    ctx.restore();
-  }
-
-  // ---- DRAW CURRENT FRAME ----
   lines.forEach((line, lineIdx) => {
-    // Compute total line width accounting for dynamic reflow (active word with
-    // background gets extra padding that pushes adjacent words — matching the
-    // editor's px-3 py-1.5 CSS).
-    const reflowExtra = styleSettings.showBackground ? 24 * canvasToEditorRatio : 0;
-    const lineWidth = line.reduce((a, it) => {
-      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
-      return a + it.width + (isActive ? reflowExtra : 0);
-    }, 0) + (line.length - 1) * gap;
+    const lineWidth = line.reduce((a, it) => a + it.width, 0) + (line.length - 1) * gap;
     let startX = -lineWidth / 2;
     const curY = firstLineY + lineIdx * lineHeight;
-    line.forEach((it, idx) => {
-      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
+    line.forEach((it) => {
       const curX = startX + it.width / 2;
+      const isActive = words[activeWordIndex]?.id === it.wordRef.id;
       drawWord(it.text, it.width, curX, curY, isActive);
-      // After active word with background, add extra gap so the next word gets
-      // pushed right just like the editor's px-3 on the active word span.
-      startX += it.width + gap + (isActive ? reflowExtra : 0);
+      startX += it.width + gap;
     });
   });
-
-  // Store current frame for next call's fade transition
-  _prevFrameData = { formattedTexts, wordWidths, wordRefs: displayWords };
 
   ctx.restore();
 }
@@ -891,31 +825,21 @@ export default function App() {
       await videoEl.play().catch(() => { /* some browsers need muted; retry */ });
 
       let stopped = false;
-      // Use the detected fps so caption timing matches the source video's rate.
       const targetFps = fps;
       const frameMs = 1000 / targetFps;
-      // Track real elapsed time so the caption timing does NOT drift if video
-      // playback stutters or canvas rendering takes too long.
-      const exportStartTime = performance.now();
       const drawFrame = () => {
         if (stopped) return;
-        const realElapsedMs = performance.now() - exportStartTime;
-        const captionTime = realElapsedMs / 1000;
+        const currentVideoTime = videoEl.currentTime;
         if (isAudioOnly) {
           ctx.fillStyle = exportBgColor || '#000000';
           ctx.fillRect(0, 0, width, height);
         } else {
           try { ctx.drawImage(videoEl, 0, 0, width, height); } catch { /* frame not ready */ }
         }
-        drawSubtitlesOnCanvas(ctx, width, height, captionTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, true);
-        const pct = Math.min(99, Math.round((captionTime / duration) * 100));
+        drawSubtitlesOnCanvas(ctx, width, height, currentVideoTime, state.words, state.styleSettings, videoEl, editorDisplayRef.current.width, editorDisplayRef.current.height, false);
+        const pct = Math.min(99, Math.round((currentVideoTime / duration) * 100));
         setLocalProgress(pct);
-        // Schedule next frame at FIXED interval — do NOT use requestAnimationFrame
-        // which drifts when rendering is slow. A fixed setTimeout gives stable
-        // 30fps and prevents the video from appearing to slow down.
-        const nextAt = (Math.floor(realElapsedMs / frameMs) + 1) * frameMs;
-        const delay = Math.max(0, nextAt - performance.now());
-        setTimeout(drawFrame, delay);
+        setTimeout(drawFrame, frameMs);
       };
       setTimeout(drawFrame, frameMs);
 
