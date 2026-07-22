@@ -358,6 +358,7 @@ export default function App() {
     currentTime: 0,
     uploadProgress: 0,
     logs: [],
+    activeModel: "gemini-3.6-flash",
     styleSettings: {
       preset: 'bounce',
       fontFamily: 'Inter',
@@ -1160,7 +1161,11 @@ export default function App() {
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.message) {
-        setState(s => ({ ...s, logs: [...s.logs, data.message] }));
+        setState(s => {
+          const modelMatch = data.message.match(/\(?([\w.-]+flash[\w-]*)\)?/i);
+          const activeModel = modelMatch ? modelMatch[1] : s.activeModel;
+          return { ...s, logs: [...s.logs, data.message], activeModel };
+        });
       }
     };
 
@@ -1607,8 +1612,8 @@ export default function App() {
                             </span>
                              AI Caption Studio
                            </h3>
-                           <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1">
-                             Gemini 3.5 Flash
+                           <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1 flex items-center gap-1">
+                             🤖 {state.activeModel || "Gemini 3.5 Flash"}
                            </span>
                            <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
                          </div>

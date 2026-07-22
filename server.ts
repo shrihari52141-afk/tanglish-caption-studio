@@ -1061,33 +1061,53 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
 
-    const systemPrompt = `You are an ultra-precise audio alignment, semantic parsing, and multi-language subtitle engine. You analyze audio down to millisecond-level acoustic speech boundaries and output structured word-level JSON.
+    const systemPrompt = `You are an advanced multi-modal audio-visual transcription, translation, and lip-sync timestamping engine. You specialize in Indian multilingual audio, rapid conversational speech, code-switched dialects (Tamil, Hindi, Kannada, Telugu, Malayalam, Tanglish, Hinglish, Kanglish), regional slang, and emotional nuance.
 
-CRITICAL RULES — FOLLOW EXACTLY:
-1. WORD-LEVEL TIMESTAMPS: Return INDIVIDUAL WORDS, not phrases. Every single word MUST have its own "start_ms" and "end_ms" in MILLISECONDS reflecting the exact acoustic moment it is spoken.
-2. MILLIMETER PRECISION: timestamps must be in milliseconds (e.g. 1230 means 1.23 seconds). Do NOT round to whole seconds. The difference between words spoken quickly (e.g. "madbeka" at 1500ms-2100ms) vs slowly must be accurately captured.
-3. SILENCE & PAUSES: If there is a silence/pause/breath between words (>150ms gap), the previous word's end_ms MUST end at the exact moment speech stops. Do NOT stretch timestamps across silent gaps. Silence is NOT speech — captions must FREEZE during silence.
-4. TRANSLATION TIMING: When translating (e.g., Kanglish→English, Tamil→Hindi), distribute the translated words' timestamps PROPORTIONALLY across the source audio segment's time window. Use character-weighted allocation: a longer translated word gets more time than a shorter one, but ALL translated words MUST fit within the original source segment's start_ms to end_ms.
-5. COMPLETE COVERAGE: Transcribe from the VERY FIRST spoken sound to the ABSOLUTE LAST. The last word's end_ms MUST reach the actual end of speech. NEVER stop early. NEVER skip words.
-6. SPEED MATCHING: Word timestamps MUST match the ACTUAL speaking rate exactly. If a speaker says 3 words in 1 second, those 3 words' combined duration MUST be ~1000ms. Do NOT slow down or speed up beyond the real speech pace.
-7. EVERY WORD COUNTS: Transcribe ALL words — even quick, mumbled, or overlapping ones. The speaker's speed is the speaker's speed.
-8. METADATA TAGGING per word:
-   - "is_question": true if this word is interrogative or part of a question (e.g. "madbeka?", "Can I?", "why?")
-   - "is_expression": true if this word is an emotional exclamation/hot word (e.g. "Ayyo", "Shut up", "Oh god", "Ouch", "Wow")
-   - "is_name": true if this word is a proper noun — name, brand, place (e.g. "Ani", "Bengaluru", "Izzy")
-   - "is_sentence_end": true if this word ends a sentence/thought (has . or ! or ? or is the last word before a natural pause)
-9. EMOJI: Attach ONE contextually relevant emoji per sentence-end word (match the emotion of that segment).
-10. AUDIO DURATION: Report "audio_duration_ms" as the total audio length in milliseconds.
+Your primary objective is to produce MILLISECOND-ACCURATE, WORD-BY-WORD LIP-SYNCED JSON captions that capture every spoken phoneme, slang term, emotional tone, and proper noun with zero drift and zero omission.
 
-CAPTION / LANGUAGE RULES:
-${languageInstruction.trim()}
-- PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
-- GRAMMAR: 100% natural, idiomatic, grammatically correct. Fix logic errors, brand names, place names from context.
-- EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each sentence (attached to the is_sentence_end word). Match emotion. Never more than one per sentence." : "Do NOT add any emojis."}
+=== 1. TASK MODE EXECUTION ===
+Execute caption generation based on the specified OUTPUT_MODE:
+1. MODE "TRANSCRIPTION_NATIVE": Transcribe the exact spoken words using the native script of the primary language (e.g., Tamil script, Hindi/Devanagari script, Kannada script).
+2. MODE "TRANSLITERATION_ROMAN": Transcribe the exact spoken words phonetically using Latin/Roman script (e.g., Tanglish: "Maa Behen movie la vanthu...", Hinglish: "Yeh toh bilkul sahi hai..."). Preserve exact regional pronunciation and filler words.
+3. MODE "TRANSLATION": Translate the spoken content into the specified TARGET_LANGUAGE (e.g., English). Do NOT condense, summarize, or alter the meaning. Preserve 100% semantic fidelity, tone, and emotional weight.
 
-Spoken language hint: ${langLabel}.
+=== 2. ACOUSTIC ONSET/OFFSET LIP-SYNC ENGINE (ZERO DRIFT) ===
+- STRICT SINGLE-WORD TOKENIZATION: Every item in the "words" array MUST contain EXACTLY ONE single word (e.g., "word": "society"). Never group multiple words into a single string.
+- NO TIME-AVERAGING OR LINEAR INTERPOLATION: Do NOT calculate timestamps by dividing sentence duration equally across words. Identify the precise physical audio attack (consonant/vowel onset) and audio release (consonant decay/silence offset) for EACH individual word.
+- ACOUSTIC PAUSE PRESERVATION: If a speaker pauses between words for >100ms, keep that gap empty (word[i].end_ms < word[i+1].start_ms). Never bridge captions over silent gaps or breath pauses.
+- MONOTONIC TIMESTAMPS: Timestamps must strictly increase: word[i].start_ms >= word[i-1].end_ms and word[i].start_ms < word[i].end_ms. No negative or overlapping word durations.
+- AUDIO END LOCK: Stop emitting word timestamps the exact millisecond physical speech ceases. Do NOT stretch captions to fill trailing background noise or video end.
 
-Return ONLY a JSON object (no markdown) with word-level timestamps in milliseconds:
+=== 3. CLAUSE-LEVEL DURATION ANCHORING (FOR TRANSLATION & ROMAN MODES) ===
+- PHYSICAL CLAUSE LOCK: Identify the exact start (clause_start_ms) and end (clause_end_ms) of the speaker's original audio utterance.
+- DURATION STRETCHING: When translating to a language with fewer or more words than the spoken audio, mathematically distribute the target words so the first word starts at clause_start_ms and the final word ends EXACTLY at clause_end_ms.
+- Character-Length Pacing Formula:
+  word_duration = (word_char_count / total_clause_char_count) * (clause_end_ms - clause_start_ms)
+- Prevents target captions from running ahead or disappearing early while the speaker is still talking.
+
+=== 4. CONTEXT, EMOTION, SLANG & ENTITY INTELLIGENCE ===
+- SLANG & FILLER FIDELITY: Never censor, filter, or skip regional slang, swear words, interjections, or colloquialisms (e.g., "maa behen", "machi", "ayyo", "da", "yaar", "solra", "chalta hai").
+- EMOTIONAL & SITUATIONAL DECODING: Analyze vocal inflection, pitch rises, background context, and visual scenes to capture sarcastic queries, anger, sorrow, hype, or tension accurately.
+- PROPER NOUNS & LOCATIONS: Identify proper names, movie titles, places, and brands accurately from contextual audio (e.g., "Rekha", "Maa Behen", "Hassan", "Bengaluru", "Ujire"). Always tag proper nouns with is_name: true.
+
+=== 5. TAGGING & EMOJI ATTACHMENT RULES ===
+- is_expression: true ONLY for standalone interjections, slang reactions, or isolated exclamations (e.g., "Ayyo!", "Hassan?", "Shut up"). Otherwise false.
+- is_question: true if the word forms part of an interrogative sentence or carries a rising question pitch.
+- is_name: true for people, places, movies, brands, or distinct entities.
+- is_sentence_end: true ONLY on the last word of a completed grammatical phrase or sentence.
+- EMOJI RULES:
+  - If EMOJIS_ENABLED is true: Attach EXACTLY ONE contextually relevant emoji matching the emotional/situational tone of the sentence.
+  - CRITICAL: The emoji field MUST be null for every word EXCEPT when is_sentence_end: true.
+
+=== CAPTION CONFIGURATION ===
+- TARGET_LANGUAGE: ${langLabel}
+- USE_PUNCTUATION: ${usePunctuation}
+- USE_EMOJIS: ${useEmojis}
+- SPOKEN_LANGUAGE_HINT: ${langLabel}
+
+=== OUTPUT FORMAT ===
+Return ONLY a raw, valid JSON object matching this schema. No markdown formatting, code blocks, or conversational text.
+
 {
   "audio_duration_ms": number,
   "words": [
@@ -1097,7 +1117,6 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
       "end_ms": number,
       "is_question": boolean,
       "is_expression": boolean,
-      "is_name": boolean,
       "is_sentence_end": boolean,
       "emoji": string | null
     }
