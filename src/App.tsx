@@ -195,50 +195,26 @@ function drawSubtitlesOnCanvas(
   const animElapsed = activeWord ? Math.max(0, time - activeWord.start_time) : 0;
   const activeWordId = activeWord?.id;
 
-  // Group words into wrapped lines using dynamic layoutWidth (Dynamic Text Reflow)
-  type LineItem = { text: string; textWidth: number; layoutWidth: number; wordRef: CaptionWord; isActive: boolean };
+  // 1. Group words into stable lines based on base text width (prevents line jumping)
+  type WordItem = { text: string; textWidth: number; wordRef: CaptionWord; isActive: boolean };
 
-  const lineItems: LineItem[] = displayWords.map((w, index) => {
-    const text = formattedTexts[index];
-    const textWidth = ctx.measureText(text).width;
-    const isActive = w.id === activeWordId;
-    let layoutWidth = textWidth;
+  const wordItems: WordItem[] = displayWords.map((w, i) => ({
+    text: formattedTexts[i],
+    textWidth: ctx.measureText(formattedTexts[i]).width,
+    wordRef: w,
+    isActive: w.id === activeWordId,
+  }));
 
-    if (isActive) {
-      // 1. Activation Phase: background box wraps around active word with internal padding
-      if (styleSettings.showBackground) {
-        const paddingX = 12 * canvasToEditorRatio;
-        const borderWidth = 2 * canvasToEditorRatio;
-        layoutWidth += (paddingX * 2) + (borderWidth * 2);
-      }
-
-      // 2. Preset animation scale (e.g. bounce, pop, beast)
-      if (enableAnimation !== false) {
-        const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
-        if (anim.scale) {
-          layoutWidth *= anim.scale;
-        }
-      }
-    }
-
-    return {
-      text,
-      textWidth,
-      layoutWidth,
-      wordRef: w,
-      isActive
-    };
-  });
-
-  const lines: LineItem[][] = [];
-  let curLine: LineItem[] = [];
+  const lines: WordItem[][] = [];
+  let curLine: WordItem[] = [];
   let curLineWidth = 0;
-  lineItems.forEach((item) => {
-    const projected = curLine.length === 0 ? item.layoutWidth : curLineWidth + gap + item.layoutWidth;
+
+  wordItems.forEach((item) => {
+    const projected = curLine.length === 0 ? item.textWidth : curLineWidth + gap + item.textWidth;
     if (curLine.length > 0 && projected > maxLineWidth) {
       lines.push(curLine);
       curLine = [item];
-      curLineWidth = item.layoutWidth;
+      curLineWidth = item.textWidth;
     } else {
       curLine.push(item);
       curLineWidth = projected;
@@ -246,9 +222,6 @@ function drawSubtitlesOnCanvas(
   });
   if (curLine.length > 0) lines.push(curLine);
 
-  // Editor: the caption box is anchored at its BOTTOM (bottom:offset) and grows
-  // UPWARD as more lines wrap. The translate origin (0,0) is the single-line
-  // baseline, so keep the LAST line at y=0 and stack earlier lines above it.
   const firstLineY = -(lines.length - 1) * lineHeight;
 
   const drawWord = (wordText: string, textWidth: number, curX: number, curY: number, isActive: boolean) => {
@@ -331,11 +304,32 @@ function drawSubtitlesOnCanvas(
     ctx.restore();
   };
 
+  const pillPaddingX = 12 * canvasToEditorRatio;
+  const pillBorderWidth = 2 * canvasToEditorRatio;
+  const pillExtraWidth = styleSettings.showBackground ? (pillPaddingX * 2 + pillBorderWidth * 2) : 0;
+
   lines.forEach((line, lineIdx) => {
-    const lineLayoutWidth = line.reduce((a, it) => a + it.layoutWidth, 0) + (line.length - 1) * gap;
+    const lineLayoutItems = line.map((item) => {
+      let extra = 0;
+      if (item.isActive) {
+        extra = pillExtraWidth;
+        if (enableAnimation !== false) {
+          const anim = getAnimationTransform(styleSettings.preset, animElapsed, scaleX);
+          if (anim.scale && anim.scale !== 1.0) {
+            extra += item.textWidth * (anim.scale - 1.0);
+          }
+        }
+      }
+      return {
+        ...item,
+        layoutWidth: item.textWidth + extra,
+      };
+    });
+
+    const lineLayoutWidth = lineLayoutItems.reduce((a, it) => a + it.layoutWidth, 0) + (lineLayoutItems.length - 1) * gap;
     let startX = -lineLayoutWidth / 2;
     const curY = firstLineY + lineIdx * lineHeight;
-    line.forEach((it) => {
+    lineLayoutItems.forEach((it) => {
       const curX = startX + it.layoutWidth / 2;
       drawWord(it.text, it.textWidth, curX, curY, it.isActive);
       startX += it.layoutWidth + gap;
@@ -1575,7 +1569,7 @@ export default function App() {
           </div>
 
           {state.isProcessing && (
-            <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-4 sm:p-8 overflow-y-auto">
+            <div className="fixed inset-0 bg-black z-50 flex flex-col items-center justify-center p-4 sm:p-8 overflow-y-auto">
               <div className="w-full max-w-md bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.25)] flex flex-col gap-6 animate-fade-in my-auto">
                 
                 {state.hasFailed ? (
