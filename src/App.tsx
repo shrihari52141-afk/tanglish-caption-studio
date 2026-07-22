@@ -15,7 +15,7 @@ function getAnimationTransform(preset: string, elapsedSec: number, scaleX: numbe
   switch (preset) {
     case 'bounce': {
       const phase = Math.abs(Math.sin(t * 4));
-      return { dx: 0, dy: -8 * scaleX * phase, scale: 1 + 0.18 * phase, rotation: 0 };
+      return { dx: 0, dy: 0, scale: 1 + 0.18 * phase, rotation: 0 };
     }
     case 'pop': {
       if (t < 0.1) return { dx: 0, dy: 0, scale: 0.8 + (t / 0.1) * 0.3, rotation: 0 };
@@ -26,8 +26,7 @@ function getAnimationTransform(preset: string, elapsedSec: number, scaleX: numbe
       return { dx: 0, dy: 0, scale: 1.2, rotation: -2 * Math.PI / 180, colorOverride: '#FF4500' };
     case 'glitch': {
       const jx = Math.sin(t * 37) * 4 * scaleX;
-      const jy = Math.cos(t * 53) * 4 * scaleX;
-      return { dx: jx, dy: jy, scale: 1.0, rotation: 0 };
+      return { dx: jx, dy: 0, scale: 1.0, rotation: 0 };
     }
     case 'neon':
     case 'neon_glow': {
