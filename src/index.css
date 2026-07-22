@@ -74,8 +74,8 @@ video::cue {
 }
 
 @keyframes wave-jump {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
 }
 
 @keyframes heartbeat-pulse {

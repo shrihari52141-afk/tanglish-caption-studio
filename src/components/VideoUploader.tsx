@@ -133,14 +133,9 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
     }
   };
 
-  const handleGenerate = (e?: React.MouseEvent) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    const fileToUpload = selectedFile || initialFile;
-    if (fileToUpload) {
-      onUpload(fileToUpload, selectedLanguage, useEmojis, translationMode, usePunctuation, emojiStyle, extractedAudioBlob);
+  const handleGenerate = () => {
+    if (selectedFile) {
+      onUpload(selectedFile, selectedLanguage, useEmojis, translationMode, usePunctuation, emojiStyle, extractedAudioBlob);
     }
   };
 
@@ -517,10 +512,10 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
         )}
 
         <button
-          type="button"
           onClick={handleGenerate}
+          disabled={isProcessing}
           style={{ marginTop: '-7px' }}
-          className="w-full py-3.5 px-6 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700 text-white rounded-full font-black text-[15px] uppercase tracking-wider flex items-center justify-center gap-3 transition-colors shadow-lg active:scale-95 cursor-pointer border-none"
+          className="w-full py-3.5 px-6 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700 text-white rounded-full font-black text-[15px] uppercase tracking-wider flex items-center justify-center gap-3 transition-colors shadow-lg disabled:opacity-50 cursor-pointer border-none"
         >
           {isProcessing ? (
             <>
