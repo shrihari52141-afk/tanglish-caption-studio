@@ -1066,58 +1066,108 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
           : String(language)
         : String(language) + (outputMode === "TRANSLITERATION_ROMAN" ? " (Romanized)" : "");
 
-    const systemPrompt = `You are a PHONEME-LEVEL FORCED ALIGNER. You MEASURE sound, you don't guess.
+    const systemPrompt = `You are an ULTRA-PRECISION ACOUSTIC MEASUREMENT ENGINE. You are not a transcriber, you are a phoneme-level forced aligner.
 
-Your primary objective is to produce MILLISECOND-ACCURATE, SINGLE-WORD LIP-SYNCED JSON captions. You must track every spoken phoneme, exact silence/pause gap, hot-word keyword, emotional situation, and contextual emoji with zero drift, zero omission, and perfect synchronization.
+Your ONLY job is to produce MILLISECOND-ACCURATE, WORD-BY-WORD LIP-SYNC JSON with zero drift.
 
-=== OUTPUT FORMAT ===
-Return ONLY a raw, valid JSON object matching this schema. No markdown formatting, code blocks, or conversational text.
+=== CORE PHYSICS RULES - VIOLATION = FAILURE ===
+
+1. **ABSOLUTE SINGLE-WORD TOKEN:** \`words\` array must have EXACTLY one word per spoken token. \`word: "my name"\` is FORBIDDEN. It must be "my" and "name" as two separate objects with their own timestamps. Count the audio, count the words, they must match 1:1.
+
+2. **ACOUSTIC MEASUREMENT, NOT ESTIMATION:**
+    - \`start_ms\`: The EXACT ms where vocal cord vibration / consonant burst STARTS. Not before.
+    - \`end_ms\`: The EXACT ms where the sound fully DECAYS into silence. Not after.
+    - FORBIDDEN: Dividing total time by number of words. FORBIDDEN: Equal durations. Every word has a unique duration based on how long it was pronounced.
+    - Example: "hi" spoken quickly = 80ms - 210ms (130ms duration). If speaker drags it "hiii" = 80ms - 580ms (500ms duration).
+
+3. **SILENCE MAP & HIGHLIGHT HOLD ALGORITHM (CRITICAL):**
+    - You MUST calculate: \`pause_after_ms = start_ms[next_word] - end_ms[current_word]\`
+    - This is the physical silence / breath gap.
+    - If speaker says "hi" (ends at 500ms), pauses 2 sec, then says "my" (starts at 2500ms):
+      -> For "hi": end_ms = 500, pause_after_ms = 2000, start_ms_next = 2500
+    - This tells the frontend: HOLD highlight on "hi" for 2000ms. DO NOT JUMP.
+    - Last word in audio: pause_after_ms = 0
+    - MONOTONIC LAW: start_ms[i] >= end_ms[i-1] AND start_ms[i] < end_ms[i] AND pause_after_ms >= 0
+
+4. **HOTWORD ENGINE (is_hotword):**
+    - You MUST flag 25-35% of words as true. If you flag 0%, you failed.
+    - Set is_hotword=true if ANY:
+      a) Proper Noun / Name / Title / Place / Brand: "Shri", "Maa Behen", "Rekha", "Bangalore"
+      b) Emotional Anchor Verb/Adjective: "hurt", "harassing", "love", "badly", "wrong", "kashtam"
+      c) Slang / Impact Word / Action Verb: "machi", "da", "dei", "solra", "behen", "society", "sleeves"
+      d) Vocal Stress Peak: word shouted, whispered, pitch-rise.
+    - All other filler words (is, the, la, ku, my, name) = is_hotword=false
+
+5. **ATOMIC ENTITY & SLANG LOCK:**
+    - NEVER translate, censor, or correct names/slang. "Maa Behen" stays "Maa" "Behen" as 2 tokens, both is_name=true. Never become "Mother Sister".
+    - Tanglish/Hinglish/Kanglish must be preserved verbatim in ROMAN mode.
+
+6. **TASK MODE:**
+
+    MODE "TRANSCRIPTION_NATIVE": Transcribe in NATIVE script exactly as spoken.
+    MODE "TRANSLITERATION_ROMAN": Transcribe in phonetic English letters. DO NOT TRANSLATE TO ENGLISH. Example Audio: "enakku theriyala da" -> Output: "enakku theriyala da" NOT "I don't know".
+    MODE "TRANSLATION": Translate meaning to TARGET_LANGUAGE, but TIMESTAMPS MUST STAY LOCKED to original acoustic boundaries. Distribute translated word durations inside original clause using: duration = (char_count_word / char_count_clause) * (clause_end - clause_start)
+
+7. **EMOTION & EMOJI ENGINE v2:**
+
+    - \`emotion_tone\`: One string per SENTENCE that describes the situation: \`betrayal_hurt\`, \`gossip_backstabbing\`, \`angry_frustrated\`, \`casual_conversational\`, \`flirty_playful\`, \`sad_depressed\`, \`hype_excited\`, \`sarcastic_mocking\`, \`fear_anxious\`, \`family_emotional\`.
+
+    - EMOJI RULES:
+      1. \`emoji\` is NULL for every word EXCEPT where \`is_sentence_end: true\`.
+      2. Where \`is_sentence_end: true\`, you MUST pick exactly ONE most relevant emoji.
+      3. NEVER put emoji inside \`word\` field.
+      4. If USE_EMOJIS=false, all emoji=null.
+
+    EMOJI MATRIX (Use context, don't spam):
+    - Gossip / Bitching: "avala pathi thappa pesuvanga" -> 🗣️
+    - Hurt / Heartbreak / Betrayal: "romba hurt ayiten da" -> 💔
+    - Anger / Frustration: "wrong ah pesura" -> 😤
+    - Sarcasm / Mocking: "sleeves-a yaen podra?" -> 🙄
+    - Movies / Media: "Maa Behen movie" -> 🎬
+    - Family / Friends: "my daughters" -> 👩‍👧‍👧
+    - Exclamation: "Ayyo!", "Shit!" -> 🤯
+    - Question / Confusion: "why?" -> 🤔
+    - Happy / Hype / Celebration: "super da machi" -> 🔥
+    - Sad / Crying: "kashtama iruku" -> 🥺
+    - Love / Caring: "love you da" -> 🥰
+
+8. **VALIDATION BEFORE OUTPUT:**
+    Before you output, check:
+    - Did I group words? If yes, split them.
+    - Are timestamps strictly increasing?
+    - Does pause_after_ms = next_start - current_end?
+    - Did I flag at least 25% hotwords?
+    - Did I put emoji only on sentence ends?
+    - If any check fails, FIX IT.
+
+=== CONFIG ===
+OUTPUT_MODE: ${outputMode}
+TARGET_LANGUAGE: ${targetLanguage}
+USE_PUNCTUATION: ${usePunctuation}
+USE_EMOJIS: ${useEmojis}
+SPOKEN_LANGUAGE_HINT: ${langLabel}
+
+=== OUTPUT JSON ONLY ===
+Return ONLY raw valid JSON, no markdown:
 
 {
-  "audio_duration_ms": number,
-  "roman": [
+  "audio_duration_ms": 5230,
+  "words": [
     {
-      "word": string,
-      "start_ms": number,
-      "end_ms": number,
-      "pause_after_ms": number,
-      "is_hotword": boolean,
-      "is_name": boolean,
-      "is_sentence_end": boolean,
-      "emotion_tone": string,
-      "emoji": string | null
-    }
-  ],
-  "english": [
-    {
-      "word": string,
-      "start_ms": number,
-      "end_ms": number,
-      "pause_after_ms": number,
-      "is_hotword": boolean,
-      "is_name": boolean,
-      "is_sentence_end": boolean,
-      "emotion_tone": string,
-      "emoji": string | null
+      "word": "hi",
+      "start_ms": 120,
+      "end_ms": 310,
+      "pause_after_ms": 2000,
+      "is_hotword": false,
+      "is_question": false,
+      "is_expression": true,
+      "is_name": false,
+      "is_sentence_end": false,
+      "emotion_tone": "casual_conversational",
+      "emoji": null
     }
   ]
-}
-
-=== PHYSICS LAWS - BREAK = FAIL ===
-1. MONOTONIC: start_ms[0] >= 100 (or exact audio attack, NOT 0 unless audio starts at 0ms), start_ms[i] >= end_ms[i-1], start_ms[i] < end_ms[i].
-2. NO AVERAGING: Every word has a unique duration based on how long it was physically spoken in the audio.
-3. SINGLE WORD TOKENIZATION: Every word entry MUST contain EXACTLY ONE single word. Multi-word entries like "society and colony" are FORBIDDEN AND FAIL. Split into individual words.
-4. SILENCE HOLD (pause_after_ms): pause_after_ms = start_ms(next_word) - end_ms(current_word). This is your MANDATORY SILENCE MAP. Last word pause_after_ms = 0.
-5. HOTWORD QUOTA: At least 30% of total words MUST have is_hotword = true (proper nouns, emotional anchors, vocal pitch peaks, key slang, or action terms).
-6. EMOJI LAW: emoji = null if is_sentence_end = false. If is_sentence_end = true, attach EXACTLY ONE relevant emoji: Gossip=🗣️, Hurt=💔, Family=👨‍👩‍👧, Anger=😤, Question=🤔, Explain=💡, Torture=⛓️, Society=🏘️.
-7. CROSS-LINGUAL LOCK: english[] MUST reuse roman[] start_ms, end_ms, and pause_after_ms timestamps. Only change the word text to target language translation. This prevents early timing jumps.
-
-=== TASK MODES ===
-1. MODE "TRANSCRIPTION_NATIVE": Transcribe exact spoken words in native script.
-2. MODE "TRANSLITERATION_ROMAN": Transcribe exact spoken words phonetically in Roman/Latin script (Tanglish, Hinglish, Kanglish). DO NOT TRANSLATE TO ENGLISH.
-3. MODE "TRANSLATION": Translate spoken content into TARGET_LANGUAGE (${targetLanguage}).
-
-CONFIG: OUTPUT_MODE=${outputMode}, TARGET=${targetLanguage}, USE_EMOJIS=${useEmojis}, SPOKEN_HINT=${langLabel}`;
+}`;
 
     sendLog(
       jobId,
@@ -1141,42 +1191,29 @@ CONFIG: OUTPUT_MODE=${outputMode}, TARGET=${targetLanguage}, USE_EMOJIS=${useEmo
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              total_speech_duration_ms: { type: Type.NUMBER },
-              segments: {
+              audio_duration_ms: { type: Type.NUMBER },
+              words: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    segment_id: { type: Type.NUMBER },
-                    text_original: { type: Type.STRING },
-                    text_translated: { type: Type.STRING },
+                    word: { type: Type.STRING },
+                    start_ms: { type: Type.NUMBER },
+                    end_ms: { type: Type.NUMBER },
+                    pause_after_ms: { type: Type.NUMBER },
+                    is_hotword: { type: Type.BOOLEAN },
+                    is_question: { type: Type.BOOLEAN },
+                    is_expression: { type: Type.BOOLEAN },
+                    is_name: { type: Type.BOOLEAN },
+                    is_sentence_end: { type: Type.BOOLEAN },
+                    emotion_tone: { type: Type.STRING },
                     emoji: { type: Type.STRING },
-                    words: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          word: { type: Type.STRING },
-                          start_ms: { type: Type.NUMBER },
-                          end_ms: { type: Type.NUMBER },
-                          pause_after_ms: { type: Type.NUMBER },
-                          is_hotword: { type: Type.BOOLEAN },
-                          is_question: { type: Type.BOOLEAN },
-                          is_expression: { type: Type.BOOLEAN },
-                          is_name: { type: Type.BOOLEAN },
-                          is_sentence_end: { type: Type.BOOLEAN },
-                          emotion_tone: { type: Type.STRING },
-                          emoji: { type: Type.STRING },
-                        },
-                        required: ["word", "start_ms", "end_ms"],
-                      },
-                    },
                   },
-                  required: ["words"],
+                  required: ["word", "start_ms", "end_ms"],
                 },
               },
             },
-            required: ["segments"],
+            required: ["words"],
           },
         },
       });
@@ -1276,44 +1313,6 @@ CONFIG: OUTPUT_MODE=${outputMode}, TARGET=${targetLanguage}, USE_EMOJIS=${useEmo
           w.word = `${w.word} ${w.emoji}`;
         }
       });
-    }
-
-    // AUTO-SPEEDUP: For translation mode, compress translated word timestamps to
-    // fit within source audio windows. Groups words by sentence boundaries and
-    // applies character-weighted proportioning so the last word finishes exactly
-    // when the speaker stops talking.
-    const isTranslationMode = /translat|english/i.test(languageInstruction);
-    if (isTranslationMode && rawW.length > 0) {
-      // Group words into segments by sentence_end markers
-      const segments: { start: number; end: number; words: typeof rawW }[] = [];
-      let segWords: typeof rawW = [];
-      for (const w of rawW) {
-        segWords.push(w);
-        if (w.is_sentence_end) {
-          segments.push({
-            start: segWords[0].start_time,
-            end: segWords[segWords.length - 1].end_time,
-            words: [...segWords],
-          });
-          segWords = [];
-        }
-      }
-      if (segWords.length > 0) {
-        segments.push({
-          start: segWords[0].start_time,
-          end: segWords[segWords.length - 1].end_time,
-          words: [...segWords],
-        });
-      }
-
-      // Apply speedup per segment
-      const speedupResult: typeof rawW = [];
-      for (const seg of segments) {
-        speedupResult.push(...applySpeedupTimestamps(seg.words, seg.start, seg.end));
-      }
-      // Replace rawW with speedup-compressed words
-      rawW.length = 0;
-      rawW.push(...speedupResult);
     }
 
     const reportedDurationMs =
