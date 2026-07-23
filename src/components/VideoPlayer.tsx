@@ -4,18 +4,17 @@ import { Move, ZoomIn, ZoomOut, RotateCw, Edit3, Check, X, ShieldAlert, Play, Pa
 import { applyCaptionFormatting, stripASSTags, generateCaptionFrames } from '../utils/captionFormatter';
 
 interface VideoPlayerProps {
-  videoUrl: string;
+  videoUrl: string | null;
   words: CaptionWord[];
   currentTime: number;
   onTimeUpdate: (time: number) => void;
   styleSettings: SubtitleStyleSettings;
   onUpdateStyleSettings: (settings: Partial<SubtitleStyleSettings>) => void;
-  onUpdateWordText: (wordId: string, newText: string) => void;
+  onUpdateWordText: (id: string, text: string) => void;
   seekTime: number | null;
   onSeekComplete: () => void;
   onCaptionClick?: () => void;
   onDisplaySizeChange?: (size: { width: number; height: number }) => void;
-  onRemoveVideo?: () => void;
 }
 
 export default function VideoPlayer({ 
@@ -29,8 +28,7 @@ export default function VideoPlayer({
   seekTime,
   onSeekComplete,
   onCaptionClick,
-  onDisplaySizeChange,
-  onRemoveVideo
+  onDisplaySizeChange
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -311,6 +309,16 @@ export default function VideoPlayer({
     const video = e.currentTarget;
     if (video.videoWidth && video.videoHeight) {
       setVideoRatio(video.videoWidth / video.videoHeight);
+      // Force mobile browsers to decode and render first frame (prevents black screen)
+      if (video.currentTime === 0 && !isNaN(video.duration) && video.duration > 0) {
+        try {
+          video.currentTime = 0.01;
+        } catch {
+          /* ignore */
+        }
+      }
+    } else {
+      setVideoRatio(1.0);
     }
   };
 
@@ -411,22 +419,13 @@ export default function VideoPlayer({
       >
         {videoUrl ? (
           <>
-            {/* Remove video button — top-left */}
-            {onRemoveVideo && (
-              <button
-                onClick={onRemoveVideo}
-                className="absolute top-2 left-2 z-50 bg-black/60 backdrop-blur-sm text-red-400 hover:text-red-300 p-1.5 rounded-lg border border-white/20 hover:bg-black/80 transition-colors cursor-pointer"
-                title="Remove video or audio"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-              </button>
-            )}
           <video
             ref={videoRef}
             src={videoUrl}
             onLoadedMetadata={handleLoadedMetadata}
             className="w-full h-full object-contain cursor-pointer"
             playsInline
+            preload="auto"
             onClick={() => {
               if (videoRef.current) {
                 if (isPlaying) {
@@ -444,15 +443,8 @@ export default function VideoPlayer({
                 if (videoRef.current) videoRef.current.playbackRate = parseFloat(e.target.value);
               }}
               defaultValue="1"
-              className="bg-black/70 backdrop-blur-md text-white text-[12px] font-bold px-2 py-1.5 rounded-xl border border-white/20 shadow-lg shadow-black/30 cursor-pointer appearance-none outline-none hover:bg-black/80 transition-colors"
-              style={{
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23ffffff'/%3E%3C/svg%3E")`,
-                backgroundRepeat: 'no-repeat',
-                backgroundPosition: 'right 8px center',
-                paddingRight: '24px',
-              }}
+              className="bg-black/60 text-white text-[13px] font-bold px-2.5 py-1.5 rounded-lg border border-white/20 backdrop-blur-sm cursor-pointer"
             >
-              <option value="0.2">0.2x</option>
               <option value="0.5">0.5x</option>
               <option value="0.75">0.75x</option>
               <option value="1">1x</option>
@@ -685,12 +677,12 @@ export default function VideoPlayer({
             <div className="flex flex-col gap-1 bg-[#0c0c0c] p-2 rounded-xl border border-[#222]">
               <div className="flex justify-between items-center text-[#888] text-[9px] uppercase tracking-wider mb-0.5">
                 <span>Rotate</span>
-                <span className="font-mono text-fuchsia-500 font-extrabold">{styleSettings.rotation.toFixed(1)}°</span>
+                <span className="font-mono text-fuchsia-500 font-extrabold">{styleSettings.rotation}°</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => onUpdateStyleSettings({ rotation: Math.max(-45, styleSettings.rotation - 0.1) })}
+                  onClick={() => onUpdateStyleSettings({ rotation: Math.max(-45, styleSettings.rotation - 5) })}
                   className="p-1 bg-[#1a1a1a] hover:bg-[#252525] border border-[#333] rounded text-white hover:text-fuchsia-400 cursor-pointer active:scale-95 transition-all"
                   title="Rotate Counter-Clockwise"
                 >
@@ -700,14 +692,14 @@ export default function VideoPlayer({
                   type="range" 
                   min="-45" 
                   max="45" 
-                  step="0.1" 
+                  step="1" 
                   value={styleSettings.rotation}
-                  onChange={(e) => onUpdateStyleSettings({ rotation: parseFloat(e.target.value) })}
+                  onChange={(e) => onUpdateStyleSettings({ rotation: parseInt(e.target.value) })}
                   className="flex-1 h-1 bg-[#252525] rounded appearance-none cursor-pointer accent-fuchsia-600"
                 />
                 <button
                   type="button"
-                  onClick={() => onUpdateStyleSettings({ rotation: Math.min(45, styleSettings.rotation + 0.1) })}
+                  onClick={() => onUpdateStyleSettings({ rotation: Math.min(45, styleSettings.rotation + 5) })}
                   className="p-1 bg-[#1a1a1a] hover:bg-[#252525] border border-[#333] rounded text-white hover:text-fuchsia-400 cursor-pointer active:scale-95 transition-all"
                   title="Rotate Clockwise"
                 >

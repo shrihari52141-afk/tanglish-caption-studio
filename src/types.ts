@@ -35,7 +35,6 @@ export interface SubtitleStyleSettings {
 export interface AppState {
   videoUrl: string | null;
   videoFile: File | null;
-  audioFile: File | null;
   serverFilename?: string | null;
   words: CaptionWord[];
   activeStyle: CaptionStyle;
