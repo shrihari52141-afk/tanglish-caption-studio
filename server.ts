@@ -170,9 +170,10 @@ export async function startServer() {
   //  - gemini-2.5-flash → 404 "no longer available to new users" (removed).
   //  - gemini-3.5-flash / gemini-flash-latest → currently returning 503 (overloaded),
   //    kept only as last-resort fallbacks in case they recover.
-  const GEMINI_PRIMARY_MODEL = "gemini-3.6-flash";
+  const GEMINI_PRIMARY_MODEL = "gemini-2.5-flash";
   const GEMINI_FALLBACK_MODELS = [
-    "gemini-3.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
   ];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
@@ -1601,7 +1602,7 @@ Return ONLY a raw valid JSON object matching this schema:
         sendLog(jobId, "Extracting audio from video using FFmpeg...");
         audioPath = `${req.file.path}.mp3`;
         try {
-          await execAsync(`ffmpeg -y -i "${req.file.path}" -vn -acodec libmp3lame -q:a 2 "${audioPath}"`);
+          await execAsync(`ffmpeg -y -i "${req.file.path}" -vn -ac 1 -ar 16000 -ab 64k -f mp3 "${audioPath}"`);
           sendLog(jobId, "Audio extraction complete.");
         } catch (err) {
           sendLog(jobId, "Error extracting audio, falling back to original video file...");
