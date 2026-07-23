@@ -1,0 +1,70 @@
+﻿/* src/styles/wordHighlight.css */
+/* ═══════════════════════════════════════════ */
+/*  PURPLE GLOW + HOTWORD + EMOJI POP         */
+/* ═══════════════════════════════════════════ */
+
+.word-track {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
+  line-height: 1.8;
+}
+
+.word-token {
+  display: inline-block;
+  padding: 2px 6px;
+  margin: 1px 2px;
+  border-radius: 4px;
+  transition: all 0.08s ease;
+  cursor: default;
+  font-size: 1.05rem;
+}
+
+/* ── Active word (current highlight) ── */
+.word-token.active {
+  background: rgba(147, 51, 234, 0.25);
+  color: #a855f7;
+  font-weight: 700;
+  transform: scale(1.08);
+  box-shadow: 0 0 12px rgba(147, 51, 234, 0.4);
+}
+
+/* ── Hotword (always styled) ── */
+.word-token.hotword {
+  color: #7c3aed;
+  font-weight: 600;
+  text-shadow: 0 0 6px rgba(124, 58, 237, 0.3);
+}
+
+/* ── Hotword + Active (maximum glow) ── */
+.word-token.active.hotword {
+  background: rgba(124, 58, 237, 0.35);
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.6);
+  color: #c084fc;
+  transform: scale(1.12);
+}
+
+/* ── Name styling ── */
+.word-token.name {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+/* ── Emoji badge ── */
+.word-token .emoji-badge {
+  margin-left: 3px;
+  font-size: 1.1em;
+  animation: emojiPop 0.3s ease;
+}
+
+@keyframes emojiPop {
+  0%   { transform: scale(0); opacity: 0; }
+  60%  { transform: scale(1.3); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* ── Sentence end marker ── */
+.word-token.sentence-end {
+  border-bottom: 2px solid rgba(147, 51, 234, 0.3);
+}
