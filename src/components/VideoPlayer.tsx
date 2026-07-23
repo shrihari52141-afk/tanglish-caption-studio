@@ -502,6 +502,7 @@ export default function VideoPlayer({
               // Word-level highlight: active only when video time is within this
               // word's exact start_time..end_time window. Freezes during silence.
               const isActive = highlightedWordId === w.id;
+              const isHot = !!w.is_hotword;
               
               // Apply customized styling based on settings
               let itemStyle: React.CSSProperties = {
@@ -530,7 +531,7 @@ export default function VideoPlayer({
               } else if (styleSettings.fontFamily === 'Black Han Sans') {
                 itemClassName += "font-sans font-black tracking-tight uppercase ";
               } else {
-                itemClassName += "font-sans font-bold ";
+                itemClassName += isHot ? "font-sans font-black " : "font-sans font-bold ";
               }
 
               if (isActive) {
@@ -540,8 +541,8 @@ export default function VideoPlayer({
                   itemStyle.border = `2px solid ${styleSettings.highlightColor}`;
                   itemClassName += " px-3 py-1.5 rounded-lg shadow-xl ";
                 }
-                if (styleSettings.showBacklight) {
-                  itemStyle.textShadow = `0 0 12px ${styleSettings.highlightColor}, 0 0 24px ${styleSettings.highlightColor}`;
+                if (styleSettings.showBacklight || isHot) {
+                  itemStyle.textShadow = `0 0 14px ${styleSettings.highlightColor}, 0 0 28px ${isHot ? '#FFD700' : styleSettings.highlightColor}`;
                 } else if (styleSettings.showShadow) {
                   itemStyle.textShadow = '4px 4px 0px #000';
                   itemClassName += " -webkit-text-stroke-2 ";
@@ -561,13 +562,16 @@ export default function VideoPlayer({
                 }
               } else {
                 itemStyle.color = styleSettings.textColor;
+                if (isHot) {
+                  itemStyle.filter = 'drop-shadow(0 0 5px rgba(255, 215, 0, 0.45))';
+                }
                 if (styleSettings.showShadow) {
                   itemStyle.textShadow = '4px 4px 0px #000';
                 } else {
                   itemStyle.textShadow = 'none';
                 }
                 if (styleSettings.showSpotlight) {
-                  itemStyle.opacity = 0.35;
+                  itemStyle.opacity = isHot ? 0.85 : 0.35;
                 }
               }
 

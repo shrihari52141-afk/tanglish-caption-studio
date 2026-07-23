@@ -3,10 +3,14 @@ export interface CaptionWord {
   word: string;
   start_time: number;
   end_time: number;
+  pause_after_ms?: number;
+  is_hotword?: boolean;
   is_question?: boolean;
   is_expression?: boolean;
   is_name?: boolean;
   is_sentence_end?: boolean;
+  emotion_tone?: string;
+  emoji?: string | null;
 }
 
 export type CaptionStyle = string;

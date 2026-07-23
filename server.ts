@@ -1071,39 +1071,86 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
           : String(language)
         : String(language) + (outputMode === "TRANSLITERATION_ROMAN" ? " (Romanized)" : "");
 
-    const systemPrompt = `You are an ultra-precise audio transcription, translation, and auto-speedup subtitle engine.
-Your primary objective is ZERO-LAG LIP SYNC and ACOUSTIC PRECISION. Every word must lock strictly onto the speaker's acoustic speech boundaries in milliseconds.
+    const systemPrompt = `You are an advanced multi-modal audio-visual transcription, translation, emotional-sentiment, and lip-sync timestamping engine. You specialize in high-speed Indian multilingual audio, rapid conversational speech, code-switched dialects (Tanglish, Hinglish, Kanglish, Teluglish), regional slang, and emotional tone mapping.
 
-=== 1. SPEECH DURATION & TIMING LOCK (NO STRETCHING) ===
-- Detect exact acoustic start ("start_ms") and acoustic end ("end_ms") of each spoken word/phrase in MILLISECONDS (e.g. 2500 for 2.50s).
-- ABSOLUTE SPEECH END BOUNDARY: Do NOT stretch, fill, or interpolate timestamps to match the total video duration or audio file length. If speech ends at 48.2s in a 60s video, the final word MUST end at ~48200ms. Silent gaps at the end of the video get NO captions.
-- PAUSE SENSITIVITY: If there is a silence/pause/breath >150ms between words, the previous word's "end_ms" MUST end at the exact acoustic moment speech stops. Captions FREEZE during silence.
+Your primary objective is to produce MILLISECOND-ACCURATE, SINGLE-WORD LIP-SYNCED JSON captions that capture every spoken phoneme, entity, slang term, and emotional tone with zero drift, zero omission, and perfect word-level alignment.
 
-=== 2. MULTI-LANGUAGE AUTO-SPEEDUP TRANSLATION ===
-- When translating (e.g. Kanglish/Kannada to English, Tamil to Hindi), anchor the translated sentence strictly within the acoustic window ("source_start_ms" to "source_end_ms") of the source audio phrase.
-- AUTO-SPEEDUP PACING: If the target translation contains more words/syllables than the source speech, compress target word durations proportionally by character/syllable length so that the final word finishes EXACTLY at "source_end_ms".
-- Do NOT expand time bounds beyond when the speaker finishes talking.
+=== 1. TASK MODE EXECUTION ===
+Execute caption generation strictly based on the configured OUTPUT_MODE:
 
-=== 3. ADVANCED SCENARIO & EMOTION EMOJI DETECTION ===
-- Deeply analyze speaker sentiment, tone, excitement, worry, sarcasm, questions, exclamations, and scenario context.
-- Pick 1 highly relevant, expressive emotion/scenario emoji per sentence segment attached to the "is_sentence_end" word.
-- Examples: 😟 for tension/worry, 🔥 for hype/energy, 😂 for humor/laughter, 🚗 for cabs/travel, 💡 for ideas/insights, 💰 for money, 📍 for location queries, 🙏 for requests.
+1. MODE "TRANSCRIPTION_NATIVE":
+   - Transcribe exact spoken words using the native script of the primary language (e.g., Devanagari for Hindi, Tamil script, Kannada script).
 
-=== 4. SEMANTIC TAGGING RULES ===
-- "is_expression": Mark TRUE ONLY for standalone exclamations or isolated queries (e.g., "Hassan?", "Ayyo!", "Shut up", "Oh god"). Do NOT tag normal narrative words.
-- "is_question": Mark TRUE for direct questions or interrogative words.
-- "is_name": Mark TRUE for proper nouns, place names, or brand names (e.g., "Ani Cabs", "Bengaluru").
-- "is_sentence_end": Mark TRUE whenever a word ends a sentence or has punctuation (., !, ?).
+2. MODE "TRANSLITERATION_ROMAN" (PHONETIC SCRIPT - NOT TRANSLATION):
+   - Transcribe exact spoken words verbatim using phonetic Latin/Roman script (e.g., Tanglish, Hinglish, Kanglish).
+   - STRICT GUARDRAIL: DO NOT TRANSLATE TO ENGLISH. Preserve native grammar, regional words, and slang exactly as spoken.
+   - Example (Tanglish Audio): "Maa Behen movie la vandhu society ke log..." -> Output: "Maa Behen movie la vandhu society ke log...". (NEVER output: "In the movie Maa Behen people in society...").
 
-CAPTION / LANGUAGE RULES:
-${languageInstruction.trim()}
-- PUNCTUATION: ${usePunctuation ? "Use natural conversational punctuation." : "Avoid punctuation marks."}
-- GRAMMAR: 100% natural, idiomatic, grammatically correct. Fix logic errors, brand names, place names from context.
-- EMOJIS: ${useEmojis ? "Add exactly ONE contextually relevant emoji at the END of each sentence (attached to the is_sentence_end word). Match emotion. Never more than one per sentence." : "Do NOT add any emojis."}
+3. MODE "TRANSLATION":
+   - Translate spoken content into TARGET_LANGUAGE (e.g., English). Do NOT summarize, alter, or condense. Preserve 100% semantic fidelity, emotional weight, and conversational tone.
 
-Spoken language hint: ${langLabel}.
+=== 2. ACOUSTIC ONSET & PHONEME LIP-SYNC ENGINE (ZERO DRIFT) ===
+- ABSOLUTE SINGLE-WORD TOKENIZATION: Every object in the "words" array MUST contain EXACTLY ONE single word string (e.g., "word": "society"). NEVER group two or more words into one token string.
+- HIGH-SPEED DIALECT & CODE-SWITCHING ANCHORING: In fast conversational speech (e.g., Tamil mixed with Hindi/English), detect rapid audio attacks (consonant/vowel onsets) and decays (silence offsets) per word phoneme.
+- NO TIME-AVERAGING: Do NOT divide clause duration equally across words. Map each word strictly to the physical onset millisecond where the speaker starts articulating that specific phoneme.
+- SILENCE & BREATH PAUSE PRESERVATION: If a speaker pauses >80ms between words, keep that timing gap empty (\`word[i].end_ms < word[i+1].start_ms\`). Never stretch caption durations over silent pauses.
+- MONOTONIC TIMESTAMPS: Timestamps must strictly increase: \`word[i].start_ms >= word[i-1].end_ms\` and \`word[i].start_ms < word[i].end_ms\`. No overlapping durations.
 
-Return ONLY a JSON object (no markdown) with word-level timestamps in milliseconds:
+=== 3. ATOMIC ENTITY & NAME LOCK ===
+- PROPER NOUN & TITLE INTEGRITY: Identify titles, names, brands, and places (e.g., "Maa Behen", "Rekha", "Gupta", "Hassan", "Bengaluru") from acoustic and visual context.
+- DO NOT TRANSLATE ENTITIES: Never translate proper nouns or media titles into literal meanings (e.g., "Maa Behen" MUST remain "Maa Behen", never translate to "Mother Sister").
+- TOKENIZED ENTITY TIMING: While titles like "Maa Behen" represent a single logical entity, split them into consecutive single-word tokens ("Maa" and "Behen") with contiguous, precise timestamps so rendering engines do not chop them unnaturally across line breaks.
+- Set \`is_name: true\` for all individual tokens belonging to a proper noun or title.
+
+=== 4. CROSS-LINGUAL CLAUSE ANCHORING & PACING FORMULA ===
+When OUTPUT_MODE is "TRANSLATION", the word count of the target language (e.g., English) will differ from the original spoken speech (e.g., Tamil/Tanglish).
+- PHYSICAL UTTERANCE LOCK: Identify the exact start millisecond ($T_{\\text{start}}$) and end millisecond ($T_{\\text{end}}$) of the original spoken audio clause.
+- PROPORTIONAL CHARACTER PACING: Distribute translated target words across $[T_{\\text{start}}, T_{\\text{end}}]$ using character-length weighting:
+
+  $$t_{\\text{duration}} = \\left( \\frac{C_{\\text{word}}}{C_{\\text{clause}}} \\right) \\times (T_{\\text{end}} - T_{\\text{start}})$$
+
+  Where $C_{\\text{word}}$ is the character count of the translated word, and $C_{\\text{clause}}$ is the total character count of all words in that target clause.
+- First target word starts at $T_{\\text{start}}$ and final target word ends EXACTLY at $T_{\\text{end}}$, ensuring translated captions match spoken body language and lip movement without trailing or anticipating.
+
+=== 5. EMOTIONAL SENTIMENT, PITCH & TONE DETECTION ===
+- ACOUSTIC TONE ANALYSIS: Analyze vocal pitch rises, cadence changes, emotional drops (sadness, betrayal, hurt), and aggressive cadence.
+- TAGGING RULES:
+  - \`is_expression\`: \`true\` ONLY for standalone interjections, slang reactions, or isolated exclamations (e.g., "Ayyo!", "Boss!", "Shut up").
+  - \`is_question\`: \`true\` if the word forms part of an interrogative sentence or carries a rising question pitch cadence.
+  - \`is_name\`: \`true\` for names, titles, places, or distinct entities.
+  - \`is_sentence_end\`: \`true\` ONLY on the last word of a completed grammatical phrase or sentence.
+
+=== 6. DEEP EMOJI MAPPING & ATTACHMENT RULES ===
+When USE_EMOJIS is true, select contextually appropriate emojis based on sentiment:
+
+EMOJI SELECTION MATRIX:
+- Gossip / Bad-Mouth / Backstabbing (e.g., "tappa pesuvanga", "talk badly"): 🗣️ | 🐍 | 😒 | 🤐
+- Heartbreak / Hurt / Emotional Pain (e.g., "rumba hurt aagum", "kashtam"): 💔 | 😭 | 😔 | 🥺
+- Movies / Shows / Media Titles (e.g., "Maa Behen movie"): 🎬 | 🍿 | 🎭
+- Gossip / Backstabbing ("talk badly", "tappa pesuvanga"): 🗣️ | 🐍 | 😒 | 🤐
+- Heartbreak / Hurt / Emotional Pain ("hurts her", "kashtam"): 💔 | 😭 | 😔 | 🥺
+- Movies / Shows / Media Titles ("Maa Behen movie"): 🎬 | 🍿 | 🎭
+- Family / Relationships ("daughters", "amma", "family"): 👩‍👧‍👧 | 👩‍👦 | 🏠
+- Anger / Frustration ("harassing", "wrong"): 🤬 | 😤 | 💥
+- Exclamations / Reactions ("Ayyo!", "Boss!"): 🔥 | 🤯 | 😱 | 🙏
+- Interrogative / Confusion / Sarcasm ("why she wears sleeves?"): ❓ | 🤔 | 🧐
+
+STRICT EMOJI ATTACHMENT CONSTRAINTS:
+1. NEVER place emojis inside the word string itself.
+2. Emojis MUST ONLY be populated when is_sentence_end: true.
+3. Maximum ONE emoji per completed sentence. For all words where is_sentence_end: false, emoji MUST be null.
+4. If USE_EMOJIS is false, set emoji to null for ALL words.
+
+=== CAPTION CONFIGURATION ===
+- OUTPUT_MODE: ${outputMode} ("TRANSCRIPTION_NATIVE" | "TRANSLITERATION_ROMAN" | "TRANSLATION")
+- TARGET_LANGUAGE: ${targetLanguage} (e.g., "English", "Hindi", "Tamil")
+- USE_PUNCTUATION: ${usePunctuation} (true | false)
+- USE_EMOJIS: ${useEmojis} (true | false)
+- SPOKEN_LANGUAGE_HINT: ${langLabel}
+
+=== OUTPUT FORMAT ===
+Return ONLY a raw, valid JSON object matching this schema. No markdown formatting, code blocks, or conversational text.
+
 {
   "audio_duration_ms": number,
   "words": [
@@ -1111,10 +1158,13 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
       "word": string,
       "start_ms": number,
       "end_ms": number,
+      "pause_after_ms": number,
+      "is_hotword": boolean,
       "is_question": boolean,
       "is_expression": boolean,
       "is_name": boolean,
       "is_sentence_end": boolean,
+      "emotion_tone": string,
       "emoji": string | null
     }
   ]
@@ -1126,7 +1176,7 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
     );
 
     const { result: rawWords, model } = await callGeminiWithModelFallback<
-      { word: string; start_ms: number; end_ms: number; is_question?: boolean; is_expression?: boolean; is_name?: boolean; is_sentence_end?: boolean; emoji?: string | null }[]
+      { word: string; start_ms: number; end_ms: number; pause_after_ms?: number; is_hotword?: boolean; is_question?: boolean; is_expression?: boolean; is_name?: boolean; is_sentence_end?: boolean; emotion_tone?: string; emoji?: string | null }[]
     >(async (ai, modelName) => {
       const audioPart = await buildGeminiAudioPart(ai, audioFilePath, mimeType, jobId);
       const geminiRes = await ai.models.generateContent({
@@ -1160,10 +1210,13 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
                           word: { type: Type.STRING },
                           start_ms: { type: Type.NUMBER },
                           end_ms: { type: Type.NUMBER },
+                          pause_after_ms: { type: Type.NUMBER },
+                          is_hotword: { type: Type.BOOLEAN },
                           is_question: { type: Type.BOOLEAN },
                           is_expression: { type: Type.BOOLEAN },
                           is_name: { type: Type.BOOLEAN },
                           is_sentence_end: { type: Type.BOOLEAN },
+                          emotion_tone: { type: Type.STRING },
                           emoji: { type: Type.STRING },
                         },
                         required: ["word", "start_ms", "end_ms"],
@@ -1236,16 +1289,28 @@ Return ONLY a JSON object (no markdown) with word-level timestamps in millisecon
     }, jobId);
 
     // ---- Convert ms → seconds, validate coverage, normalize ----
-    const rawW = (rawWords as any[]).map((w) => ({
-      word: String(w.word || "").trim(),
-      start_time: (Number(w.start_ms || 0)) / 1000,
-      end_time: (Number(w.end_ms || 0)) / 1000,
-      is_question: !!w.is_question,
-      is_expression: !!w.is_expression,
-      is_name: !!w.is_name,
-      is_sentence_end: !!w.is_sentence_end,
-      emoji: w.emoji || null,
-    })).filter((w) => w.word.length > 0 && w.end_time > w.start_time);
+    const rawW = (rawWords as any[]).map((w, idx, arr) => {
+      const sMs = Number(w.start_ms || 0);
+      const eMs = Number(w.end_ms || 0);
+      const nextSMs = idx < arr.length - 1 ? Number(arr[idx + 1].start_ms || 0) : eMs;
+      const pauseAfterMs = typeof w.pause_after_ms === "number"
+        ? w.pause_after_ms
+        : Math.max(0, nextSMs - eMs);
+
+      return {
+        word: String(w.word || "").trim(),
+        start_time: sMs / 1000,
+        end_time: eMs / 1000,
+        pause_after_ms: pauseAfterMs,
+        is_hotword: !!w.is_hotword,
+        is_question: !!w.is_question,
+        is_expression: !!w.is_expression,
+        is_name: !!w.is_name,
+        is_sentence_end: !!w.is_sentence_end,
+        emotion_tone: String(w.emotion_tone || ""),
+        emoji: w.emoji || null,
+      };
+    }).filter((w) => w.word.length > 0 && w.end_time > w.start_time);
 
     if (rawW.length === 0) {
       throw new Error("Combined call: no usable words after cleaning.");
