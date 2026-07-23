@@ -68,7 +68,9 @@ export default function VideoPlayer({
         let found: string | null = null;
         for (let i = 0; i < words.length; i++) {
           const w = words[i];
-          if (t >= w.start_time && t <= w.end_time) {
+          const pauseSec = (w.pause_after_ms || 0) / 1000;
+          const holdUntil = w.end_time + pauseSec;
+          if (t >= w.start_time && t < holdUntil) {
             found = w.id;
             break;
           }

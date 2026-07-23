@@ -72,9 +72,11 @@ function drawSubtitlesOnCanvas(
 ) {
   if (words.length === 0) return;
 
-  const activeWordIndex = words.findIndex(
-    (w) => time >= w.start_time && time <= w.end_time
-  );
+  const activeWordIndex = words.findIndex((w) => {
+    const pauseSec = (w.pause_after_ms || 0) / 1000;
+    const holdUntil = w.end_time + pauseSec;
+    return time >= w.start_time && time < holdUntil;
+  });
   
   let targetIndex = activeWordIndex;
   if (targetIndex === -1) {
