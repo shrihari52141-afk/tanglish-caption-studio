@@ -167,7 +167,7 @@ export default function EditorPanel({
 
   // Handle preset application
   const handleApplyPreset = (presetSettings: any) => {
-    onUpdateStyleSettings(presetSettings);
+    onUpdateStyleSettings({ ...presetSettings, fontSize: 0.5, rotation: 0 });
   };
 
   // Editing standard word

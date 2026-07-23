@@ -170,12 +170,9 @@ export async function startServer() {
   //  - gemini-2.5-flash → 404 "no longer available to new users" (removed).
   //  - gemini-3.5-flash / gemini-flash-latest → currently returning 503 (overloaded),
   //    kept only as last-resort fallbacks in case they recover.
-  //  - gemini-3.1-flash-lite / gemini-flash-lite-latest → reliably serving now.
-  const GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite";
+  const GEMINI_PRIMARY_MODEL = "gemini-3.6-flash";
   const GEMINI_FALLBACK_MODELS = [
-    "gemini-flash-lite-latest",
     "gemini-3.5-flash",
-    "gemini-flash-latest",
   ];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
@@ -1060,6 +1057,19 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
       !language || language === "auto"
         ? "the spoken language (auto-detect; likely a regional Indian language)"
         : String(language);
+
+    const outputMode = languageInstruction.match(/transliterate|roman.?script/i)
+      ? "TRANSLITERATION_ROMAN"
+      : languageInstruction.match(/keep.*nativescript|native.?script|do.?not.?transliterat/i)
+        ? "TRANSCRIPTION_NATIVE"
+        : "TRANSLATION";
+
+    const targetLanguage =
+      outputMode === "TRANSLATION"
+        ? languageInstruction.match(/english/i)
+          ? "English"
+          : String(language)
+        : String(language) + (outputMode === "TRANSLITERATION_ROMAN" ? " (Romanized)" : "");
 
     const systemPrompt = `You are an ultra-precise audio transcription, translation, and auto-speedup subtitle engine.
 Your primary objective is ZERO-LAG LIP SYNC and ACOUSTIC PRECISION. Every word must lock strictly onto the speaker's acoustic speech boundaries in milliseconds.
