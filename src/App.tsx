@@ -80,6 +80,9 @@ function drawSubtitlesOnCanvas(
   
   let targetIndex = activeWordIndex;
   if (targetIndex === -1) {
+    if (time < words[0].start_time) {
+      return;
+    }
     let closestIdx = 0;
     let minDiff = Math.abs(time - words[0].start_time);
     for (let i = 0; i < words.length; i++) {
@@ -90,7 +93,7 @@ function drawSubtitlesOnCanvas(
         closestIdx = i;
       }
     }
-    if (minDiff < 3.0) {
+    if (minDiff < 1.5) {
       targetIndex = closestIdx;
     } else {
       return;

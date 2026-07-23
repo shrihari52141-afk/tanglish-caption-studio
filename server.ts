@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import multer from "multer";
@@ -235,24 +235,19 @@ export async function startServer() {
    */
   function normalizeTranscriptionTiming(
     words: TimedWord[],
-    _targetDuration: number  // unused — we NEVER stretch beyond actual speech end
+    _targetDuration: number  // unused — preserve exact physical speech timestamps
   ): TimedWord[] {
     if (words.length === 0) return words;
 
     // Work on a copy sorted by start
     const sorted = [...words].sort((a, b) => a.start_time - b.start_time);
-    const rawStart = sorted[0].start_time;
-    const rawEnd = Math.max(...sorted.map((w) => w.end_time), rawStart + 0.1);
 
-    // CRITICAL: Do NOT stretch timestamps to fill the video duration.
-    // Captions must only cover the actual speech window. Silent gaps at
-    // the end of the video get NO captions — highlighted word freezes.
-    // Only shift so the first word starts at 0 (beginning of speech).
-    const offset = -rawStart;
+    // CRITICAL: Preserve physical acoustic timestamps from audio forced alignment.
+    // NEVER shift start_time of the first word to 0 if speech starts later (e.g. 800ms).
     return sorted.map((w) => ({
       ...w,
-      start_time: +Math.max(0, (w.start_time + offset)).toFixed(3),
-      end_time: +Math.max(0.001, (w.end_time + offset)).toFixed(3),
+      start_time: +Math.max(0, w.start_time).toFixed(3),
+      end_time: +Math.max(0.001, w.end_time).toFixed(3),
     }));
   }
 

@@ -333,9 +333,9 @@ export default function VideoPlayer({
 
   // Active word index from the RAF-driven highlightedWordId (word-level, not phrase-level).
   const activeWordIndex = (() => {
-    if (words.length === 0 || !highlightedWordId) {
-      // No highlight: find closest word for display purposes
-      if (words.length === 0) return -1;
+    if (words.length === 0) return -1;
+    if (localTime < words[0].start_time) return -1;
+    if (!highlightedWordId) {
       let closestIdx = 0;
       let minDiff = Math.abs(localTime - words[0].start_time);
       for (let i = 0; i < words.length; i++) {
@@ -343,7 +343,7 @@ export default function VideoPlayer({
         const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
         if (diff < minDiff) { minDiff = diff; closestIdx = i; }
       }
-      return minDiff < 3.0 ? closestIdx : -1;
+      return minDiff < 1.5 ? closestIdx : -1;
     }
     return words.findIndex((w) => w.id === highlightedWordId);
   })();
