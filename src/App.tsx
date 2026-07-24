@@ -8,6 +8,7 @@ import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags, generateCaptionFrames } from './utils/captionFormatter';
 import { notifyTelegram, notifyTelegramError } from './utils/deviceTracker';
+import TestBench from './components/TestBench';
 
 // Canvas animation helpers for export parity with CSS keyframes
 function getAnimationTransform(preset: string, elapsedSec: number, scaleX: number): { dx: number; dy: number; scale: number; rotation: number; colorOverride?: string } {
@@ -353,6 +354,7 @@ function drawSubtitlesOnCanvas(
 }
 
 export default function App() {
+  const [viewMode, setViewMode] = useState<'studio' | 'testbench'>('studio');
   const [state, setState] = useState<AppState>({
     videoUrl: null,
     videoFile: null,
@@ -1412,6 +1414,10 @@ export default function App() {
     setSeekTime(null);
   };
 
+  if (viewMode === 'testbench') {
+    return <TestBench onReturnToStudio={() => setViewMode('studio')} />;
+  }
+
   return (
     <div className="h-screen w-screen bg-[#0A0A0A] text-white font-sans selection:bg-fuchsia-600/30 flex flex-col overflow-hidden">
       <header className="h-[48px] border-b border-[#2c2c2c] bg-[#0d0d0d] flex items-center justify-between px-3 shrink-0 z-50">
@@ -1422,10 +1428,19 @@ export default function App() {
           <h1 className="font-black text-[14px] tracking-tight uppercase shrink-0 text-white/80 mr-1">
             Studio
           </h1>
+
+          <button
+            onClick={() => setViewMode('testbench')}
+            className="bg-fuchsia-950/60 hover:bg-fuchsia-900/80 text-fuchsia-300 font-bold text-xs px-2.5 py-1 rounded-lg border border-fuchsia-500/30 flex items-center gap-1 transition-all shadow-md ml-1"
+            title="Open AI Prompt & Sync Test Bench"
+          >
+            <Sparkles className="w-3 h-3 text-yellow-400" />
+            Test Bench
+          </button>
           
           <button 
             onClick={handleNewProject}
-            className="bg-[#222] hover:bg-[#333] text-fuchsia-400 hover:text-white w-7 h-7 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0"
+            className="bg-[#222] hover:bg-[#333] text-fuchsia-400 hover:text-white w-7 h-7 rounded-full flex items-center justify-center border border-[#333] cursor-pointer transition-all active:scale-95 shrink-0 ml-1"
             title="New project"
           >
             <Plus className="w-3.5 h-3.5" />

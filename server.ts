@@ -2628,6 +2628,302 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     }
   });
 
+  // --- TEST BENCH API ENDPOINTS ---
+  app.post("/api/test-bench/transcribe", upload.single("video"), async (req, res) => {
+    const logs: string[] = [];
+    const log = (msg: string) => {
+      logs.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
+      console.log(`[TestBench] ${msg}`);
+    };
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No media file provided for Test Bench" });
+      }
+
+      const {
+        customSystemPrompt = "",
+        customResponseSchema = "",
+        customApiKeys = "",
+        modelName = "gemini-3.5-flash",
+        language = "tamil",
+        translationMode = "transliterate",
+        useEmojis = "true",
+        usePunctuation = "true",
+      } = req.body;
+
+      log(`Received Test Bench request using model: ${modelName}`);
+      log(`File: ${req.file.originalname} (${(req.file.size / (1024 * 1024)).toFixed(2)} MB)`);
+
+      // Parse custom API keys if provided
+      let keysToUse: string[] = [];
+      try {
+        if (customApiKeys) {
+          if (customApiKeys.trim().startsWith("[")) {
+            keysToUse = JSON.parse(customApiKeys);
+          } else {
+            keysToUse = customApiKeys.split(/[\s,]+/).map((k: string) => k.trim()).filter(Boolean);
+          }
+        }
+      } catch (e) {
+        log("Could not parse custom API keys list; using server defaults.");
+      }
+
+      if (keysToUse.length === 0) {
+        keysToUse = geminiKeys.length > 0 ? geminiKeys : [getSecret("GEMINI_API_KEY") || process.env.GEMINI_API_KEY || ""];
+      }
+      keysToUse = keysToUse.filter(Boolean);
+      log(`Active Key Pool: ${keysToUse.length} key(s) ready for rotation.`);
+
+      // Fast audio extraction
+      let audioPath = req.file.path;
+      const incomingName = (req.file.originalname || "").toLowerCase();
+      const isAlreadyAudio = /\.(wav|mp3|m4a|aac|ogg|flac|opus)$/.test(incomingName);
+
+      if (!isAlreadyAudio) {
+        log("Extracting fast mono 16kHz audio using FFmpeg...");
+        audioPath = `${req.file.path}.mp3`;
+        try {
+          await execAsync(`ffmpeg -y -i "${req.file.path}" -vn -ac 1 -ar 16000 -ab 64k -f mp3 "${audioPath}"`);
+          log("Audio extraction complete.");
+        } catch (err: any) {
+          log(`FFmpeg warning: ${err.message || err}. Falling back to input file.`);
+          audioPath = req.file.path;
+        }
+      }
+
+      // Measure audio duration
+      let audioDurationMs = 0;
+      try {
+        const probe = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`);
+        const sec = parseFloat((probe.stdout || "").trim()) || 0;
+        audioDurationMs = Math.round(sec * 1000);
+        log(`Measured physical audio duration: ${(audioDurationMs / 1000).toFixed(2)}s`);
+      } catch {
+        log("Audio duration probe unavailable.");
+      }
+
+      // Build Gemini Audio Part
+      const inlineMax = 18 * 1024 * 1024;
+      const fileSize = fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0;
+      let mimeType = audioPath.endsWith(".mp3") ? "audio/mpeg" : (req.file.mimetype || "audio/wav");
+
+      // Parse custom responseSchema if provided
+      let responseSchemaObj: any = undefined;
+      try {
+        if (customResponseSchema && customResponseSchema.trim().startsWith("{")) {
+          responseSchemaObj = JSON.parse(customResponseSchema);
+          log("Custom responseSchema JSON parsed successfully.");
+        }
+      } catch (e: any) {
+        log(`Warning: Custom responseSchema parse error (${e.message}). Using default schema.`);
+      }
+
+      // Call Gemini with key rotation
+      let lastErr: any = null;
+      let rawJsonResult: any = null;
+      let providerUsed = "";
+
+      for (let kIdx = 0; kIdx < keysToUse.length; kIdx++) {
+        const activeKey = keysToUse[kIdx];
+        const keyMask = `${activeKey.slice(0, 4)}...${activeKey.slice(-4)}`;
+        log(`Attempting API key #${kIdx + 1}/${keysToUse.length} (${keyMask})...`);
+
+        try {
+          const ai = new GoogleGenAI({ apiKey: activeKey });
+          let audioPart: any;
+          if (fileSize > 0 && fileSize <= inlineMax) {
+            const buf = fs.readFileSync(audioPath);
+            audioPart = { inlineData: { data: buf.toString("base64"), mimeType } };
+          } else {
+            log("File > 18MB; uploading via Gemini Files API...");
+            const uploaded = await ai.files.upload({ file: audioPath, config: { mimeType } });
+            let fileInfo: any = uploaded;
+            const fName = (uploaded as any).name;
+            for (let i = 0; i < 30 && fileInfo?.state !== "ACTIVE"; i++) {
+              if (fileInfo?.state === "FAILED") throw new Error("Gemini Files API upload failed.");
+              await new Promise((r) => setTimeout(r, 1500));
+              fileInfo = await ai.files.get({ name: fName });
+            }
+            audioPart = { fileData: { fileUri: fileInfo.uri || (uploaded as any).uri, mimeType: fileInfo.mimeType || mimeType } };
+          }
+
+          const promptToUse = customSystemPrompt || "Transcribe and return single-word captions in millisecond JSON format.";
+
+          const geminiRes = await ai.models.generateContent({
+            model: modelName,
+            contents: [
+              audioPart,
+              { text: "Transcribe and produce single-word lip-synced caption JSON for this audio." },
+            ],
+            config: {
+              systemInstruction: promptToUse,
+              temperature: 0.2,
+              responseMimeType: "application/json",
+              ...(responseSchemaObj ? { responseSchema: responseSchemaObj } : {}),
+            },
+          });
+
+          const text = geminiRes.text;
+          if (!text) throw new Error("Gemini returned empty text.");
+          rawJsonResult = extractJsonFromResponse(text);
+          providerUsed = `${modelName} (Key #${kIdx + 1})`;
+          log(`✅ Success via ${providerUsed}`);
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          log(`❌ Key #${kIdx + 1} failed: ${err.message || err}`);
+        }
+      }
+
+      if (!rawJsonResult) {
+        throw lastErr || new Error("All Gemini API keys failed.");
+      }
+
+      // Extract words array from raw JSON
+      let words: any[] = [];
+      if (Array.isArray(rawJsonResult.segments) && rawJsonResult.segments.length > 0) {
+        rawJsonResult.segments.forEach((seg: any) => {
+          if (Array.isArray(seg.words)) {
+            if (seg.words.length > 0 && seg.emoji) {
+              const lastWord = seg.words[seg.words.length - 1];
+              if (!lastWord.emoji) lastWord.emoji = seg.emoji;
+            }
+            words.push(...seg.words);
+          }
+        });
+      } else if (Array.isArray(rawJsonResult.words) && rawJsonResult.words.length > 0) {
+        words = rawJsonResult.words;
+      }
+
+      // Convert word objects to normalized TimedWord format
+      const normalizedWords = words.map((w: any, idx: number, arr: any[]) => {
+        const sMs = Number(w.start_ms || w.start_time * 1000 || 0);
+        const eMs = Number(w.end_ms || w.end_time * 1000 || 0);
+        const nextSMs = idx < arr.length - 1 ? Number(arr[idx + 1].start_ms || arr[idx + 1].start_time * 1000 || 0) : eMs;
+        const pauseAfterMs = typeof w.pause_after_ms === "number" ? w.pause_after_ms : Math.max(0, nextSMs - eMs);
+
+        return {
+          id: `tw-${idx}-${Math.random().toString(36).slice(2, 7)}`,
+          word: String(w.word || "").trim(),
+          start_time: sMs / 1000,
+          end_time: eMs / 1000,
+          pause_after_ms: pauseAfterMs,
+          is_hotword: !!w.is_hotword,
+          is_name: !!w.is_name,
+          is_sentence_end: !!w.is_sentence_end,
+          emoji: w.emoji || null,
+        };
+      });
+
+      res.json({
+        words: normalizedWords,
+        rawJson: rawJsonResult,
+        audioDurationMs,
+        logs,
+        providerUsed,
+      });
+    } catch (err: any) {
+      log(`Fatal Test Bench Error: ${err.message || err}`);
+      res.status(500).json({ error: err.message || "Test Bench transcription failed", logs });
+    }
+  });
+
+  // AI Copilot Endpoint for Test Bench Assistant
+  app.post("/api/test-bench/ai-chat", upload.single("media"), async (req, res) => {
+    try {
+      const {
+        message = "",
+        currentState = "{}",
+        customApiKeys = "",
+        modelName = "gemini-3.5-flash",
+      } = req.body;
+
+      let keysToUse: string[] = [];
+      try {
+        if (customApiKeys) {
+          keysToUse = customApiKeys.split(/[\s,]+/).map((k: string) => k.trim()).filter(Boolean);
+        }
+      } catch {}
+      if (keysToUse.length === 0) {
+        keysToUse = geminiKeys.length > 0 ? geminiKeys : [getSecret("GEMINI_API_KEY") || process.env.GEMINI_API_KEY || ""];
+      }
+      keysToUse = keysToUse.filter(Boolean);
+
+      let mediaPart: any = undefined;
+      if (req.file) {
+        const buf = fs.readFileSync(req.file.path);
+        const mimeType = req.file.mimetype || "audio/wav";
+        mediaPart = { inlineData: { data: buf.toString("base64"), mimeType } };
+      }
+
+      const copilotSystemPrompt = `You are the Autonomous AI Copilot & Master Controller for the Caption Timing & Prompt Engineering Test Bench.
+
+Your task is to follow the user's instructions implicitly. The user may ask you to:
+1. Fix wrong words, missing words, or misaligned timestamps in their current caption transcript.
+2. Edit or enhance their Gemini System Prompt.
+3. Update their timing normalization or pacing algorithm code.
+4. Adjust model selection or configuration.
+
+CURRENT TEST BENCH STATE:
+${currentState}
+
+INSTRUCTIONS:
+- Always output a clear, friendly natural language reply summarizing the actions taken.
+- Include a JSON block enclosed in \`\`\`json ... \`\`\` containing any updated state fields:
+  {
+    "updatedWords": [... array of word objects if words were changed ...],
+    "updatedSystemPrompt": "... string if system prompt was changed ...",
+    "updatedAlgorithmCode": "... string if algorithm code was changed ...",
+    "updatedModelName": "... string if model was changed ..."
+  }
+`;
+
+      const contents: any[] = [];
+      if (mediaPart) contents.push(mediaPart);
+      contents.push({ text: `User request: ${message}` });
+
+      let replyText = "";
+      let lastErr: any = null;
+
+      for (const activeKey of keysToUse) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: activeKey });
+          const resModel = await ai.models.generateContent({
+            model: modelName,
+            contents,
+            config: {
+              systemInstruction: copilotSystemPrompt,
+              temperature: 0.3,
+            },
+          });
+          replyText = resModel.text || "";
+          if (replyText) break;
+        } catch (e: any) {
+          lastErr = e;
+        }
+      }
+
+      if (!replyText) throw lastErr || new Error("AI Chat request failed across all API keys.");
+
+      // Parse json mutations from replyText if present
+      let mutations: any = {};
+      const jsonMatch = replyText.match(/```json\s*([\s\S]*?)\s*```/);
+      if (jsonMatch) {
+        try {
+          mutations = JSON.parse(jsonMatch[1]);
+        } catch {}
+      }
+
+      res.json({
+        reply: replyText.replace(/```json[\s\S]*?```/g, "").trim(),
+        mutations,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "AI Chat failed" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
