@@ -109,9 +109,22 @@ export default function TestBench({ onReturnToStudio }: TestBenchProps) {
   const [responseSchema, setResponseSchema] = useState<string>(DEFAULT_RESPONSE_SCHEMA);
 
   // 11 API Keys Manager
-  const [apiKeysText, setApiKeysText] = useState<string>(
-    `AQ.KEY_1_DEMO\nAQ.KEY_2_DEMO\nAQ.KEY_3_DEMO\nAQ.KEY_4_DEMO\nAQ.KEY_5_DEMO\nAQ.KEY_6_DEMO\nAQ.KEY_7_DEMO\nAQ.KEY_8_DEMO\nAQ.KEY_9_DEMO\nAQ.KEY_10_DEMO\nAQ.KEY_11_DEMO`
-  );
+  const [apiKeysText, setApiKeysText] = useState<string>('');
+
+  // Fetch active server keys on mount
+  useEffect(() => {
+    fetch('/api/test-bench/keys')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data.keys) && data.keys.length > 0) {
+          setApiKeysText(data.keys.join('\n'));
+          addLog(`Loaded ${data.keys.length} active API key(s) from server environment.`);
+        }
+      })
+      .catch(() => {
+        addLog('Could not fetch server API keys; using fallback.');
+      });
+  }, []);
 
   // UI Tabs & Flags
   const [activeTab, setActiveTab] = useState<'prompt' | 'code' | 'schema' | 'keys' | 'logs' | 'json'>('prompt');

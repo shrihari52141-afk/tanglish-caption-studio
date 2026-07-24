@@ -2629,6 +2629,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   });
 
   // --- TEST BENCH API ENDPOINTS ---
+  app.get("/api/test-bench/keys", (_req, res) => {
+    loadGeminiKeys();
+    res.json({ keys: geminiKeys });
+  });
   app.post("/api/test-bench/transcribe", upload.single("video"), async (req, res) => {
     const logs: string[] = [];
     const log = (msg: string) => {
