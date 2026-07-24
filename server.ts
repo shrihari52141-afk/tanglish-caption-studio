@@ -170,12 +170,19 @@ export async function startServer() {
   //  - gemini-2.5-flash → 404 "no longer available to new users" (removed).
   //  - gemini-3.5-flash / gemini-flash-latest → currently returning 503 (overloaded),
   //    kept only as last-resort fallbacks in case they recover.
-  const GEMINI_PRIMARY_MODEL = "gemini-3.5-flash";
+  const GEMINI_PRIMARY_MODEL = "gemini-3.6-flash";
   const GEMINI_FALLBACK_MODELS = [
-    "gemini-3.6-flash",
+    "gemini-3.5-flash",
     "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
   ];
-  function geminiModelList(): string[] {
+  function geminiModelList(requestedModel?: string): string[] {
+    if (requestedModel && requestedModel.trim()) {
+      const clean = requestedModel.trim();
+      return [clean, ...GEMINI_FALLBACK_MODELS.filter((m) => m !== clean && m !== GEMINI_PRIMARY_MODEL)];
+    }
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
   }
 
@@ -513,7 +520,8 @@ Return ONLY a JSON object (no markdown, no code fences):
    */
   async function callGeminiWithModelFallback<T>(
     fn: (ai: GoogleGenAI, model: string) => Promise<T>,
-    jobId?: string
+    jobId?: string,
+    requestedModel?: string
   ): Promise<{ result: T; model: string }> {
     if (geminiKeys.length === 0) {
       loadGeminiKeys();
@@ -522,7 +530,7 @@ Return ONLY a JSON object (no markdown, no code fences):
       throw new Error("No Google Gemini API key is configured.");
     }
 
-    const models = geminiModelList();
+    const models = geminiModelList(requestedModel);
     let lastError: any = null;
 
     for (const model of models) {
