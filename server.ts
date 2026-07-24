@@ -1049,117 +1049,43 @@ JSON: {"words":[{"word":"...","start_time":n,"end_time":n}]}`;
       throw new Error("No Gemini API key is configured.");
     }
 
-    const langLabel =
-      !language || language === "auto"
-        ? "the spoken language (auto-detect; likely a regional Indian language)"
-        : String(language);
+    const langInstruction =
+      language === "tamil" || !language || language === "auto"
+        ? `The spoken speech is in Tamil (or a mix of Tamil and English). You MUST convert and transliterate all Tamil speech to Roman script (Tanglish), using English alphabets/letters. Do NOT use any Tamil script characters (like செம்ம, சும்மா, மச்சி) under any circumstances. Examples: 'சும்மா' -> 'summa', 'மாஸ்' -> 'mass', 'செம்ம' -> 'sema', 'மச்சி' -> 'machi', 'வேற லெவல்' -> 'vera level'.`
+        : `The spoken speech is in ${langLabel}. You MUST convert and transliterate all speech to Roman script using English alphabets/letters.`;
 
-    const outputMode = languageInstruction.match(/transliterate|roman.?script/i)
-      ? "TRANSLITERATION_ROMAN"
-      : languageInstruction.match(/keep.*nativescript|native.?script|do.?not.?transliterat/i)
-        ? "TRANSCRIPTION_NATIVE"
-        : "TRANSLATION";
+    const emojiInstruction = isEmojiActive
+      ? `CRITICAL EMOJI REQUIREMENT: Attach relevant expression emojis directly to the end of highly expressive keywords, adjectives, or emotional phrases (e.g., if someone says 'mass' or 'sema', output 'mass 🔥'. If someone says 'sad', output 'sad 😭', if happy output 'sema 🤩'). Keep it natural and don't overdo it. Only place emojis where they add visual expressions or energy.`
+      : `Do not attach emojis to words.`;
 
-    const targetLanguage =
-      outputMode === "TRANSLATION"
-        ? languageInstruction.match(/english/i)
-          ? "English"
-          : String(language)
-        : String(language) + (outputMode === "TRANSLITERATION_ROMAN" ? " (Romanized)" : "");
+    const systemPrompt = `Listen to the video/audio and transcribe the speech into millisecond-accurate single-word captions.
 
-    const systemPrompt = `You are an ULTRA-PRECISION MULTI-MODAL ACOUSTIC FORCED ALIGNMENT ENGINE & LIP-SYNC CAPTION PROCESSOR. You process raw audio spectrograms to generate frame-perfect, millisecond-accurate single-word captions.
+CRITICAL ROMAN SCRIPT INSTRUCTION: You MUST output all speech in Roman/English script (using English alphabets/letters only). 
+Do NOT use any regional script letters under any circumstances. 
+The entire transcription MUST be written using English letters (A-Z, a-z) only.
 
-Your mission is to perform PHONEME-LEVEL ACOUSTIC BOUNDARY MEASUREMENT on the uploaded audio track. You MUST measure actual physical vocal cord attacks, vowel durations, consonant bursts, and breath silences. NEVER guess, estimate, or distribute timestamps equally across words.
+${langInstruction}
 
-=== SECTION 1: PHYSICAL ACOUSTIC MEASUREMENT LAWS ===
-1. **ABSOLUTE SINGLE-WORD TOKENIZATION**:
-   - Every object inside the "words" array MUST contain EXACTLY ONE single word string (e.g., "word": "society").
-   - NEVER combine multiple words into one token string (e.g., "word": "society and colony" is STRICTLY FORBIDDEN AND FAILS).
+${emojiInstruction}
 
-2. **CONSONANT ATTACK & VOWEL DECAY TIMESTAMPS**:
-   - \`start_ms\`: Exact millisecond the vocal cord vibration or consonant burst begins in physical audio. If speech starts at 800ms, start_ms[0] MUST be 800, NOT 0.
-   - \`end_ms\`: Exact millisecond physical sound fully decays into silence before the next word or pause.
-   - NO TIME-AVERAGING: Word duration = physical vocal articulation length. Short spoken words ("in", "a") get 80-150ms. Long spoken words ("daughters", "explanation") get 400-800ms.
+=== ACOUSTIC LIP-SYNC & SILENCE HOLD LAWS ===
+1. SINGLE WORD TOKENS: Each object in "words" array MUST contain EXACTLY ONE single word string. Never group multiple words.
+2. ACCURATE ACOUSTIC BOUNDARIES:
+   - "start_ms": Exact millisecond physical vocal sound starts (e.g. 800).
+   - "end_ms": Exact millisecond sound stops decay (e.g. 1200).
+   - "pause_after_ms": Exact silence duration in ms before next word: pause_after_ms = start_ms[next] - end_ms[current].
+3. HOTWORD SELECTION: Flag 25-35% of keywords/emotional words as "is_hotword": true.
 
-3. **SILENCE MAP & HIGHLIGHT HOLD ALGORITHM (\`pause_after_ms\`)**:
-   - Calculate exact silence duration following each word: \`pause_after_ms = start_ms[next_word] - end_ms[current_word]\`.
-   - For the final word in a sentence or segment, \`pause_after_ms\` is the silent gap until the next spoken sentence begins.
-   - If the speaker pauses for 1.5s between clauses, \`end_ms\` marks speech stop, and \`pause_after_ms\` equals 1500. The rendering engine uses this to hold the highlight on the active word during silence without jumping early.
-   - Last word of audio track: \`pause_after_ms = 0\`.
+=== OUTPUT FORMAT ===
+Provide the transcription as a JSON object with a "words" array (or "segments" array containing "words").
+Each word object MUST have:
+- "word": the spoken word (transliterated to English letters, with emoji attached if applicable)
+- "start_ms": start timestamp in milliseconds (integer) or "start_time" in seconds
+- "end_ms": end timestamp in milliseconds (integer) or "end_time" in seconds
+- "pause_after_ms": silence hold duration in milliseconds (integer)
+- "is_hotword": boolean (true for high-impact/accented words)
 
-4. **MONOTONIC TIMESTAMP INTEGRITY**:
-   - Timestamps MUST be strictly increasing: \`start_ms[0] >= 100\` (or actual audio onset), \`start_ms[i] >= end_ms[i-1]\`, \`start_ms[i] < end_ms[i]\`, and \`pause_after_ms >= 0\`.
-
-=== SECTION 2: TASK MODES & DIALECT HANDLING ===
-Execute strictly based on configured OUTPUT_MODE:
-
-1. **MODE "TRANSCRIPTION_NATIVE"**:
-   - Transcribe exact spoken words in native script (Tamil script, Devanagari for Hindi, etc.).
-
-2. **MODE "TRANSLITERATION_ROMAN" (PHONETIC SCRIPT - ZERO TRANSLATION)**:
-   - Transcribe exact spoken words verbatim using phonetic Latin/Roman script (Tanglish, Hinglish, Kanglish).
-   - STRICT GUARDRAIL: DO NOT TRANSLATE TO ENGLISH. Preserve native grammar, regional terms, and slang exactly as spoken.
-   - Audio: "Maa Behen movie la vandhu..." -> Output: "Maa Behen movie la vandhu..." (NEVER output "In the movie Maa Behen...").
-
-3. **MODE "TRANSLATION"**:
-   - Translate spoken meaning into TARGET_LANGUAGE (${targetLanguage}).
-   - CROSS-LINGUAL TIMING LOCK: Lock translated target words strictly inside original spoken clause boundaries \`[speech_window_ms.start_ms, speech_window_ms.end_ms]\`. Distribute word durations proportionally by physical spoken syllable density.
-
-=== SECTION 3: ATOMIC ENTITIES, SLANG & HOTWORD ENGINE ===
-1. **PROPER NOUN & ENTITY LOCK**:
-   - Keep names, titles, brands, and places intact (e.g., "Maa", "Behen", "Rekha", "Gupta"). Tokenize into individual words with contiguous timestamps and set \`is_name: true\` on each token.
-2. **HOTWORD QUOTA (\`is_hotword\`)**:
-   - Flag 25-35% of high-impact words as \`is_hotword: true\` (proper nouns, core emotional verbs, key slang, shriek/pitch peaks).
-   - Filler words (the, in, a, is, to, her) = \`is_hotword: false\`.
-
-=== SECTION 4: EMOTION SENTIMENT & EMOJI MATRIX ===
-1. \`emotion_tone\`: Assign sentence-level sentiment (\`gossip_backstabbing\`, \`betrayal_hurt\`, \`angry_frustrated\`, \`casual_explaining\`, \`family_emotional\`).
-2. \`emoji\`: Attach EXACTLY ONE expressive emoji per segment attached to the sentence-end word (\`is_sentence_end: true\`). For all other words, \`emoji\` MUST be \`null\`.
-   - Gossip/Backstabbing: 🗣️ | 🐍 | 🤐
-   - Hurt/Emotional Pain: 💔 | 😭 | 🥺
-   - Movies/Media: 🎬 | 🍿
-   - Family/Relationships: 👩‍👧‍👧 | 🏠
-   - Anger/Frustration: 😤 | 💥
-   - Interrogative/Sarcasm: ❓ | 🤔
-
-=== CAPTION CONFIGURATION ===
-- OUTPUT_MODE: ${outputMode}
-- TARGET_LANGUAGE: ${targetLanguage}
-- USE_PUNCTUATION: ${usePunctuation}
-- USE_EMOJIS: ${useEmojis}
-- SPOKEN_LANGUAGE_HINT: ${langLabel}
-
-=== OUTPUT JSON SCHEMA (STRICT JSON ONLY - NO MARKDOWN - NO CODE BLOCKS) ===
-
-{
-  "source_language": "ta-IN",
-  "target_language": "en-US",
-  "total_speech_duration_ms": number,
-  "segments": [
-    {
-      "segment_id": number,
-      "source_text": string,
-      "translated_text": string,
-      "emoji": string,
-      "speech_window_ms": { "start_ms": number, "end_ms": number },
-      "words": [
-        {
-          "word": string,
-          "start_ms": number,
-          "end_ms": number,
-          "pause_after_ms": number,
-          "is_hotword": boolean,
-          "is_expression": boolean,
-          "is_question": boolean,
-          "is_name": boolean,
-          "is_sentence_end": boolean,
-          "emotion_tone": string,
-          "emoji": string | null
-        }
-      ]
-    }
-  ]
-}`;
+Output valid JSON only. Do not wrap in markdown tags like \`\`\`json.`;
 
     sendLog(
       jobId,
