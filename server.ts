@@ -170,10 +170,9 @@ export async function startServer() {
   //  - gemini-2.5-flash → 404 "no longer available to new users" (removed).
   //  - gemini-3.5-flash / gemini-flash-latest → currently returning 503 (overloaded),
   //    kept only as last-resort fallbacks in case they recover.
-  const GEMINI_PRIMARY_MODEL = "gemini-2.5-flash";
+  const GEMINI_PRIMARY_MODEL = "gemini-3.6-flash";
   const GEMINI_FALLBACK_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-3.5-flash",
   ];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];
