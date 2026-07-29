@@ -4,7 +4,13 @@ import { CaptionWord } from '../types';
 import { sanitizeCaptionWords, stripASSTags } from '../utils/captionFormatter';
 import { getDeviceId, getDeviceInfo } from '../utils/deviceTracker';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'https://tanglish-caption-api.onrender.com';
+const _envApiMic = (import.meta.env.VITE_API_URL || '').trim();
+const _isBrowserLocalhostMic =
+  typeof window !== 'undefined' &&
+  /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
+const API_BASE = _isBrowserLocalhost
+  ? (_envApiMic || 'https://tanglish-caption-api.onrender.com')
+  : ''; // Empty = same-origin (Cloudflare Pages functions)
 
 const LANGUAGES = [
   { code: 'auto', label: 'Auto-Detect', flag: '🌍' },
@@ -198,6 +204,8 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
     formData.append('audio', audioBlob, 'recording.webm');
     formData.append('language', selectedLanguage);
     formData.append('translationMode', enableTranslation ? 'translate_english' : 'transliterate');
+    formData.append('useEmojis', 'false');
+    formData.append('usePunctuation', 'true');
 
     try {
       const response = await fetch(`${API_BASE}/api/transcribe-mic`, {

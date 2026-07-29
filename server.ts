@@ -166,14 +166,11 @@ export async function startServer() {
   let geminiKeys: string[] = [];
   let nextKeyIndex = 0;
 
-  // Model priority. NOTE (verified against the live API):
-  //  - gemini-2.5-flash → 404 "no longer available to new users" (removed).
-  //  - gemini-3.5-flash / gemini-flash-latest → currently returning 503 (overloaded),
-  //    kept only as last-resort fallbacks in case they recover.
-  const GEMINI_PRIMARY_MODEL = "gemini-3.5-flash";
+  // Model priority: 3.6-flash (primary) → 3.5-flash (secondary) → 3.5-flash-lite (3rd)
+  const GEMINI_PRIMARY_MODEL = "gemini-3.6-flash";
   const GEMINI_FALLBACK_MODELS = [
-    "gemini-3.6-flash",
-    "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
   ];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];

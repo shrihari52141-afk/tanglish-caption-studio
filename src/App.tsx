@@ -43,13 +43,14 @@ const _envApi = (import.meta.env.VITE_API_URL || '').trim();
 const _isBrowserLocalhost =
   typeof window !== 'undefined' &&
   /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
-// Only honor a localhost API URL when the app itself is actually served from
-// localhost (dev). In production (Cloudflare/APK) a localhost value is invalid
-// and would cause xhr.onerror, so fall back to the Render backend.
+// For Cloudflare Pages deployment: use same-origin API functions
+// For local dev: use env var or Render fallback
 const API_BASE =
   _envApi && (!/localhost|127\.0\.0\.1/.test(_envApi) || _isBrowserLocalhost)
     ? _envApi
-    : RENDER_API;
+    : _isBrowserLocalhost
+      ? RENDER_API
+      : ''; // Empty string = same-origin (Cloudflare Pages functions)
 import {
   buildTrackerClientMeta,
   probeMediaDuration,
@@ -1161,19 +1162,6 @@ export default function App() {
       }
     }));
 
-    // Subscribe to SSE logs
-    const eventSource = new EventSource(`${API_BASE}/api/logs?jobId=${jobId}`);
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.message) {
-        setState(s => {
-          const modelMatch = data.message.match(/\(?([\w.-]+flash[\w-]*)\)?/i);
-          const activeModel = modelMatch ? modelMatch[1] : s.activeModel;
-          return { ...s, logs: [...s.logs, data.message], activeModel };
-        });
-      }
-    };
-
     let audioBlob: Blob;
     if (preExtractedAudioBlob) {
       audioBlob = preExtractedAudioBlob;
@@ -1200,12 +1188,22 @@ export default function App() {
     const formData = new FormData();
     const audioFile = new File([audioBlob], file.name.replace(/\.[^/.]+$/, "") + ".wav", { type: audioBlob.type || "audio/wav" });
 
-    formData.append('video', audioFile);
+    // Map translationMode to scriptMode for the new dual-pass API
+    const scriptModeMap: Record<string, string> = {
+      'auto_roman': 'tanglish',      // Auto-detect language → Roman script
+      'transliterate': 'tanglish',   // Specified language → Roman script
+      'keep_script': 'native',       // Keep native script
+      'translate_english': 'english', // Translate to English
+    };
+    const scriptMode = scriptModeMap[translationMode] || 'tanglish';
+
+    formData.append('file', audioFile);
     formData.append('language', language);
+    formData.append('scriptMode', scriptMode);
     formData.append('useEmojis', useEmojis.toString());
-    formData.append('translationMode', translationMode);
     formData.append('usePunctuation', usePunctuation.toString());
     formData.append('emojiStyle', emojiStyle);
+    formData.append('translationMode', translationMode); // Keep for backward compat
 
     // Tracker metadata (emailed to owner on each upload)
     let mediaDurationStr = 'Unknown';
@@ -1241,122 +1239,80 @@ export default function App() {
 
     const activeToken = token || await getAccessToken();
 
-    const doUpload = (attempt: number) => {
+const doUpload = async (attempt: number) => {
       setState(s => ({ 
         ...s, 
-        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "Uploading to server..."]
+        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "Uploading to Cloudflare..."]
       }));
 
-      const req = new XMLHttpRequest();
+      try {
+        const response = await fetch('/api/transcribe', {
+          method: 'POST',
+          body: formData,
+        });
 
-      req.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percentComplete = Math.round((event.loaded / event.total) * 100);
-          setState(s => ({ ...s, uploadProgress: percentComplete }));
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
-      };
 
-      req.onload = () => {
-        eventSource.close();
-        if (req.status >= 200 && req.status < 300) {
-          const data = JSON.parse(req.responseText);
-          const wordsWithIds = sanitizeCaptionWords(
-            (data.words || []).map((w: any, i: number) => ({
-              ...w,
-              word: stripASSTags(String(w.word ?? '')),
-              id: `word-${i}`,
-            }))
-          );
-          setState(s => ({ 
-            ...s, 
-            words: wordsWithIds, 
-            serverFilename: data.filename,
-            isProcessing: false 
-          }));
-          const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
-          const fileIsVideo = file.type.startsWith('video/');
-          notifyTelegram({
-            fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
-            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-            audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
-            aiProcessingCount: wordsWithIds.length,
-            source: fileIsAudio ? 'audio' : 'video',
-            language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
-            translationMode: translationMode || 'transliterate',
-            aiModel: 'Gemini 3.5 Flash',
-            mediaDuration: mediaDurationStr,
-            emojiStyle: emojiStyle,
-            useEmojis: useEmojis,
-            usePunctuation: usePunctuation,
-            captionWords: wordsWithIds.length,
-          });
-        } else {
-          console.error("Transcription failed", req.status, req.responseText);
-          incrementSessionFails();
-          let rawBody = "";
-          try { rawBody = req.responseText.substring(0, 300); } catch { rawBody = "(empty)"; }
-          const errorMsg = `[HTTP ${req.status}] ${rawBody}`;
-          setState(s => ({ 
-            ...s, 
-            hasFailed: true,
-            logs: [...s.logs, `ERROR: ${errorMsg}`]
-          }));
-          notifyTelegramError(errorMsg, `Transcription (HTTP ${req.status})`, {
-            fileName: file.name,
-            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-            source: file.type.startsWith('video/') ? 'video' : 'audio',
-          });
-        }
-      };
+        const data = await response.json();
 
-      req.onerror = () => {
+        // Apply continuous piecewise alignment on client side for extra precision
+        const alignedWords = data.words || data.alignedWords || [];
+
+        const wordsWithIds = sanitizeCaptionWords(
+          alignedWords.map((w: any, i: number) => ({
+            ...w,
+            word: stripASSTags(String(w.word ?? '')),
+            id: `word-${i}`,
+          }))
+        );
+
+        setState(s => ({ 
+          ...s, 
+          words: wordsWithIds, 
+          serverFilename: data.filename,
+          isProcessing: false 
+        }));
+
+        const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
+        const fileIsVideo = file.type.startsWith('video/');
+        notifyTelegram({
+          fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
+          fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+          audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
+          aiProcessingCount: wordsWithIds.length,
+          source: fileIsAudio ? 'audio' : 'video',
+          language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
+          translationMode: translationMode || 'transliterate',
+          aiModel: 'Gemini 3.6 Flash + Deepgram Nova-3',
+          mediaDuration: mediaDurationStr,
+          emojiStyle: emojiStyle,
+          useEmojis: useEmojis,
+          usePunctuation: usePunctuation,
+          captionWords: wordsWithIds.length,
+        });
+      } catch (err: any) {
         if (attempt < 3) {
-          setState(s => ({ ...s, logs: [...s.logs, `⚠ Network error on attempt ${attempt}. Waking server and retrying...`] }));
-          wakeServer().then(() => doUpload(attempt + 1));
+          setState(s => ({ ...s, logs: [...s.logs, `⚠ Attempt ${attempt} failed: ${err.message}. Retrying...`] }));
+          await new Promise(r => setTimeout(r, 1000 * attempt));
+          await doUpload(attempt + 1);
         } else {
-          eventSource.close();
           incrementSessionFails();
-          const em = `xhr.onerror — request never reached server after ${attempt} attempts. Server may be down.`;
+          const em = err.message || 'Transcription failed after 3 attempts';
           setState(s => ({ 
             ...s, 
             hasFailed: true,
             logs: [...s.logs, `ERROR: ${em}`]
           }));
-          notifyTelegramError(em, 'Transcription (network)', {
+          notifyTelegramError(em, 'Transcription (dual-pass)', {
             fileName: file.name,
             fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
             source: file.type.startsWith('video/') ? 'video' : 'audio',
           });
         }
-      };
-
-      req.timeout = 180000; // 3 minutes for slow Gemini processing
-      req.ontimeout = () => {
-        if (attempt < 3) {
-          setState(s => ({ ...s, logs: [...s.logs, `⚠ Request timed out on attempt ${attempt}. Waking server and retrying...`] }));
-          wakeServer().then(() => doUpload(attempt + 1));
-        } else {
-          eventSource.close();
-          incrementSessionFails();
-          const em = `Request timed out after ${attempt} attempts.`;
-          setState(s => ({ 
-            ...s, 
-            hasFailed: true,
-            logs: [...s.logs, `ERROR: ${em}`]
-          }));
-          notifyTelegramError(em, 'Transcription (timeout)', {
-            fileName: file.name,
-            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-            source: file.type.startsWith('video/') ? 'video' : 'audio',
-          });
-        }
-      };
-
-      req.open('POST', `${API_BASE}/api/transcribe?jobId=${jobId}`, true);
-      if (activeToken) {
-        req.setRequestHeader('Authorization', `Bearer ${activeToken}`);
       }
-      req.send(formData);
     };
 
     doUpload(1);

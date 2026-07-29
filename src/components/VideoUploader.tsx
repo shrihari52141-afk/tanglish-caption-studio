@@ -282,6 +282,9 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
                 onChange={(e) => setTranslationMode(e.target.value)}
                 className="bg-[#0A0A0A] border border-[#333] rounded-xl text-white text-sm font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-600 appearance-none cursor-pointer"
               >
+                <option value="auto_roman">
+                  Auto Roman Script (Detect → Roman Script)
+                </option>
                 <option value="keep_script">
                   Keep {selectedLanguage === 'auto' ? 'Detected' : selectedLanguage.charAt(0).toUpperCase() + selectedLanguage.slice(1)} Script
                 </option>
