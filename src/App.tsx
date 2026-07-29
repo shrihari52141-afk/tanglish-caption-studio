@@ -1300,6 +1300,7 @@ export default function App() {
           serverFilename: data.filename,
           isProcessing: false 
         }));
+        setMobileTab('preview');
 
         const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
         const fileIsVideo = file.type.startsWith('video/');

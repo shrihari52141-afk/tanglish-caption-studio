@@ -333,26 +333,30 @@ export default function VideoPlayer({
 
   // Active word index from the RAF-driven highlightedWordId (word-level, not phrase-level).
   const activeWordIndex = (() => {
-    if (words.length === 0) return -1;
-    if (localTime < words[0].start_time) return -1;
-    if (!highlightedWordId) {
-      let closestIdx = 0;
-      let minDiff = Math.abs(localTime - words[0].start_time);
-      for (let i = 0; i < words.length; i++) {
-        const w = words[i];
-        const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
-        if (diff < minDiff) { minDiff = diff; closestIdx = i; }
-      }
-      return minDiff < 1.5 ? closestIdx : -1;
+    if (words.length === 0) return 0;
+    if (highlightedWordId) {
+      const idx = words.findIndex((w) => w.id === highlightedWordId);
+      if (idx !== -1) return idx;
     }
-    return words.findIndex((w) => w.id === highlightedWordId);
+    // Find closest word by timestamp
+    let closestIdx = 0;
+    let minDiff = Math.abs(localTime - words[0].start_time);
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
+      if (diff < minDiff) { minDiff = diff; closestIdx = i; }
+    }
+    return closestIdx;
   })();
 
   // Construct displayWords based on styleSettings.maxWordsPerScreen in a stable chunked block
   const displayWords = (() => {
-    if (words.length === 0 || activeWordIndex === -1) return [];
+    if (words.length === 0) return [];
     const frames = generateCaptionFrames(words, styleSettings.maxWordsPerScreen);
-    return frames.find(frame => frame.some(w => w.id === words[activeWordIndex].id)) || frames[0] || [];
+    const validIndex = Math.max(0, Math.min(activeWordIndex, words.length - 1));
+    const targetWord = words[validIndex];
+    if (!targetWord) return frames[0] || [];
+    return frames.find(frame => frame.some(w => w.id === targetWord.id)) || frames[0] || [];
   })();
 
   const formatWordText = (text: string) => {
