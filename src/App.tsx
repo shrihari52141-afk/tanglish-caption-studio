@@ -1237,9 +1237,7 @@ export default function App() {
       console.warn("Tracker meta collection failed (upload continues):", err);
     }
 
-    const activeToken = token || await getAccessToken();
-
-const doUpload = async (attempt: number) => {
+    const doUpload = async (attempt: number) => {
       setState(s => ({ 
         ...s, 
         logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "Uploading to Cloudflare..."]
@@ -1258,15 +1256,42 @@ const doUpload = async (attempt: number) => {
 
         const data = await response.json();
 
-        // Apply continuous piecewise alignment on client side for extra precision
-        const alignedWords = data.words || data.alignedWords || [];
+        // Extract raw words list (handles arrays, data.words, data.alignedWords, data.rawGeminiResult)
+        const rawWordsList = Array.isArray(data)
+          ? data
+          : (data.words || data.alignedWords || data.rawGeminiResult || []);
 
         const wordsWithIds = sanitizeCaptionWords(
-          alignedWords.map((w: any, i: number) => ({
-            ...w,
-            word: stripASSTags(String(w.word ?? '')),
-            id: `word-${i}`,
-          }))
+          rawWordsList.map((w: any, i: number, arr: any[]) => {
+            const rawStart = typeof w.start_ms === 'number' ? w.start_ms : (typeof w.start === 'number' ? w.start : (w.start_time || 0) * 1000);
+            const rawEnd = typeof w.end_ms === 'number' ? w.end_ms : (typeof w.end === 'number' ? w.end : (w.end_time || 0) * 1000);
+
+            // Normalize ms and seconds
+            const sMs = rawStart < 100 ? rawStart * 1000 : rawStart;
+            const eMs = rawEnd < 100 ? rawEnd * 1000 : rawEnd;
+
+            const sSec = sMs / 1000;
+            const eSec = eMs / 1000;
+
+            const nextSMs = i < arr.length - 1
+              ? (typeof arr[i + 1].start_ms === 'number' ? arr[i + 1].start_ms : (typeof arr[i + 1].start === 'number' ? arr[i + 1].start : (arr[i + 1].start_time || 0) * 1000))
+              : eMs;
+
+            const pauseAfterMs = typeof w.pause_after_ms === 'number'
+              ? w.pause_after_ms
+              : Math.max(0, nextSMs - eMs);
+
+            return {
+              ...w,
+              word: stripASSTags(String(w.word ?? '')),
+              start_time: sSec,
+              end_time: eSec,
+              start_ms: Math.round(sMs),
+              end_ms: Math.round(eMs),
+              pause_after_ms: Math.round(pauseAfterMs),
+              id: `word-${i}`,
+            };
+          })
         );
 
         setState(s => ({ 
@@ -1316,13 +1341,6 @@ const doUpload = async (attempt: number) => {
     };
 
     doUpload(1);
-  };
-
-  const handleRetry = () => {
-    if (state.lastUploadParams) {
-      const { file, language, useEmojis, translationMode, usePunctuation, emojiStyle, preExtractedAudioBlob } = state.lastUploadParams;
-      handleUpload(file, language, useEmojis, translationMode, usePunctuation, emojiStyle, preExtractedAudioBlob);
-    }
   };
 
   const handleCancelProcessing = () => {

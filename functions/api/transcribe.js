@@ -89,14 +89,26 @@ export async function onRequestPost(context) {
     // Apply continuous piecewise alignment with Deepgram as acoustic guardrail
     const alignedWords = continuousPiecewiseAlignment(geminiWords, dgWords);
 
-    const words = alignedWords.map((w) => ({
-      word: w.word,
-      start: Math.round(w.start),
-      end: Math.round(w.end),
-      highlight: w.highlight,
-      emoji: w.emoji || '',
-      is_hotword: w.is_hotword || false,
-    }));
+    const words = alignedWords.map((w, idx, arr) => {
+      const sMs = Math.round(w.start);
+      const eMs = Math.round(w.end);
+      const nextSMs = idx < arr.length - 1 ? Math.round(arr[idx + 1].start) : eMs;
+      const pauseAfterMs = Math.max(0, nextSMs - eMs);
+
+      return {
+        word: w.word,
+        start: sMs,
+        end: eMs,
+        start_ms: sMs,
+        end_ms: eMs,
+        start_time: sMs / 1000,
+        end_time: eMs / 1000,
+        pause_after_ms: pauseAfterMs,
+        highlight: !!w.highlight,
+        emoji: w.emoji || '',
+        is_hotword: !!w.is_hotword || !!w.highlight,
+      };
+    });
 
     return new Response(
       JSON.stringify({
