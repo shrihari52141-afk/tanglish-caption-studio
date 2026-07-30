@@ -2,7 +2,7 @@ export async function onRequestPost(context) {
   try {
     const formData = await context.request.formData();
     const file = formData.get('file');
-    const requestedModel = formData.get('model') || formData.get('geminiModel') || 'gemini-3.6-flash';
+    const requestedModel = formData.get('model') || formData.get('geminiModel') || 'gemini-2.5-flash';
     const translationMode = formData.get('translationMode') || formData.get('scriptMode') || 'transliterate';
     const spokenLang = formData.get('language') || 'auto';
     const useEmojis = formData.get('useEmojis') === 'true';
@@ -75,7 +75,7 @@ export async function onRequestPost(context) {
 
     const arrayBuffer = await file.arrayBuffer();
 
-    // --- 3. DISPATCH PASS 1: DEEPGRAM NOVA-3 WITH KEY ROTATION ---
+    // --- 3. DISPATCH PASS 1: DEEPGRAM NOVA-3 WITH FILLER WORDS FOR MICRO-PAUSE PRECISION ---
     let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
     if (spokenLang && spokenLang !== 'auto') dgUrl += `&language=${encodeURIComponent(spokenLang)}`;
 
@@ -119,23 +119,12 @@ export async function onRequestPost(context) {
       end: Math.round(w.end * 1000),
     }));
 
-    // --- 4. CONVERT AUDIO TO BASE64 FOR GEMINI ---
-    const bytes = new Uint8Array(arrayBuffer);
-    let binary = '';
-    const len = bytes.byteLength;
-    const chunkSize = 0x8000;
-    for (let i = 0; i < len; i += chunkSize) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-    }
-    const base64Audio = btoa(binary);
-
-    // --- 5. BUILD GEMINI PROMPT & PAYLOAD ---
+    // --- 4. BUILD LIGHTWEIGHT GEMINI TEXT REFINER PROMPT & PAYLOAD (TEXT-ONLY FOR 1S SPEED) ---
     const prompt = buildPrompt(translationMode, spokenLang, useEmojis, usePunctuation, dgWords, emojiStyle);
 
     const geminiReqBody = {
       contents: [{
         parts: [
-          { inlineData: { mimeType: file.type || "audio/mp3", data: base64Audio } },
           { text: prompt }
         ]
       }],
@@ -160,8 +149,8 @@ export async function onRequestPost(context) {
       }
     };
 
-    // --- 6. DISPATCH PASS 2: GEMINI FLASH REFINER WITH RANDOM SHUFFLED KEYS ---
-    const modelsToTry = [requestedModel, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']
+    // --- 5. DISPATCH PASS 2: GEMINI FLASH REFINER (FAST VALID MODELS) ---
+    const modelsToTry = [requestedModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
       .filter((v, idx, self) => self.indexOf(v) === idx);
 
     let geminiWords = null;
@@ -196,7 +185,7 @@ export async function onRequestPost(context) {
     }
 
     if (!geminiWords) {
-      // If Gemini completely fails, fallback directly to Deepgram Nova-3 acoustic words
+      // If Gemini fails, fallback directly to Deepgram Nova-3 acoustic words
       geminiWords = roughWords.map(w => ({
         word: w.word,
         start: w.start,
@@ -206,7 +195,7 @@ export async function onRequestPost(context) {
       }));
     }
 
-    // --- 7. PASS 3: CONTINUOUS PIECEWISE ALIGNMENT GUARDRAIL ---
+    // --- 6. PASS 3: CONTINUOUS PIECEWISE ALIGNMENT GUARDRAIL ---
     const alignedWords = continuousPiecewiseAlignment(geminiWords, dgWords);
 
     const words = alignedWords.map((w, idx, arr) => {
@@ -258,7 +247,8 @@ export async function onRequestPost(context) {
 function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWords, emojiStyle) {
   const scriptPromptMap = {
     native: `transcribe the spoken words in NATIVE SCRIPT of language code '${language}'.`,
-    transliterate: `transcribe the spoken words in ROMANIZED / TANGLISH phonetic script using English letters.`,
+    transliterate: `transcribe the spoken words in ROMANIZED / TANGLISH phonetic script using English letters (e.g. "Maanu", "Thappa", "Nee sari kadaiyathu").`,
+    tanglish: `transcribe the spoken words in ROMANIZED / TANGLISH phonetic script using English letters (e.g. "Maanu", "Thappa", "Nee sari kadaiyathu").`,
     translate_english: `translate the audio accurately into ENGLISH words.`,
     translate_tamil: `translate the audio accurately into TAMIL words (Tamil script).`,
     translate_hindi: `translate the audio accurately into HINDI words (Devanagari script).`,
@@ -288,7 +278,7 @@ function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWor
   }
 
   if (useEmojis) {
-    extraInstructions += `\n- SMART CONTEXTUAL EMOJIS: Append 1 relevant emoji ONLY to key emotive words or main nouns. OMIT emojis for routine words.`;
+    extraInstructions += `\n- SMART CONTEXTUAL EMOJIS: Append 1 perfect, relevant emoji ONLY to key emotive words, sudden expressions, or main nouns (e.g., "Zara 👧", "Aiyo! 😱", "Super 🔥", "Love ❤️"). NEVER add emojis to routine words like "and", "the", "is".`;
   } else {
     extraInstructions += `\n- NO EMOJIS.`;
   }
@@ -302,18 +292,18 @@ function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWor
   return `You are an expert speech-to-text acoustic alignment engine and millisecond pronunciation timer.
 
 INPUT DATA:
-1. Audio file binary.
-2. Pass 1 baseline word timestamps (Deepgram Nova-3): ${roughWordsJson}
+1. Pass 1 baseline word timestamps (Deepgram Nova-3): ${roughWordsJson}
 
 STRICT ACOUSTIC PRONUNCIATION & MILLISECOND TIMING DIRECTIVES:
 1. Target Script: ${scriptPromptMap[translationMode] || scriptPromptMap.transliterate}
-2. ACOUSTIC SOUND BOUNDS: Align each word's "start" and "end" timestamps to when vocal sound actually starts and ends.
-3. EXTENDED VOWELS: If a word is drawn out (e.g., "sooooo"), stretch duration to match physical sound length.
-4. PAUSES: Preserve natural silence gaps between phrases.
-5. Correct wrong/misspelled words from Pass 1 while preserving sound bounds.
-${extraInstructions}
+2. ACOUSTIC SOUND BOUNDS: Align each word's "start" and "end" timestamps directly to when the speaker's vocal organs actually produce the sound:
+   - "start": Millisecond when the first vocal phoneme of the word is uttered.
+   - "end": Millisecond when the vocal sound of that word ends.
+3. EXTENDED VOWELS & CADENCE: If the speaker elongates or draws out a word (e.g., "sooooo", "ammaaaa"), stretch the (end - start) duration to cover the full physical sound length.
+4. PAUSES & BREATH BREAKS: Preserve natural silence gaps and pauses between phrases. Do not stretch words over silent gaps.
+5. Correct wrong/misspelled words from Pass 1 while keeping timestamps tightly bound to vocal sound onset/offset.${extraInstructions}
 
-Return ONLY a JSON array of objects with keys "word" (string), "start" (integer ms), "end" (integer ms), and "highlight" (boolean).`;
+Return ONLY a valid JSON array of objects with keys "word" (string), "start" (integer ms), "end" (integer ms), and "highlight" (boolean).`;
 }
 
 function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
@@ -324,19 +314,16 @@ function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
     let end = w.end;
 
     // Rule 1: Prevent overlapping with previous word's end timestamp
-    if (idx > 0) {
-      const prevEnd = geminiWords[idx - 1].end;
-      if (start < prevEnd) {
-        start = prevEnd;
-      }
+    if (idx > 0 && start < geminiWords[idx - 1].end) {
+      start = geminiWords[idx - 1].end;
     }
 
-    // Rule 2: Acoustic Guardrail - Anchor to Deepgram ground-truth if drift > 150ms
+    // Rule 2: Anchor tightly to Deepgram ground-truth acoustic sound onset if Gemini drifts > 150ms
     const sttMatch = deepgramWords[idx];
     if (sttMatch) {
       const dgStartMs = Math.round(sttMatch.start * 1000);
       const dgEndMs = Math.round(sttMatch.end * 1000);
-      
+
       if (Math.abs(start - dgStartMs) > 150) {
         const duration = Math.max(40, end - start);
         start = dgStartMs;
@@ -344,8 +331,8 @@ function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
       }
     }
 
-    // Rule 3: Reading Duration Floor - clamp minimum duration based on character length
-    const charCount = w.word?.trim()?.length || 1;
+    // Rule 3: Enforce minimum display floor based on character length
+    const charCount = w.word ? w.word.trim().length : 1;
     const minDuration = Math.max(30, Math.min(350, charCount * 22));
     if (end - start < minDuration) {
       end = start + minDuration;

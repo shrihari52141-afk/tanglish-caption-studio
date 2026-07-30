@@ -1253,13 +1253,15 @@ export default function App() {
       console.warn("Tracker meta collection failed (upload continues):", err);
     }
 
-    const doUpload = async (attempt: number) => {
+const doUpload = async (attempt: number) => {
       setState(s => ({ 
         ...s, 
-        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "Uploading to Cloudflare..."]
+        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "📤 Uploading audio to Cloudflare Pages..."]
       }));
 
       try {
+        setState(s => ({ ...s, logs: [...s.logs, "🔊 Deepgram Nova-3 analyzing audio (with filler_words=true)..."] }));
+        
         const response = await fetch('/api/transcribe', {
           method: 'POST',
           body: formData,
@@ -1270,11 +1272,15 @@ export default function App() {
           throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
 
-const data = await response.json();
+        setState(s => ({ ...s, logs: [...s.logs, "🤖 Gemini text-only refiner processing timestamps..."] }));
+
+        const data = await response.json();
 
         // Apply continuous piecewise alignment: Deepgram (roughWords) as acoustic guardrail for Gemini (rawGeminiResult)
         const roughWords = data.roughWords || [];
         const rawGeminiWords = data.rawGeminiResult || [];
+        
+        setState(s => ({ ...s, logs: [...s.logs, "🎯 Continuous piecewise alignment applied (acoustic guardrail)..."] }));
         
         let alignedWords = rawGeminiWords;
         if (roughWords.length > 0 && rawGeminiWords.length > 0) {
@@ -1317,6 +1323,8 @@ const data = await response.json();
           })
         );
 
+        setState(s => ({ ...s, logs: [...s.logs, `✅ Captions ready - ${wordsWithIds.length} words perfectly synced!`] }));
+        
         setState(s => ({ 
           ...s, 
           words: wordsWithIds, 
@@ -1660,6 +1668,31 @@ const data = await response.json();
                           <p className="text-[12px] font-bold text-center text-[#aaaaaa] uppercase tracking-wide min-h-[18px] animate-pulse">
                             {getProcessingStatusMessage()}
                           </p>
+                        </div>
+
+                        {/* Live Logs Panel */}
+                        <div className="mt-4 bg-[#0A0A0A] border border-[#252525] rounded-xl p-3 max-h-48 overflow-y-auto custom-scrollbar">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-500 flex items-center gap-1">
+                              <Terminal className="w-3 h-3" /> Live Engine Logs
+                            </span>
+                            <span className="text-[9px] font-mono text-[#555] bg-[#1a1a1a] px-2 py-0.5 rounded">
+                              {state.logs.length} entries
+                            </span>
+                          </div>
+                          <div className="flex flex-col gap-1 text-[10px] font-mono text-[#888]">
+                            {state.logs.slice(-15).map((log, i) => (
+                              <div key={i} className="flex items-start gap-2 py-0.5 border-l-2 border-transparent pl-2 hover:border-fuchsia-500/30 transition-colors">
+                                <span className="text-fuchsia-500/50 shrink-0 font-mono">›</span>
+                                <span className="text-[#aaa] truncate">{log}</span>
+                              </div>
+                            ))}
+                            {state.logs.length === 0 && (
+                              <div className="text-center text-[#555] py-4">
+                                Waiting for engine initialization...
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
