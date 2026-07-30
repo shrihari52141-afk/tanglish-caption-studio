@@ -1,19 +1,34 @@
 export async function onRequest(context) {
+  const envDetails = {};
   const geminiKeys = [];
   const dgKeys = [];
-  const foundEnvKeys = [];
 
   if (context.env) {
     for (const key in context.env) {
-      foundEnvKeys.push(key);
       const val = context.env[key];
-      if (/gemini/i.test(key) && val != null) {
-        const str = String(val).trim();
-        if (str) geminiKeys.push(...str.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
+      const type = typeof val;
+      let str = '';
+      if (val != null) {
+        if (typeof val === 'string') {
+          str = val;
+        } else if (typeof val === 'object' && val.get) {
+          try { str = await val.get(); } catch (e) { str = String(val); }
+        } else {
+          str = String(val);
+        }
       }
-      if (/deepgram/i.test(key) && val != null) {
-        const str = String(val).trim();
-        if (str) dgKeys.push(...str.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
+
+      envDetails[key] = {
+        type,
+        length: str.length,
+        prefix: str.substring(0, 6) + '...'
+      };
+
+      if (/gemini/i.test(key) && str.trim()) {
+        geminiKeys.push(...str.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
+      }
+      if (/deepgram/i.test(key) && str.trim()) {
+        dgKeys.push(...str.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
       }
     }
   }
@@ -25,9 +40,8 @@ export async function onRequest(context) {
       geminiKeysCount: geminiKeys.length,
       hasDeepgramKeys: dgKeys.length > 0,
       deepgramKeysCount: dgKeys.length,
-      foundEnvNames: foundEnvKeys,
+      envDetails,
       primaryModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
       timestamp: new Date().toISOString()
     }, null, 2),
     {
