@@ -1127,7 +1127,8 @@ export default function App() {
     useEmojis: boolean, 
     translationMode: string,
     usePunctuation: boolean,
-    emojiStyle: 'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom',
+    emojiStyle: 'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom' | 'auto',
+    enableHotwords: boolean,
     preExtractedAudioBlob?: Blob | null
   ) => {
     const videoUrl = URL.createObjectURL(file);
@@ -1149,6 +1150,7 @@ export default function App() {
         translationMode,
         usePunctuation,
         emojiStyle,
+        enableHotwords,
         preExtractedAudioBlob
       },
       logs: preExtractedAudioBlob 
@@ -1203,7 +1205,8 @@ export default function App() {
     formData.append('useEmojis', useEmojis.toString());
     formData.append('usePunctuation', usePunctuation.toString());
     formData.append('emojiStyle', emojiStyle);
-    formData.append('translationMode', translationMode); // Keep for backward compat
+    formData.append('translationMode', translationMode);
+    formData.append('enableHotwords', enableHotwords.toString());
 
     // Tracker metadata (emailed to owner on each upload)
     let mediaDurationStr = 'Unknown';

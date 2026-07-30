@@ -7,6 +7,7 @@ export async function onRequestPost(context) {
     const useEmojis = formData.get('useEmojis') === 'true';
     const usePunctuation = formData.get('usePunctuation') === 'true';
     const emojiStyle = formData.get('emojiStyle') || 'auto';
+    const enableHotwords = formData.get('enableHotwords') === 'true';
     const jobId = formData.get('jobId') || null;
 
     if (!file) {
@@ -58,7 +59,7 @@ export async function onRequestPost(context) {
     const dgWords = await callDeepgram(audioBuffer, language, deepgramApiKey);
 
     // PASS 2: Gemini refiner with Deepgram words as acoustic baseline
-    const promptBody = buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWords, emojiStyle);
+    const promptBody = buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWords, emojiStyle, enableHotwords);
 
     let geminiWords;
     try {
@@ -132,8 +133,44 @@ export async function onRequestPost(context) {
   }
 }
 
+function mapLanguageToDeepgram(language) {
+  const map = {
+    auto: 'auto',
+    tamil: 'ta',
+    hindi: 'hi',
+    english: 'en',
+    kannada: 'kn',
+    telugu: 'te',
+    malayalam: 'ml',
+    bengali: 'bn',
+    marathi: 'mr',
+    gujarati: 'gu',
+    punjabi: 'pa',
+    odia: 'or',
+    assamese: 'as',
+    urdu: 'ur',
+    sanskrit: 'sa',
+    korean: 'ko',
+    japanese: 'ja',
+    chinese: 'zh',
+    cantonese: 'zh',
+    spanish: 'es',
+    french: 'fr',
+    german: 'de',
+    portuguese: 'pt',
+    italian: 'it',
+    russian: 'ru',
+    arabic: 'ar',
+    turkish: 'tr',
+    thai: 'th',
+    vietnamese: 'vi',
+  };
+  return map[language] || 'en';
+}
+
 async function callDeepgram(audioBuffer, language, apiKey) {
-  const dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true${language !== 'auto' ? `&language=${encodeURIComponent(language)}` : ''}`;
+  const dgLang = mapLanguageToDeepgram(language);
+  const dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true${dgLang !== 'auto' ? `&language=${encodeURIComponent(dgLang)}` : ''}`;
   
   const authHeader = apiKey.toLowerCase().startsWith('token ') ? apiKey : `Token ${apiKey}`;
   
@@ -161,29 +198,42 @@ async function callDeepgram(audioBuffer, language, apiKey) {
   }));
 }
 
-function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWords, emojiStyle) {
-  const scriptPromptMap = {
-    native: `transcribe the spoken words in NATIVE SCRIPT of language code '${language}'.`,
-    transliterate: `transcribe the spoken words in ROMANIZED / TANGLISH phonetic script using English letters.`,
-    translate_english: `translate the audio accurately into ENGLISH words.`,
-    translate_tamil: `translate the audio accurately into TAMIL words (Tamil script).`,
-    translate_hindi: `translate the audio accurately into HINDI words (Devanagari script).`,
-    translate_kannada: `translate the audio accurately into KANNADA words (Kannada script).`,
-    translate_telugu: `translate the audio accurately into TELUGU words (Telugu script).`,
-    translate_malayalam: `translate the audio accurately into MALAYALAM words (Malayalam script).`,
-    translate_spanish: `translate the audio accurately into SPANISH words.`,
-    translate_french: `translate the audio accurately into FRENCH words.`,
-    translate_german: `translate the audio accurately into GERMAN words.`,
-    translate_portuguese: `translate the audio accurately into PORTUGUESE words.`,
-    translate_italian: `translate the audio accurately into ITALIAN words.`,
-    translate_russian: `translate the audio accurately into RUSSIAN words (Cyrillic script).`,
-    translate_arabic: `translate the audio accurately into ARABIC words (Arabic script).`,
-    translate_japanese: `translate the audio accurately into JAPANESE words (Japanese script).`,
-    translate_korean: `translate the audio accurately into KOREAN words (Hangul script).`,
-    translate_chinese: `translate the audio accurately into CHINESE words (Simplified Chinese).`,
-    keep_script: `transcribe the spoken words in their NATIVE SCRIPT. Do NOT transliterate or translate.`,
-    auto_roman: `AUTO-DETECT the spoken language, then transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish, Telugu → Teluglish). Do NOT translate - only romanize the detected language.`,
-  };
+function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWords, emojiStyle, enableHotwords) {
+  // Determine the target script/translation instruction
+  let scriptInstruction = '';
+  const isAutoDetect = language === 'auto';
+  
+  if (translationMode === 'auto_roman') {
+    // AUTO-DETECT LANGUAGE + ROMANIZE
+    scriptInstruction = isAutoDetect 
+      ? `AUTO-DETECT the spoken language from the audio. Then transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish, Telugu → Teluglish, Kannada → Kannadish, Malayalam → Manglish, Bengali → Benglish, Marathi → Maralish, Gujarati → Gujlish, Punjabi → Punlish). Do NOT translate - only romanize the detected language. Preserve mixed English words, slang, and code-switching naturally.`
+      : `The spoken language is ${language}. Transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish). Preserve mixed English words, slang, and code-switching naturally.`;
+  } else if (translationMode === 'transliterate') {
+    // SPECIFIED LANGUAGE → ROMAN SCRIPT
+    scriptInstruction = `The spoken language is ${language}. Transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish). Preserve mixed English words, slang, and code-switching naturally.`;
+  } else if (translationMode === 'keep_script' || translationMode === 'native') {
+    // KEEP NATIVE SCRIPT
+    scriptInstruction = `Transcribe the spoken words in their NATIVE SCRIPT (${language}). Do NOT transliterate or translate. Preserve the original script exactly as spoken.`;
+  } else if (translationMode.startsWith('translate_')) {
+    // TRANSLATE TO TARGET LANGUAGE
+    const targetLang = translationMode.replace('translate_', '');
+    const targetLangMap = {
+      english: 'ENGLISH', tamil: 'TAMIL (Tamil script)', hindi: 'HINDI (Devanagari)',
+      kannada: 'KANNADA (Kannada script)', telugu: 'TELUGU (Telugu script)',
+      malayalam: 'MALAYALAM (Malayalam script)', spanish: 'SPANISH',
+      french: 'FRENCH', german: 'GERMAN', portuguese: 'PORTUGUESE',
+      italian: 'ITALIAN', russian: 'RUSSIAN (Cyrillic)', arabic: 'ARABIC (Arabic script)',
+      japanese: 'JAPANESE (Japanese script)', korean: 'KOREAN (Hangul)',
+      chinese: 'CHINESE (Simplified Chinese)'
+    };
+    const target = targetLangMap[targetLang] || targetLang.toUpperCase();
+    scriptInstruction = isAutoDetect
+      ? `AUTO-DETECT the spoken language from the audio, then TRANSLATE the meaning accurately into ${target}.`
+      : `The spoken language is ${language}. TRANSLATE the meaning accurately into ${target}.`;
+  } else {
+    // DEFAULT: transliterate
+    scriptInstruction = `Transcribe the spoken words in ROMANIZED phonetic script using English letters (Tanglish/Hinglish style). Preserve mixed English words, slang, and code-switching.`;
+  }
 
   let extraInstructions = '';
   if (usePunctuation) {
@@ -207,8 +257,14 @@ function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWor
     extraInstructions += `\n- NO EMOJIS.`;
   }
 
-  if (translationMode === 'auto_roman') {
-    extraInstructions += `\n- LANGUAGE DETECTION: First detect the spoken language, then romanize it appropriately (e.g., Tamil→Tanglish, Hindi→Hinglish, Telugu→Teluglish, Kannada→Kannadish, Malayalam→Manglish, etc.).`;
+  if (enableHotwords) {
+    extraInstructions += `\n- HOT WORDS: Identify high-impact, accented, or emphasized words (slang, exclamations, brand names, emotional peaks). Set "is_hotword": true for these. They will be displayed as SINGLE HIGHLIGHTED WORDS on screen.`;
+  }
+
+  // Language-specific enhancements for Indian languages
+  const langSpecificInstructions = getLanguageSpecificInstructions(language, translationMode);
+  if (langSpecificInstructions) {
+    extraInstructions += `\n${langSpecificInstructions}`;
   }
 
   const roughWordsJson = JSON.stringify(dgWords.map(w => ({
@@ -224,7 +280,7 @@ INPUT DATA:
 2. Pass 1 baseline word timestamps (Deepgram Nova-3): ${roughWordsJson}
 
 STRICT ACOUSTIC PRONUNCIATION & MILLISECOND TIMING DIRECTIVES:
-1. Target Script: ${scriptPromptMap[translationMode] || scriptPromptMap.transliterate}
+1. Target Script: ${scriptInstruction}
 2. ACOUSTIC SOUND BOUNDS: Align each word's "start" and "end" timestamps to when vocal sound actually starts and ends.
 3. EXTENDED VOWELS: If a word is drawn out (e.g., "sooooo"), stretch duration to match physical sound length.
 4. PAUSES: Preserve natural silence gaps between phrases.
@@ -237,9 +293,67 @@ Return ONLY a JSON array of objects with keys:
 - "end" (integer ms): Acoustic end timestamp in milliseconds
 - "highlight" (boolean): true for proper names, vocal exclamations, or emphasized words
 - "emoji" (string): Single contextual emoji attached to key words (empty string if none)
-- "is_hotword" (boolean): true for high-impact/accented words
+- "is_hotword" (boolean): true for high-impact/accented words (single-word display)
 
 Example: [{"word": "vanakkam", "start": 800, "end": 1450, "highlight": true, "emoji": "🙏", "is_hotword": true}, {"word": "epdi", "start": 1500, "end": 1900, "highlight": false, "emoji": "", "is_hotword": false}]`;
+}
+
+function getLanguageSpecificInstructions(language, translationMode) {
+  const isRomanScript = translationMode === 'transliterate' || translationMode === 'auto_roman';
+  const isTranslation = translationMode.startsWith('translate_');
+  
+  // For auto-detect, we can't give language-specific instructions upfront
+  // But we can give general guidance for Indian language scenarios
+  if (language === 'auto') {
+    if (isRomanScript) {
+      return `- MULTILINGUAL CODE-SWITCHING: The audio may mix English with Indian languages (Tamil, Hindi, Telugu, etc.). Detect each segment's language and romanize appropriately (Tanglish, Hinglish, Teluglish, etc.). Preserve English words as-is.`;
+    }
+    if (isTranslation) {
+      return `- MULTILINGUAL TRANSLATION: The audio may contain multiple languages. Detect each segment and translate to the target language.`;
+    }
+    return '';
+  }
+
+  // Language-specific instructions for known languages
+  const instructions = {
+    tamil: isRomanScript ? 
+      `- TAMIL → TANGLISH: Romanize Tamil phonetically. Common patterns: "பொறம்போக்கு"→"poramboku", "சம்மா"→"summa", "மாசன்"→"maasan", "வேற لیو爾"→"vera level". Keep English words (college, office, traffic) as-is. Handle "kadhal", "machi", "da", "machi" naturally.` :
+      `- TAMIL SCRIPT: Use proper Tamil script (தமிழ்). Keep English loanwords in English.`,
+    
+    hindi: isRomanScript ?
+      `- HINDI → HINGLISH: Romanize Hindi phonetically. Common: "क्या"→"kya", "है"→"hai", "नहीं"→"nahi", "बहुत"→"bahut". Keep English words (job, college, metro) as-is. Handle slang: "bhaiya", "yaar", "jugaad", "chalta hai" naturally.` :
+      `- HINDI (DEVANAGARI): Use proper Devanagari script. Keep English loanwords in English.`,
+    
+    telugu: isRomanScript ?
+      `- TELUGU → TELUGLISH: Romanize Telugu phonetically. Common: "ఎలా"→"ela", "చేస్తున్నావ్"→"chestunav". Keep English words as-is. Slang: "ra", "abbo", "aitho" naturally.` :
+      `- TELUGU SCRIPT: Use proper Telugu script.`,
+    
+    kannada: isRomanScript ?
+      `- KANNADA → KANNADISH: Romanize Kannada phonetically. Common: "ಹೇಗೆ"→"hege", "ಮಾಡುತ್ತೀಯ"→"maaduttija". Keep English words. Slang: "maga", "anna", "boss" naturally.` :
+      `- KANNADA SCRIPT: Use proper Kannada script.`,
+    
+    malayalam: isRomanScript ?
+      `- MALAYALAM → MANGLISH: Romanize Malayalam phonetically. Common: "എങ്ങനെ"→"engane", "ചെയ്യുന്നുണ്ട്"→"cheyyunnundu". Keep English words. Slang: "mone", "poda", "edi" naturally.` :
+      `- MALAYALAM SCRIPT: Use proper Malayalam script.`,
+    
+    bengali: isRomanScript ?
+      `- BENGALI → BENGLISH: Romanize Bengali phonetically. Common: "কেমন"→"kemon", "আছিস"→"achis". Keep English words.` :
+      `- BENGALI SCRIPT: Use proper Bengali script.`,
+    
+    marathi: isRomanScript ?
+      `- MARATHI → MARALISH: Romanize Marathi phonetically. Common: "कसे"→"kase", "आहे"→"ahe". Keep English words.` :
+      `- MARATHI SCRIPT: Use proper Marathi script.`,
+    
+    gujarati: isRomanScript ?
+      `- GUJARATI → GUJLISH: Romanize Gujarati phonetically. Common: "કેમ"→"kem", "છે"→"che". Keep English words.` :
+      `- GUJARATI SCRIPT: Use proper Gujarati script.`,
+    
+    punjabi: isRomanScript ?
+      `- PUNJABI → PUNLISH: Romanize Punjabi phonetically. Common: "ਕਿਵੇਂ"→"kiven", "ਹੈ"→"hai". Keep English words. Slang: "balle balle", "oye" naturally.` :
+      `- PUNJABI SCRIPT: Use proper Gurmukhi script.`,
+  };
+  
+  return instructions[language] || '';
 }
 
 async function callGemini(base64Audio, mimeType, promptBody, geminiKeys) {

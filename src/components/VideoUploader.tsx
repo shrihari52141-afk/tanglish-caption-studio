@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Upload, Loader2, Sparkles, Languages, Smile, ChevronLeft, Check, Video, FileAudio } from 'lucide-react';
+import { Upload, Loader2, Sparkles, Languages, Smile, ChevronLeft, Check, Video, FileAudio, Zap } from 'lucide-react';
 import { extractAudioTrack } from '../utils/audioExtractor';
 
 function formatFileSize(bytes: number): string {
@@ -10,13 +10,14 @@ function formatFileSize(bytes: number): string {
 }
 
 interface VideoUploaderProps {
-  onUpload: (
-    file: File, 
-    language: string, 
-    useEmojis: boolean, 
-    translationMode: string, 
+onUpload: (
+    file: File,
+    language: string,
+    useEmojis: boolean,
+    translationMode: string,
     usePunctuation: boolean,
     emojiStyle: 'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom' | 'auto',
+    enableHotwords: boolean,
     preExtractedAudioBlob?: Blob | null
   ) => void;
   isProcessing: boolean;
@@ -51,6 +52,10 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
   const [emojiStyle, setEmojiStyle] = useState<'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom' | 'auto'>(() => {
     return (localStorage.getItem('saved_emojiStyle') as any) || 'auto';
   });
+  const [enableHotwords, setEnableHotwords] = useState<boolean>(() => {
+    const val = localStorage.getItem('saved_enableHotwords');
+    return val !== null ? val === 'true' : false;
+  });
 
   useEffect(() => {
     localStorage.setItem('saved_selectedLanguage', selectedLanguage);
@@ -71,6 +76,10 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
   useEffect(() => {
     localStorage.setItem('saved_emojiStyle', emojiStyle);
   }, [emojiStyle]);
+
+  useEffect(() => {
+    localStorage.setItem('saved_enableHotwords', String(enableHotwords));
+  }, [enableHotwords]);
 
   const [showEmojiModal, setShowEmojiModal] = useState<boolean>(false);
   const [extractedAudioBlob, setExtractedAudioBlob] = useState<Blob | null>(null);
@@ -135,7 +144,7 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
 
   const handleGenerate = () => {
     if (selectedFile) {
-      onUpload(selectedFile, selectedLanguage, useEmojis, translationMode, usePunctuation, emojiStyle, extractedAudioBlob);
+      onUpload(selectedFile, selectedLanguage, useEmojis, translationMode, usePunctuation, emojiStyle, enableHotwords, extractedAudioBlob);
     }
   };
 
@@ -267,10 +276,69 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
                 <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
                   <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
                 </svg>
-              </div>
-            </div>
-          </div>
+</div>
+        </div>
 
+        {/* Hot Words Toggle */}
+        <div className="pt-4 border-t border-[#252525]">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap className="w-5 h-5 text-fuchsia-500" />
+            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
+              Hot Words Highlight
+            </h3>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setEnableHotwords(true)}
+              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+                enableHotwords
+                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md'
+                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                  Enable Hot Words 🔥
+                </span>
+                {enableHotwords && (
+                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
+                    <Check className="w-3 h-3" />
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
+                Highlight slang, exclamations & brand names as single bold words.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEnableHotwords(false)}
+              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+                !enableHotwords
+                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md'
+                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                  Standard Words 🚫
+                </span>
+                {!enableHotwords && (
+                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
+                    <Check className="w-3 h-3" />
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
+                Regular word-by-word display without special highlighting.
+              </p>
+            </button>
+          </div>
+        </div>
+
+      </div>
           {/* Translation Mode */}
           <div className="space-y-2">
             <label className="text-[11px] font-black uppercase tracking-wider text-[#aaa] flex items-center gap-1.5">
@@ -476,10 +544,70 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
               </p>
             </button>
           </div>
+</div>
         </div>
-      </div>
 
-      {/* Footer containing Background Extraction status and Generate Button (shrink-0) */}
+        {/* Hot Words Selection */}
+        <div className="pt-4 border-t border-[#252525]">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap className="w-5 h-5 text-fuchsia-500" />
+            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
+              Hot Words (Single-Word Highlight)
+            </h3>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setEnableHotwords(true)}
+              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+                enableHotwords 
+                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
+                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                  Hot Words ⚡
+                </span>
+                {enableHotwords && (
+                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
+                    <Check className="w-3 h-3" />
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
+                AI highlights slang, exclamations & brand names as single impact words.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEnableHotwords(false)}
+              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+                !enableHotwords 
+                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
+                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                  Normal Words 🚫
+                </span>
+                {!enableHotwords && (
+                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
+                    <Check className="w-3 h-3" />
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
+                Standard word-by-word subtitle rendering.
+              </p>
+            </button>
+          </div>
+        </div>
+
+        {/* Footer containing Background Extraction status and Generate Button (shrink-0) */}
       <div style={{ marginTop: '1px', paddingTop: '4px' }} className="p-4 sm:p-5 bg-[#0E0E0E] border-t border-[#252525] shrink-0 flex flex-col gap-3">
         {extractionStatus && (
           <div className="flex flex-col gap-2">
