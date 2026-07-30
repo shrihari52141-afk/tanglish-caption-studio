@@ -20,7 +20,7 @@ export async function onRequestPost(context) {
     let rawDgInput = formData.get('deepgramApiKey') || '';
     if (context.env) {
       for (const k in context.env) {
-        if (/deepgram/i.test(k) && context.env[k] != null) {
+        if (/deepgram/i.test(k) && context.env[k]) {
           rawDgInput += ` ${String(context.env[k])}`;
         }
       }
@@ -40,15 +40,32 @@ export async function onRequestPost(context) {
     let rawGeminiInput = formData.get('geminiApiKey') || '';
     if (context.env) {
       for (const k in context.env) {
-        if (/gemini/i.test(k) && context.env[k] != null) {
-          rawGeminiInput += ` ${String(context.env[k])}`;
+        if (/gemini/i.test(k) && context.env[k]) {
+          const strVal = String(context.env[k]).trim();
+          if (strVal) rawGeminiInput += ` ${strVal}`;
         }
       }
     }
-    const geminiKeys = rawGeminiInput.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean);
+    let geminiKeys = rawGeminiInput.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean);
+
+    // Fallback: If Cloudflare environment variable GEMINI_API_KEYS is empty, fetch remote-config pool
+    if (!geminiKeys.length) {
+      try {
+        const remoteRes = await fetch("https://raw.githubusercontent.com/shrihari52141-afk/tanglish-caption-studio/main/remote-config.json");
+        if (remoteRes.ok) {
+          const remoteJson = await remoteRes.json();
+          const remoteKeyStr = remoteJson?.GEMINI_API_KEY || remoteJson?.GEMINI_API_KEYS || '';
+          if (remoteKeyStr) {
+            geminiKeys = remoteKeyStr.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean);
+          }
+        }
+      } catch (err) {
+        console.warn("Remote key pool fetch failed:", err);
+      }
+    }
 
     if (!geminiKeys.length) {
-      return new Response(JSON.stringify({ error: 'Missing Gemini API key. Set GEMINI_API_KEYS or GEMINI_API_KEY in Cloudflare Pages environment variables or upload form.' }), {
+      return new Response(JSON.stringify({ error: 'Missing Gemini API key. Set GEMINI_API_KEYS in Cloudflare Pages environment variables or upload form.' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
