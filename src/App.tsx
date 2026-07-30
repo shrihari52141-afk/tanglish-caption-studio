@@ -1276,19 +1276,27 @@ const doUpload = async (attempt: number) => {
 
         const data = await response.json();
 
-        // Apply continuous piecewise alignment: Deepgram (roughWords) as acoustic guardrail for Gemini (rawGeminiResult)
-        const roughWords = data.roughWords || [];
-        const rawGeminiWords = data.rawGeminiResult || [];
+        // Safely extract words array from server response
+        const roughWords = Array.isArray(data.roughWords) ? data.roughWords : [];
+        const rawWordsArray = Array.isArray(data.words)
+          ? data.words
+          : (Array.isArray(data.alignedWords)
+              ? data.alignedWords
+              : (Array.isArray(data.rawGeminiResult)
+                  ? data.rawGeminiResult
+                  : (data.rawGeminiResult?.segments
+                      ? data.rawGeminiResult.segments.flatMap((s: any) => (s.words || []).map((w: any) => ({ ...w, emoji: s.emoji || '' })))
+                      : [])));
         
         setState(s => ({ ...s, logs: [...s.logs, "🎯 Continuous piecewise alignment applied (acoustic guardrail)..."] }));
         
-        let alignedWords = rawGeminiWords;
-        if (roughWords.length > 0 && rawGeminiWords.length > 0) {
-          alignedWords = continuousPiecewiseAlignment(rawGeminiWords, roughWords);
+        let alignedWords = rawWordsArray;
+        if (roughWords.length > 0 && rawWordsArray.length > 0) {
+          alignedWords = continuousPiecewiseAlignment(rawWordsArray, roughWords);
         }
 
         // Extract raw words list
-        const rawWordsList = alignedWords;
+        const rawWordsList = Array.isArray(alignedWords) ? alignedWords : [];
 
         const wordsWithIds = sanitizeCaptionWords(
           rawWordsList.map((w: any, i: number, arr: any[]) => {
