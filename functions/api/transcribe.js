@@ -17,7 +17,12 @@ export async function onRequestPost(context) {
     }
 
     // --- 1. EXTRACT AND RANDOM SHUFFLE DEEPGRAM API KEYS (Supports 10+ Keys) ---
-    const rawDgInput = formData.get('deepgramApiKey') || context.env.DEEPGRAM_API_KEY || '';
+    let rawDgInput = formData.get('deepgramApiKey') || context.env?.DEEPGRAM_API_KEY || context.env?.VITE_DEEPGRAM_API_KEY || '';
+    if (!rawDgInput && context.env) {
+      for (const k in context.env) {
+        if (k.startsWith('DEEPGRAM_')) rawDgInput += ` ${context.env[k]}`;
+      }
+    }
     const dgKeys = rawDgInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
 
     if (!dgKeys.length) {
@@ -31,11 +36,16 @@ export async function onRequestPost(context) {
     const shuffledDgKeys = [...dgKeys].sort(() => Math.random() - 0.5);
 
     // --- 2. EXTRACT AND RANDOM SHUFFLE GEMINI API KEYS ---
-    const rawGeminiInput = formData.get('geminiApiKey') || context.env.GEMINI_API_KEYS || context.env.GEMINI_API_KEY || '';
+    let rawGeminiInput = formData.get('geminiApiKey') || context.env?.GEMINI_API_KEYS || context.env?.GEMINI_API_KEY || context.env?.VITE_GEMINI_API_KEY || '';
+    if (!rawGeminiInput && context.env) {
+      for (const k in context.env) {
+        if (k.startsWith('GEMINI_')) rawGeminiInput += ` ${context.env[k]}`;
+      }
+    }
     const geminiKeys = rawGeminiInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
 
     if (!geminiKeys.length) {
-      return new Response(JSON.stringify({ error: 'Missing Gemini API key. Provide GEMINI_API_KEYS in environment or upload form.' }), {
+      return new Response(JSON.stringify({ error: 'Missing Gemini API key. Set GEMINI_API_KEYS in Cloudflare Pages environment variables or upload form.' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });

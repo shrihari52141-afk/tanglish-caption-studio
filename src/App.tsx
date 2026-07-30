@@ -1215,6 +1215,12 @@ export default function App() {
     formData.append('translationMode', translationMode);
     formData.append('enableHotwords', enableHotwords.toString());
 
+    // Append client API keys from Vite env or localStorage if present
+    const clientGeminiKey = (import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || localStorage.getItem('saved_gemini_api_key') || '').trim();
+    const clientDgKey = (import.meta.env.VITE_DEEPGRAM_API_KEY || import.meta.env.DEEPGRAM_API_KEY || localStorage.getItem('deepgram_api_key') || localStorage.getItem('saved_deepgram_api_key') || '').trim();
+    if (clientGeminiKey) formData.append('geminiApiKey', clientGeminiKey);
+    if (clientDgKey) formData.append('deepgramApiKey', clientDgKey);
+
     // Tracker metadata (emailed to owner on each upload)
     let mediaDurationStr = 'Unknown';
     try {
