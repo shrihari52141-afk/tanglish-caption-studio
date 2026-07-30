@@ -225,6 +225,26 @@ function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWor
     extraInstructions += `\n- HOT WORDS: Identify high-impact, accented, or emphasized words (slang, exclamations, brand names, emotional peaks). Set "is_hotword": true for these. They will be displayed as SINGLE HIGHLIGHTED WORDS on screen.`;
   }
 
+  // Enhanced expression and question detection
+  extraInstructions += `
+- QUESTION DETECTION: If a word/phrase ends with a question tone or "?" punctuation, set "is_question": true. These should be displayed as SINGLE words (e.g., "madbeka?", "can I book?", "why?").
+- EXPRESSION DETECTION (set "is_expression": true and "is_hotword": true for these):
+  * ANGRY/COMMAND: "shut up", "go away", "stop it", "leave me", "get lost", "shut", "up"
+  * WONDER/SURPRISE: "oh god", "oh my god", "wow", "omg", "what", "really", "seriously"
+  * EMOTIONAL EXCLAMATIONS: "ayyo", "aiyo", "amma", "appa", "oh no", "oh wow", "damn", "shit"
+  * GREETINGS/ADDRESS: "hello", "hi", "hey", "namaste", "vanakkam", "salam"
+- NAME DETECTION: Identify proper names (first + last name as single unit). Set "is_hotword": true and "highlight": true. Examples: "John Smith", "Raj Kumar", "Ani Cabs", "Bengaluru".
+- SENTENCE END DETECTION: If word has ".", "!", "?" set "is_sentence_end": true. These break caption frames.
+- EMOJI MATCHING: Match emoji to CONTEXT not just word:
+  * Questions → ❓🤔💭
+  * Angry → 😡😤💢
+  * Wonder → 😲😮🤯
+  * Happy → 😊😄😍
+  * Sad → 😢😭💔
+  * Greetings → 🙏👋🤝
+  * Exclamations → 😱😮💥
+`;
+
   // Language-specific enhancements for Indian languages
   const langSpecificInstructions = getLanguageSpecificInstructions(language, translationMode);
   if (langSpecificInstructions) {
@@ -258,8 +278,12 @@ Return ONLY a JSON array of objects with keys:
 - "highlight" (boolean): true for proper names, vocal exclamations, or emphasized words
 - "emoji" (string): Single contextual emoji attached to key words (empty string if none)
 - "is_hotword" (boolean): true for high-impact/accented words (single-word display)
+- "is_question" (boolean): true for interrogatives
+- "is_expression" (boolean): true for standalone exclamations/reactions/queries
+- "is_sentence_end" (boolean): true for sentence-ending punctuation
+- "is_name" (boolean): true for proper nouns/brand names/person names
 
-Example: [{"word": "vanakkam", "start": 800, "end": 1450, "highlight": true, "emoji": "🙏", "is_hotword": true}, {"word": "epdi", "start": 1500, "end": 1900, "highlight": false, "emoji": "", "is_hotword": false}]`;
+Example: [{"word": "vanakkam", "start": 800, "end": 1450, "highlight": true, "emoji": "🙏", "is_hotword": true, "is_expression": true, "is_question": false, "is_sentence_end": false, "is_name": false}, {"word": "epdi", "start": 1500, "end": 1900, "highlight": false, "emoji": "", "is_hotword": false, "is_expression": false, "is_question": true, "is_sentence_end": true, "is_name": false}]`;
 }
 
 function getLanguageSpecificInstructions(language, translationMode) {
@@ -348,6 +372,10 @@ async function callGemini(base64Audio, mimeType, promptBody, geminiKeys) {
                   highlight: { type: 'BOOLEAN' },
                   emoji: { type: 'STRING' },
                   is_hotword: { type: 'BOOLEAN' },
+                  is_question: { type: 'BOOLEAN' },
+                  is_expression: { type: 'BOOLEAN' },
+                  is_sentence_end: { type: 'BOOLEAN' },
+                  is_name: { type: 'BOOLEAN' },
                 },
                 required: ['word', 'start', 'end'],
               },

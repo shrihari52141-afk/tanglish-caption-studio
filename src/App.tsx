@@ -1358,6 +1358,33 @@ export default function App() {
     }));
   };
 
+  const handleRetry = () => {
+    const params = state.lastUploadParams;
+    if (!params) return;
+    
+    setState(s => ({ 
+      ...s, 
+      hasFailed: false,
+      isProcessing: true,
+      isTransliterating: true,
+      logs: [...s.logs, "Retrying subtitle generation..."]
+    }));
+    
+    // Small delay to ensure state update
+    setTimeout(() => {
+      handleUpload(
+        params.file,
+        params.language,
+        params.useEmojis,
+        params.translationMode,
+        params.usePunctuation,
+        params.emojiStyle,
+        params.enableHotwords || false,
+        params.preExtractedAudioBlob
+      );
+    }, 100);
+  };
+
   const handleTimeUpdate = (time: number) => {
     setState(s => ({ ...s, currentTime: time }));
   };

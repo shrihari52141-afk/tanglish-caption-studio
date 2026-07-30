@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { CaptionWord, SubtitleStyleSettings } from '../types';
 import { Move, ZoomIn, ZoomOut, RotateCw, Edit3, Check, X, ShieldAlert, Play, Pause, RotateCcw } from 'lucide-react';
 import { applyCaptionFormatting, stripASSTags, generateCaptionFrames } from '../utils/captionFormatter';
@@ -49,6 +49,17 @@ export default function VideoPlayer({
   const [containerWidth, setContainerWidth] = useState<number>(340);
   const [localTime, setLocalTime] = useState(currentTime);
   const [highlightedWordId, setHighlightedWordId] = useState<string | null>(null);
+  const wordsRef = useRef(words);
+  const highlightedWordIdRef = useRef<string | null>(null);
+
+  // Keep refs in sync
+  useEffect(() => {
+    wordsRef.current = words;
+  }, [words]);
+
+  useEffect(() => {
+    highlightedWordIdRef.current = highlightedWordId;
+  }, [highlightedWordId]);
 
   // requestAnimationFrame loop for word-level millisecond sync.
   // Throttled to ~30fps (every 2 frames) to avoid overwhelming low-end phones.
@@ -64,10 +75,16 @@ export default function VideoPlayer({
       // light enough for low-end devices.
       if (frameCount % 2 === 0) {
         const t = video.currentTime;
-        setLocalTime(t);
+        // Use ref for localTime to avoid state update on every frame
+        // Only update state periodically (every ~1 second) for UI sync
+        if (frameCount % 60 === 0) {
+          setLocalTime(t);
+        }
+        
         let found: string | null = null;
-        for (let i = 0; i < words.length; i++) {
-          const w = words[i];
+        const currentWords = wordsRef.current;
+        for (let i = 0; i < currentWords.length; i++) {
+          const w = currentWords[i];
           const pauseSec = (w.pause_after_ms || 0) / 1000;
           const holdUntil = w.end_time + pauseSec;
           if (t >= w.start_time && t < holdUntil) {
@@ -75,25 +92,16 @@ export default function VideoPlayer({
             break;
           }
         }
-        setHighlightedWordId(found);
+        // Only update state if highlighted word actually changed
+        if (found !== highlightedWordIdRef.current) {
+          highlightedWordIdRef.current = found;
+          setHighlightedWordId(found);
+        }
       }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [videoUrl, words]);
-
-  // Phase 4: Fallback interval for low-end phones where RAF may drop frames.
-  // This safety net fires at 10Hz to ensure localTime never gets stuck.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const fallback = setInterval(() => {
-      if (!video.paused) {
-        setLocalTime(video.currentTime);
-      }
-    }, 100);
-    return () => clearInterval(fallback);
   }, [videoUrl]);
 
   const scaleFactor = containerWidth / 340;
@@ -350,23 +358,29 @@ export default function VideoPlayer({
   })();
 
   // Construct displayWords based on styleSettings.maxWordsPerScreen in a stable chunked block
-  const displayWords = (() => {
+  const displayWords = useMemo(() => {
     if (words.length === 0) return [];
     const frames = generateCaptionFrames(words, styleSettings.maxWordsPerScreen);
     const validIndex = Math.max(0, Math.min(activeWordIndex, words.length - 1));
     const targetWord = words[validIndex];
     if (!targetWord) return frames[0] || [];
     return frames.find(frame => frame.some(w => w.id === targetWord.id)) || frames[0] || [];
-  })();
+  }, [words, styleSettings.maxWordsPerScreen, activeWordIndex]);
 
-  const formatWordText = (text: string) => {
+  const formatWordText = (word: CaptionWord) => {
     // Always strip ASS tags first so layout codes never paint as caption text
     let formatted = applyCaptionFormatting(
-      stripASSTags(text),
+      stripASSTags(word.word),
       styleSettings.showEmojis !== false,
       styleSettings.showPunctuation !== false,
       styleSettings.emojiStyle || 'vibes'
     );
+    
+    // Include emoji from API response if present
+    if (word.emoji && styleSettings.showEmojis !== false) {
+      formatted = `${formatted} ${word.emoji}`;
+    }
+    
     if (styleSettings.capitalization === 'all') return formatted.toUpperCase();
     if (styleSettings.capitalization === 'lower') return formatted.toLowerCase();
     if (styleSettings.capitalization === 'sentence') {
@@ -587,7 +601,7 @@ export default function VideoPlayer({
                   className="relative group"
                 >
                   <span style={itemStyle} className={itemClassName}>
-                    {formatWordText(w.word)}
+                    {formatWordText(w)}
                   </span>
                 </div>
               );
