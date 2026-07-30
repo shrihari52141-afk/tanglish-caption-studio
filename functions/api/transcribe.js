@@ -16,30 +16,35 @@ export async function onRequestPost(context) {
       });
     }
 
-    // --- 1. EXTRACT AND RANDOM SHUFFLE DEEPGRAM API KEYS (Supports 10+ Keys) ---
-    let rawDgInput = formData.get('deepgramApiKey') || context.env?.DEEPGRAM_API_KEY || context.env?.VITE_DEEPGRAM_API_KEY || '';
-    if (!rawDgInput && context.env) {
+    // --- 1. EXTRACT AND RANDOM SHUFFLE DEEPGRAM API KEYS ---
+    let rawDgInput = formData.get('deepgramApiKey') || '';
+    if (context.env) {
       for (const k in context.env) {
-        if (k.startsWith('DEEPGRAM_')) rawDgInput += ` ${context.env[k]}`;
+        if (k.includes('DEEPGRAM')) {
+          const val = context.env[k];
+          if (val) rawDgInput += ` ${val}`;
+        }
       }
     }
     const dgKeys = rawDgInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
 
     if (!dgKeys.length) {
-      return new Response(JSON.stringify({ error: 'Missing Deepgram API key. Provide DEEPGRAM_API_KEY in environment or upload form.' }), {
+      return new Response(JSON.stringify({ error: 'Missing Deepgram API key. Set DEEPGRAM_API_KEY in Cloudflare Pages environment variables or upload form.' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    // Random shuffle Deepgram keys so every request uses a different random key
     const shuffledDgKeys = [...dgKeys].sort(() => Math.random() - 0.5);
 
     // --- 2. EXTRACT AND RANDOM SHUFFLE GEMINI API KEYS ---
-    let rawGeminiInput = formData.get('geminiApiKey') || context.env?.GEMINI_API_KEYS || context.env?.GEMINI_API_KEY || context.env?.VITE_GEMINI_API_KEY || '';
-    if (!rawGeminiInput && context.env) {
+    let rawGeminiInput = formData.get('geminiApiKey') || '';
+    if (context.env) {
       for (const k in context.env) {
-        if (k.startsWith('GEMINI_')) rawGeminiInput += ` ${context.env[k]}`;
+        if (k.includes('GEMINI')) {
+          const val = context.env[k];
+          if (val) rawGeminiInput += ` ${val}`;
+        }
       }
     }
     const geminiKeys = rawGeminiInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
@@ -51,7 +56,6 @@ export async function onRequestPost(context) {
       });
     }
 
-    // Random shuffle Gemini keys on every request
     const shuffledGeminiKeys = [...geminiKeys].sort(() => Math.random() - 0.5);
 
     const arrayBuffer = await file.arrayBuffer();
