@@ -20,13 +20,12 @@ export async function onRequestPost(context) {
     let rawDgInput = formData.get('deepgramApiKey') || '';
     if (context.env) {
       for (const k in context.env) {
-        if (/deepgram/i.test(k)) {
-          const val = context.env[k];
-          if (val) rawDgInput += ` ${val}`;
+        if (/deepgram/i.test(k) && context.env[k] != null) {
+          rawDgInput += ` ${String(context.env[k])}`;
         }
       }
     }
-    const dgKeys = rawDgInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
+    const dgKeys = rawDgInput.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean);
 
     if (!dgKeys.length) {
       return new Response(JSON.stringify({ error: 'Missing Deepgram API key. Set DEEPGRAM_API_KEY in Cloudflare Pages environment variables or upload form.' }), {
@@ -41,13 +40,12 @@ export async function onRequestPost(context) {
     let rawGeminiInput = formData.get('geminiApiKey') || '';
     if (context.env) {
       for (const k in context.env) {
-        if (/gemini/i.test(k)) {
-          const val = context.env[k];
-          if (val) rawGeminiInput += ` ${val}`;
+        if (/gemini/i.test(k) && context.env[k] != null) {
+          rawGeminiInput += ` ${String(context.env[k])}`;
         }
       }
     }
-    const geminiKeys = rawGeminiInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
+    const geminiKeys = rawGeminiInput.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean);
 
     if (!geminiKeys.length) {
       return new Response(JSON.stringify({ error: 'Missing Gemini API key. Set GEMINI_API_KEYS or GEMINI_API_KEY in Cloudflare Pages environment variables or upload form.' }), {

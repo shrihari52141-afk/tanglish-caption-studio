@@ -7,11 +7,13 @@ export async function onRequest(context) {
     for (const key in context.env) {
       foundEnvKeys.push(key);
       const val = context.env[key];
-      if (/gemini/i.test(key) && val) {
-        geminiKeys.push(...String(val).split(/[\s,]+/).map(k => k.trim()).filter(Boolean));
+      if (/gemini/i.test(key) && val != null) {
+        const str = String(val).trim();
+        if (str) geminiKeys.push(...str.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
       }
-      if (/deepgram/i.test(key) && val) {
-        dgKeys.push(...String(val).split(/[\s,]+/).map(k => k.trim()).filter(Boolean));
+      if (/deepgram/i.test(key) && val != null) {
+        const str = String(val).trim();
+        if (str) dgKeys.push(...str.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
       }
     }
   }
