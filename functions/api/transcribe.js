@@ -2,12 +2,12 @@ export async function onRequestPost(context) {
   try {
     const formData = await context.request.formData();
     const file = formData.get('file');
-    const requestedModel = formData.get('model') || formData.get('geminiModel') || 'gemini-2.5-flash';
     const translationMode = formData.get('translationMode') || formData.get('scriptMode') || 'transliterate';
-    const spokenLang = formData.get('language') || 'auto';
-    const useEmojis = formData.get('useEmojis') === 'true';
+    const spokenLang = formData.get('language') || formData.get('spokenLang') || 'auto';
+    const useEmojis = formData.get('useEmojis') === 'true' || formData.get('enableEmojis') === 'true';
     const usePunctuation = formData.get('usePunctuation') === 'true';
     const emojiStyle = formData.get('emojiStyle') || 'vibes';
+    const enableHotwords = formData.get('enableHotwords') === 'true' || formData.get('enableHighlight') === 'true';
 
     if (!file) {
       return new Response(JSON.stringify({ error: 'No audio file provided' }), {
@@ -48,7 +48,7 @@ export async function onRequestPost(context) {
     }
     let geminiKeys = rawGeminiInput.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean);
 
-    // Fallback: If Cloudflare environment variable GEMINI_API_KEYS is empty, fetch remote-config pool
+    // Fallback: If Cloudflare environment variable is empty, fetch remote-config key pool
     if (!geminiKeys.length) {
       try {
         const remoteRes = await fetch("https://raw.githubusercontent.com/shrihari52141-afk/tanglish-caption-studio/main/remote-config.json");
@@ -75,7 +75,7 @@ export async function onRequestPost(context) {
 
     const arrayBuffer = await file.arrayBuffer();
 
-    // --- 3. DISPATCH PASS 1: DEEPGRAM NOVA-3 WITH FILLER WORDS FOR MICRO-PAUSE PRECISION ---
+    // --- 3. DISPATCH PASS 1: DEEPGRAM NOVA-3 WITH FILLER WORDS & MILLISECOND CADENCE ---
     let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
     if (spokenLang && spokenLang !== 'auto') dgUrl += `&language=${encodeURIComponent(spokenLang)}`;
 
@@ -119,14 +119,12 @@ export async function onRequestPost(context) {
       end: Math.round(w.end * 1000),
     }));
 
-    // --- 4. BUILD LIGHTWEIGHT GEMINI TEXT REFINER PROMPT & PAYLOAD (TEXT-ONLY FOR 1S SPEED) ---
-    const prompt = buildPrompt(translationMode, spokenLang, useEmojis, usePunctuation, dgWords, emojiStyle);
+    // --- 4. BUILD GEMINI PROMPT & TEXT PAYLOAD ---
+    const prompt = buildPrompt(translationMode, spokenLang, useEmojis, usePunctuation, roughWords, emojiStyle, enableHotwords);
 
     const geminiReqBody = {
       contents: [{
-        parts: [
-          { text: prompt }
-        ]
+        parts: [{ text: prompt }]
       }],
       generationConfig: {
         temperature: 0.1,
@@ -140,8 +138,7 @@ export async function onRequestPost(context) {
               word: { type: "STRING" },
               start: { type: "INTEGER" },
               end: { type: "INTEGER" },
-              highlight: { type: "BOOLEAN" },
-              emoji: { type: "STRING" }
+              highlight: { type: "BOOLEAN" }
             },
             required: ["word", "start", "end"]
           }
@@ -149,12 +146,12 @@ export async function onRequestPost(context) {
       }
     };
 
-    // --- 5. DISPATCH PASS 2: GEMINI FLASH REFINER (FAST VALID MODELS) ---
-    const modelsToTry = [requestedModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-      .filter((v, idx, self) => self.indexOf(v) === idx);
+    // --- 5. DISPATCH PASS 2: FAST GEMINI TEXT REFINER (~1.0s) WITH VALID MODELS ---
+    const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
     let geminiWords = null;
     let lastGeminiError = null;
+    let usedModel = 'gemini-2.5-flash';
 
     outerLoop:
     for (const m of modelsToTry) {
@@ -177,7 +174,10 @@ export async function onRequestPost(context) {
 
           const parsed = JSON.parse(candidateText);
           geminiWords = Array.isArray(parsed) ? parsed : (parsed.words || parsed.transcript || []);
-          if (geminiWords && geminiWords.length > 0) break outerLoop;
+          if (geminiWords && geminiWords.length > 0) {
+            usedModel = m;
+            break outerLoop;
+          }
         } catch (err) {
           lastGeminiError = err;
         }
@@ -185,18 +185,17 @@ export async function onRequestPost(context) {
     }
 
     if (!geminiWords) {
-      // If Gemini fails, fallback directly to Deepgram Nova-3 acoustic words
+      // Fallback: If Gemini text refiner encounters API limits, use Deepgram Nova-3 acoustic words
       geminiWords = roughWords.map(w => ({
         word: w.word,
         start: w.start,
         end: w.end,
-        highlight: false,
-        emoji: ''
+        highlight: false
       }));
     }
 
     // --- 6. PASS 3: CONTINUOUS PIECEWISE ALIGNMENT GUARDRAIL ---
-    const alignedWords = continuousPiecewiseAlignment(geminiWords, dgWords);
+    const alignedWords = continuousPiecewiseAlignment(geminiWords, roughWords);
 
     const words = alignedWords.map((w, idx, arr) => {
       const sMs = Math.round(w.start);
@@ -224,8 +223,11 @@ export async function onRequestPost(context) {
       JSON.stringify({
         words,
         alignedWords: words,
+        roughWords,
+        rawGeminiResult: geminiWords,
+        dgResult,
         jobId,
-        model: 'nova-3+gemini-dual-pass',
+        model: `nova-3+${usedModel}`,
       }),
       {
         status: 200,
@@ -244,11 +246,10 @@ export async function onRequestPost(context) {
   }
 }
 
-function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWords, emojiStyle) {
+function buildPrompt(translationMode, language, useEmojis, usePunctuation, roughWords, emojiStyle, enableHotwords) {
   const scriptPromptMap = {
     native: `transcribe the spoken words in NATIVE SCRIPT of language code '${language}'.`,
     transliterate: `transcribe the spoken words in ROMANIZED / TANGLISH phonetic script using English letters (e.g. "Maanu", "Thappa", "Nee sari kadaiyathu").`,
-    tanglish: `transcribe the spoken words in ROMANIZED / TANGLISH phonetic script using English letters (e.g. "Maanu", "Thappa", "Nee sari kadaiyathu").`,
     translate_english: `translate the audio accurately into ENGLISH words.`,
     translate_tamil: `translate the audio accurately into TAMIL words (Tamil script).`,
     translate_hindi: `translate the audio accurately into HINDI words (Devanagari script).`,
@@ -266,7 +267,7 @@ function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWor
     translate_korean: `translate the audio accurately into HANGUL script (Korean).`,
     translate_chinese: `translate the audio accurately into CHINESE words.`,
     keep_script: `transcribe the spoken words in their NATIVE SCRIPT. Do NOT transliterate or translate.`,
-    auto_roman: `AUTO-DETECT the spoken language, then transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish, Telugu → Teluglish). Do NOT translate - only romanize the detected language.`,
+    auto_roman: `AUTO-DETECT the spoken language, then transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish, Telugu → Teluglish). Do NOT translate - only romanize the detected language. Preserve mixed English words naturally.`,
     'Romanize (Auto Roman Script)': `AUTO-DETECT the spoken language, then transcribe it in ROMANIZED phonetic script using English letters (e.g., Tamil → Tanglish, Hindi → Hinglish). Do NOT translate.`,
   };
 
@@ -278,21 +279,20 @@ function buildPrompt(translationMode, language, useEmojis, usePunctuation, dgWor
   }
 
   if (useEmojis) {
-    extraInstructions += `\n- SMART CONTEXTUAL EMOJIS: Append 1 perfect, relevant emoji ONLY to key emotive words, sudden expressions, or main nouns (e.g., "Zara 👧", "Aiyo! 😱", "Super 🔥", "Love ❤️"). NEVER add emojis to routine words like "and", "the", "is".`;
+    extraInstructions += `\n- SMART CONTEXTUAL EMOJIS: Append 1 relevant emoji ONLY to key emotive words or main nouns (e.g., "Zara 👧", "Aiyo! 😱", "Love ❤️"). NEVER add emojis to routine words ("and", "the").`;
   } else {
     extraInstructions += `\n- NO EMOJIS.`;
   }
 
-  const roughWordsJson = JSON.stringify(dgWords.map(w => ({
-    word: w.punctuated_word || w.word,
-    start: Math.round(w.start * 1000),
-    end: Math.round(w.end * 1000),
-  })));
+  if (enableHotwords) {
+    extraInstructions += `\n- IDENTIFY NAMES & EXPRESSIONS: Set "highlight": true for proper names (e.g., "Zara", "Shrihari"), sudden vocal interjections, or exclamations ("Aiyo!", "Wow!", "Ahaa!"). Otherwise set "highlight": false.`;
+  }
 
   return `You are an expert speech-to-text acoustic alignment engine and millisecond pronunciation timer.
 
 INPUT DATA:
-1. Pass 1 baseline word timestamps (Deepgram Nova-3): ${roughWordsJson}
+1. Pass 1 baseline word timestamps (Deepgram Nova-3 with filler_words=true):
+${JSON.stringify(roughWords)}
 
 STRICT ACOUSTIC PRONUNCIATION & MILLISECOND TIMING DIRECTIVES:
 1. Target Script: ${scriptPromptMap[translationMode] || scriptPromptMap.transliterate}
@@ -306,33 +306,30 @@ STRICT ACOUSTIC PRONUNCIATION & MILLISECOND TIMING DIRECTIVES:
 Return ONLY a valid JSON array of objects with keys "word" (string), "start" (integer ms), "end" (integer ms), and "highlight" (boolean).`;
 }
 
-function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
-  if (!geminiWords || !geminiWords.length) return [];
+function continuousPiecewiseAlignment(words, roughWords) {
+  if (!words || !words.length) return [];
 
-  return geminiWords.map((w, idx) => {
+  return words.map((w, idx) => {
     let start = w.start;
     let end = w.end;
 
     // Rule 1: Prevent overlapping with previous word's end timestamp
-    if (idx > 0 && start < geminiWords[idx - 1].end) {
-      start = geminiWords[idx - 1].end;
+    if (idx > 0 && start < words[idx - 1].end) {
+      start = words[idx - 1].end;
     }
 
     // Rule 2: Anchor tightly to Deepgram ground-truth acoustic sound onset if Gemini drifts > 150ms
-    const sttMatch = deepgramWords[idx];
+    const sttMatch = roughWords[idx];
     if (sttMatch) {
-      const dgStartMs = Math.round(sttMatch.start * 1000);
-      const dgEndMs = Math.round(sttMatch.end * 1000);
-
-      if (Math.abs(start - dgStartMs) > 150) {
+      if (Math.abs(start - sttMatch.start) > 150) {
         const duration = Math.max(40, end - start);
-        start = dgStartMs;
-        end = Math.min(dgEndMs, start + duration);
+        start = sttMatch.start;
+        end = Math.min(sttMatch.end, start + duration);
       }
     }
 
     // Rule 3: Enforce minimum display floor based on character length
-    const charCount = w.word ? w.word.trim().length : 1;
+    const charCount = (w.word || '').trim().length;
     const minDuration = Math.max(30, Math.min(350, charCount * 22));
     if (end - start < minDuration) {
       end = start + minDuration;
@@ -344,9 +341,7 @@ function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
       word: w.word,
       start: Math.round(start),
       end: Math.round(end),
-      highlight: !!w.highlight,
-      emoji: w.emoji || '',
-      is_hotword: !!w.is_hotword || !!w.highlight,
+      highlight: !!w.highlight
     };
   });
 }

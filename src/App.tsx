@@ -1648,13 +1648,12 @@ const doUpload = async (attempt: number) => {
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
                               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
                             </span>
-                             AI Caption Studio
-                           </h3>
-                           <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1 flex items-center gap-1">
-                             🤖 {state.activeModel || "Gemini 3.5 Flash"}
-                           </span>
-                           <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
-                         </div>
+                             <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1 flex items-center gap-1">
+                              🤖 {state.activeModel || "Gemini 2.5 Flash"}
+                            </span>
+                            <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
+                          </h3>
+                        </div>
                         
                         {/* Progress Bar Container */}
                         <div className="space-y-3">
@@ -1670,26 +1669,18 @@ const doUpload = async (attempt: number) => {
                           </p>
                         </div>
 
-                        {/* Live Logs Panel */}
-                        <div className="mt-4 bg-[#0A0A0A] border border-[#252525] rounded-xl p-3 max-h-48 overflow-y-auto custom-scrollbar">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-500 flex items-center gap-1">
-                              <Terminal className="w-3 h-3" /> Live Engine Logs
-                            </span>
-                            <span className="text-[9px] font-mono text-[#555] bg-[#1a1a1a] px-2 py-0.5 rounded">
-                              {state.logs.length} entries
-                            </span>
-                          </div>
+                        {/* Live Logs Panel (Shows real-time progress steps) */}
+                        <div className="mt-2 bg-[#0A0A0A] border border-[#252525] rounded-xl p-3 max-h-52 overflow-y-auto custom-scrollbar flex flex-col-reverse">
                           <div className="flex flex-col gap-1 text-[10px] font-mono text-[#888]">
                             {state.logs.slice(-15).map((log, i) => (
-                              <div key={i} className="flex items-start gap-2 py-0.5 border-l-2 border-transparent pl-2 hover:border-fuchsia-500/30 transition-colors">
-                                <span className="text-fuchsia-500/50 shrink-0 font-mono">›</span>
-                                <span className="text-[#aaa] truncate">{log}</span>
+                              <div key={i} className="flex items-start gap-2 py-0.5 border-l-2 border-fuchsia-500/40 pl-2 bg-fuchsia-500/5 rounded-r">
+                                <span className="text-fuchsia-400 shrink-0 font-mono">›</span>
+                                <span className="text-[#eee] font-medium leading-tight">{log}</span>
                               </div>
                             ))}
                             {state.logs.length === 0 && (
-                              <div className="text-center text-[#555] py-4">
-                                Waiting for engine initialization...
+                              <div className="text-center text-[#555] py-3">
+                                Initializing AI Caption Engine...
                               </div>
                             )}
                           </div>
