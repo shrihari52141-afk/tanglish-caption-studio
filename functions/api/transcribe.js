@@ -75,41 +75,54 @@ export async function onRequestPost(context) {
 
     const arrayBuffer = await file.arrayBuffer();
 
-    // --- 3. DISPATCH PASS 1: DEEPGRAM NOVA-3 WITH FILLER WORDS & MILLISECOND CADENCE ---
-    let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
-    if (spokenLang && spokenLang !== 'auto') dgUrl += `&language=${encodeURIComponent(spokenLang)}`;
+    // --- 3. DISPATCH PASS 1: DEEPGRAM NOVA-3 WITH AUTOMATIC MODEL/LANGUAGE FALLBACK ---
+    const dgUrlCandidates = [
+      `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true&detect_language=true`,
+      `https://api.deepgram.com/v1/listen?model=general-nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`,
+      `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`,
+      `https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`,
+    ];
+
+    if (spokenLang && spokenLang !== 'auto' && /^[a-z]{2}(-[A-Z]{2})?$/.test(spokenLang)) {
+      dgUrlCandidates.unshift(`https://api.deepgram.com/v1/listen?model=nova-3&language=${encodeURIComponent(spokenLang)}&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`);
+    }
 
     let dgResult = null;
     let lastDgError = null;
 
-    for (let i = 0; i < shuffledDgKeys.length; i++) {
-      const key = shuffledDgKeys[i];
-      const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
+    dgLoop:
+    for (const dgUrl of dgUrlCandidates) {
+      for (let i = 0; i < shuffledDgKeys.length; i++) {
+        const key = shuffledDgKeys[i];
+        const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
 
-      try {
-        const dgRes = await fetch(dgUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': authHeader,
-            'Content-Type': file.type || 'audio/webm',
-          },
-          body: arrayBuffer,
-        });
+        try {
+          const dgRes = await fetch(dgUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': authHeader,
+              'Content-Type': file.type || 'audio/webm',
+            },
+            body: arrayBuffer,
+          });
 
-        if (!dgRes.ok) {
-          const errText = await dgRes.text();
-          throw new Error(`Deepgram Error (${dgRes.status}): ${errText}`);
+          if (!dgRes.ok) {
+            const errText = await dgRes.text();
+            throw new Error(`Deepgram Error (${dgRes.status}): ${errText}`);
+          }
+
+          dgResult = await dgRes.json();
+          if (dgResult?.results?.channels?.[0]?.alternatives?.[0]?.words) {
+            break dgLoop; // Success!
+          }
+        } catch (err) {
+          lastDgError = err;
         }
-
-        dgResult = await dgRes.json();
-        break; // Key succeeded
-      } catch (err) {
-        lastDgError = err;
       }
     }
 
     if (!dgResult) {
-      throw new Error(`All ${shuffledDgKeys.length} Deepgram keys failed: ${lastDgError ? lastDgError.message : 'Unknown'}`);
+      throw new Error(`All Deepgram keys failed: ${lastDgError ? lastDgError.message : 'Unknown'}`);
     }
 
     const dgWords = dgResult.results?.channels?.[0]?.alternatives?.[0]?.words || [];
