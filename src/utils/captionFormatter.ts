@@ -305,3 +305,55 @@ export function calculateSpeedupTimestamps<T extends { word: string; is_expressi
     };
   });
 }
+
+/**
+ * Continuous Piecewise Alignment Algorithm with Acoustic Guardrail
+ * 
+ * Re-anchors Gemini-refined timestamps to Deepgram Nova-3 ground truth.
+ * Three rules:
+ * 1. Overlap Prevention: Enforce Start(N) >= End(N-1)
+ * 2. Acoustic Guardrail: Snap to Deepgram if drift > 150ms
+ * 3. Reading Duration Floor: Clamp minimum duration to (charLength × 22ms)
+ */
+export function continuousPiecewiseAlignment(
+  geminiWords: Array<{ word: string; start: number; end: number; highlight?: boolean }>,
+  deepgramWords: Array<{ word: string; start: number; end: number }>
+): Array<{ word: string; start: number; end: number; highlight?: boolean }> {
+  if (!geminiWords || !geminiWords.length) return [];
+
+  return geminiWords.map((w, idx) => {
+    let start = w.start;
+    let end = w.end;
+
+    // Rule 1: Prevent overlapping with previous word's end timestamp
+    if (idx > 0 && start < geminiWords[idx - 1].end) {
+      start = geminiWords[idx - 1].end;
+    }
+
+    // Rule 2: Anchor tightly to Deepgram ground-truth acoustic sound onset if Gemini drifts > 150ms
+    const sttMatch = deepgramWords[idx];
+    if (sttMatch) {
+      if (Math.abs(start - sttMatch.start) > 150) {
+        const duration = Math.max(40, end - start);
+        start = sttMatch.start;
+        end = Math.min(sttMatch.end, start + duration);
+      }
+    }
+
+    // Rule 3: Enforce minimum display floor based on character length
+    const charCount = w.word.trim().length;
+    const minDuration = Math.max(30, Math.min(350, charCount * 22));
+    if (end - start < minDuration) {
+      end = start + minDuration;
+    }
+
+    if (end <= start) end = start + 40;
+
+    return {
+      word: w.word,
+      start: Math.round(start),
+      end: Math.round(end),
+      highlight: !!w.highlight
+    };
+  });
+}

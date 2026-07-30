@@ -6,7 +6,14 @@ import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './ty
 import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages, Check } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
-import { applyCaptionFormatting, sanitizeCaptionWords, stripASSTags, containsASSTags, generateCaptionFrames } from './utils/captionFormatter';
+import { 
+  applyCaptionFormatting, 
+  sanitizeCaptionWords, 
+  stripASSTags, 
+  containsASSTags, 
+  generateCaptionFrames,
+  continuousPiecewiseAlignment
+} from './utils/captionFormatter';
 import { notifyTelegram, notifyTelegramError } from './utils/deviceTracker';
 
 // Canvas animation helpers for export parity with CSS keyframes
@@ -1257,12 +1264,19 @@ export default function App() {
           throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
 
-        const data = await response.json();
+const data = await response.json();
 
-        // Extract raw words list (handles arrays, data.words, data.alignedWords, data.rawGeminiResult)
-        const rawWordsList = Array.isArray(data)
-          ? data
-          : (data.words || data.alignedWords || data.rawGeminiResult || []);
+        // Apply continuous piecewise alignment: Deepgram (roughWords) as acoustic guardrail for Gemini (rawGeminiResult)
+        const roughWords = data.roughWords || [];
+        const rawGeminiWords = data.rawGeminiResult || [];
+        
+        let alignedWords = rawGeminiWords;
+        if (roughWords.length > 0 && rawGeminiWords.length > 0) {
+          alignedWords = continuousPiecewiseAlignment(rawGeminiWords, roughWords);
+        }
+
+        // Extract raw words list
+        const rawWordsList = alignedWords;
 
         const wordsWithIds = sanitizeCaptionWords(
           rawWordsList.map((w: any, i: number, arr: any[]) => {
