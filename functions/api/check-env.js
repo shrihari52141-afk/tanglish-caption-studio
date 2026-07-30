@@ -1,16 +1,17 @@
 export async function onRequest(context) {
   const geminiKeys = [];
   const dgKeys = [];
+  const foundEnvKeys = [];
 
   if (context.env) {
     for (const key in context.env) {
-      if (key.includes('GEMINI')) {
-        const val = context.env[key];
-        if (val) geminiKeys.push(...val.split(/[\s,]+/).filter(Boolean));
+      foundEnvKeys.push(key);
+      const val = context.env[key];
+      if (/gemini/i.test(key) && val) {
+        geminiKeys.push(...String(val).split(/[\s,]+/).map(k => k.trim()).filter(Boolean));
       }
-      if (key.includes('DEEPGRAM')) {
-        const val = context.env[key];
-        if (val) dgKeys.push(...val.split(/[\s,]+/).filter(Boolean));
+      if (/deepgram/i.test(key) && val) {
+        dgKeys.push(...String(val).split(/[\s,]+/).map(k => k.trim()).filter(Boolean));
       }
     }
   }
@@ -22,12 +23,9 @@ export async function onRequest(context) {
       geminiKeysCount: geminiKeys.length,
       hasDeepgramKeys: dgKeys.length > 0,
       deepgramKeysCount: dgKeys.length,
+      foundEnvNames: foundEnvKeys,
       primaryModel: "gemini-3.6-flash",
       fallbackModels: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
-      activeSources: {
-        gemini: geminiKeys.length > 0 ? "cloudflare_env" : "missing",
-        deepgram: dgKeys.length > 0 ? "cloudflare_env" : "missing"
-      },
       timestamp: new Date().toISOString()
     }, null, 2),
     {

@@ -20,7 +20,7 @@ export async function onRequestPost(context) {
     let rawDgInput = formData.get('deepgramApiKey') || '';
     if (context.env) {
       for (const k in context.env) {
-        if (k.includes('DEEPGRAM')) {
+        if (/deepgram/i.test(k)) {
           const val = context.env[k];
           if (val) rawDgInput += ` ${val}`;
         }
@@ -41,7 +41,7 @@ export async function onRequestPost(context) {
     let rawGeminiInput = formData.get('geminiApiKey') || '';
     if (context.env) {
       for (const k in context.env) {
-        if (k.includes('GEMINI')) {
+        if (/gemini/i.test(k)) {
           const val = context.env[k];
           if (val) rawGeminiInput += ` ${val}`;
         }
@@ -50,7 +50,7 @@ export async function onRequestPost(context) {
     const geminiKeys = rawGeminiInput.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
 
     if (!geminiKeys.length) {
-      return new Response(JSON.stringify({ error: 'Missing Gemini API key. Set GEMINI_API_KEYS in Cloudflare Pages environment variables or upload form.' }), {
+      return new Response(JSON.stringify({ error: 'Missing Gemini API key. Set GEMINI_API_KEYS or GEMINI_API_KEY in Cloudflare Pages environment variables or upload form.' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
