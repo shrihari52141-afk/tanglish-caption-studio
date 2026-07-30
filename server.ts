@@ -452,9 +452,9 @@ Return ONLY a JSON object (no markdown, no code fences):
     if (geminiKeys.length === 0) {
       return null;
     }
-    const key = geminiKeys[nextKeyIndex];
-    nextKeyIndex = (nextKeyIndex + 1) % geminiKeys.length;
-    return key;
+    // Random key selection on every request instead of sequential indexing
+    const randomIndex = Math.floor(Math.random() * geminiKeys.length);
+    return geminiKeys[randomIndex];
   }
 
   async function callGeminiWithRotation<T>(
