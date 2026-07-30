@@ -6,7 +6,7 @@ export async function onRequestPost(context) {
     const requestedGeminiKeys = formData.get('geminiApiKey');
     const geminiModel = formData.get('geminiModel') || formData.get('model') || 'gemini-2.5-flash';
     const scriptMode = formData.get('scriptMode') || formData.get('translationMode') || 'native';
-    const spokenLang = formData.get('spokenLang') || formData.get('language') || 'auto';
+    const spokenLang = formData.get('spokenLang') || formData.get('language') || 'en';
 
     if (!file) {
       return new Response(JSON.stringify({ error: 'Missing required file parameter.' }), {
@@ -70,7 +70,7 @@ export async function onRequestPost(context) {
 
     const arrayBuffer = await file.arrayBuffer();
 
-    // 1. Pass 1: Enhanced Deepgram Nova-3 API Call (with filler_words=true)
+    // 1. Pass 1: Enhanced Deepgram Nova-3 API Call (Exact requested endpoint & params)
     const validLanguages = ['ta', 'kn', 'hi', 'te', 'ml', 'mr', 'bn', 'gu', 'en', 'es', 'fr', 'de', 'pt', 'it', 'ru', 'ar', 'ja', 'ko', 'zh'];
     let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
     if (spokenLang && spokenLang !== 'auto' && validLanguages.includes(spokenLang)) {
@@ -151,7 +151,7 @@ export async function onRequestPost(context) {
     }
     const base64Audio = btoa(binary);
 
-    // 3. Script Target Instruction
+    // 3. Script Target Instruction (Exact as requested)
     const scriptPromptMap = {
       native: `transcribe the spoken words with full punctuation in the NATIVE SCRIPT of language code '${spokenLang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी).`,
       tanglish: `transcribe the spoken words with full punctuation in ROMANIZED / TANGLISH phonetic script using English letters (e.g. "Maanu", "Thappa", "Nee sari kadaiyathu", "madbeka?").`,
@@ -197,7 +197,7 @@ Analyze tone and vocal expressions continuously every second. Tag special words 
 
 Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
 
-    // 5. Exact Gemini Request Payload JSON Schema as requested
+    // 5. Exact Gemini Request Payload JSON Schema (Valid JSON syntax)
     const geminiReqBody = {
       contents: [
         {
@@ -219,9 +219,9 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
         responseSchema: {
           type: "OBJECT",
           properties: {
-            source_language": { "type": "STRING" },
-            target_language": { "type": "STRING" },
-            segments": {
+            "source_language": { "type": "STRING" },
+            "target_language": { "type": "STRING" },
+            "segments": {
               "type": "ARRAY",
               "items": {
                 "type": "OBJECT",
