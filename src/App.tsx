@@ -1223,9 +1223,13 @@ export default function App() {
 
     // Tracker metadata (emailed to owner on each upload)
     let mediaDurationStr = 'Unknown';
+    let probedDurationSeconds: number | null = null;
     try {
       const durationSeconds = await probeMediaDuration(file);
-      if (durationSeconds != null) mediaDurationStr = `${Math.floor(durationSeconds / 60)}m ${Math.floor(durationSeconds % 60)}s (${durationSeconds.toFixed(1)}s)`;
+      if (durationSeconds != null) {
+        probedDurationSeconds = durationSeconds;
+        mediaDurationStr = `${Math.floor(durationSeconds / 60)}m ${Math.floor(durationSeconds % 60)}s (${durationSeconds.toFixed(1)}s)`;
+      }
       const meta = await buildTrackerClientMeta({
         durationSeconds,
         title: file.name,
@@ -1298,21 +1302,39 @@ const doUpload = async (attempt: number) => {
         // Extract raw words list
         const rawWordsList = Array.isArray(alignedWords) ? alignedWords : [];
 
+        // ── TIMESTAMP UNIT DETECTION (sync fix) ─────────────────────────
+        // The old per-word heuristic (`raw < 100 ? raw*1000 : raw`) desynced
+        // captions: second-based values >= 100 (any word after 1:40) were kept
+        // as milliseconds, and ms-based values < 100ms were multiplied x1000.
+        // Detect the unit ONCE for the whole track instead.
+        const extractRaw = (w: any) => ({
+          start: typeof w.start_ms === 'number' ? w.start_ms : (typeof w.start === 'number' ? w.start : (w.start_time || 0) * 1000),
+          end: typeof w.end_ms === 'number' ? w.end_ms : (typeof w.end === 'number' ? w.end : (w.end_time || 0) * 1000),
+          explicitMs: typeof w.start_ms === 'number' || typeof w.end_ms === 'number',
+        });
+        const rawPairs = rawWordsList.map(extractRaw);
+        const maxRawEnd = rawPairs.reduce((m, r) => Math.max(m, r.end || 0), 0);
+        const hasExplicitMs = rawPairs.some(r => r.explicitMs);
+        // Decide whether raw values are milliseconds:
+        //  - explicit *_ms fields are always milliseconds
+        //  - if we know the real media duration, values far exceeding it
+        //    (in seconds) must be milliseconds
+        //  - otherwise, anything above 3 hours "in seconds" is assumed ms
+        const trackIsMs = hasExplicitMs
+          || (probedDurationSeconds != null && probedDurationSeconds > 0
+                ? maxRawEnd > probedDurationSeconds * 10
+                : maxRawEnd > 10800);
+        const toMs = (v: number) => (trackIsMs ? v : v * 1000);
+
         const wordsWithIds = sanitizeCaptionWords(
           rawWordsList.map((w: any, i: number, arr: any[]) => {
-            const rawStart = typeof w.start_ms === 'number' ? w.start_ms : (typeof w.start === 'number' ? w.start : (w.start_time || 0) * 1000);
-            const rawEnd = typeof w.end_ms === 'number' ? w.end_ms : (typeof w.end === 'number' ? w.end : (w.end_time || 0) * 1000);
-
-            // Normalize ms and seconds
-            const sMs = rawStart < 100 ? rawStart * 1000 : rawStart;
-            const eMs = rawEnd < 100 ? rawEnd * 1000 : rawEnd;
+            const sMs = toMs(rawPairs[i].start);
+            const eMs = toMs(rawPairs[i].end);
 
             const sSec = sMs / 1000;
             const eSec = eMs / 1000;
 
-            const nextSMs = i < arr.length - 1
-              ? (typeof arr[i + 1].start_ms === 'number' ? arr[i + 1].start_ms : (typeof arr[i + 1].start === 'number' ? arr[i + 1].start : (arr[i + 1].start_time || 0) * 1000))
-              : eMs;
+            const nextSMs = i < arr.length - 1 ? toMs(rawPairs[i + 1].start) : eMs;
 
             const pauseAfterMs = typeof w.pause_after_ms === 'number'
               ? w.pause_after_ms

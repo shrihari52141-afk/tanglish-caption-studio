@@ -75,9 +75,11 @@ export default function VideoPlayer({
       // light enough for low-end devices.
       if (frameCount % 2 === 0) {
         const t = video.currentTime;
-        // Use ref for localTime to avoid state update on every frame
-        // Only update state periodically (every ~1 second) for UI sync
-        if (frameCount % 60 === 0) {
+        // Update localTime ~10x/sec: fast enough that the caption-frame
+        // fallback + time display stay in sync with the audio, light enough
+        // for low-end devices. (Was ~1x/sec, which made captions lag/jump
+        // during silences and right after seeking.)
+        if (frameCount % 6 === 0) {
           setLocalTime(t);
         }
         
@@ -157,6 +159,9 @@ export default function VideoPlayer({
   useEffect(() => {
     if (seekTime !== null && videoRef.current) {
       videoRef.current.currentTime = seekTime;
+      // Sync caption clock immediately so the caption frame jumps with the
+      // audio instead of waiting for the next throttled RAF state update.
+      setLocalTime(seekTime);
       onSeekComplete();
     }
   }, [seekTime, onSeekComplete]);
