@@ -49,6 +49,7 @@ export interface AppState {
   uploadProgress: number;
   logs: string[];
   styleSettings: SubtitleStyleSettings;
+  activeModel?: string;
   hasFailed?: boolean;
   lastUploadParams?: {
     file: File;
@@ -57,6 +58,7 @@ export interface AppState {
     translationMode: string;
     usePunctuation: boolean;
     emojiStyle: any;
+    enableHotwords?: boolean;
     preExtractedAudioBlob?: Blob | null;
   } | null;
 }

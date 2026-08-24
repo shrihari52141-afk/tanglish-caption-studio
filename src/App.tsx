@@ -364,6 +364,7 @@ export default function App() {
   const [state, setState] = useState<AppState>({
     videoUrl: null,
     videoFile: null,
+    audioFile: null,
     words: [],
     activeStyle: 'bounce',
     isTransliterating: true,
@@ -371,7 +372,7 @@ export default function App() {
     currentTime: 0,
     uploadProgress: 0,
     logs: [],
-    activeModel: "gemini-3.6-flash",
+    activeModel: "gemini-3.7-flash",
     styleSettings: {
       preset: 'bounce',
       fontFamily: 'Inter',
@@ -621,6 +622,7 @@ export default function App() {
     setState({
       videoUrl: null,
       videoFile: null,
+      audioFile: null,
       words: [],
       activeStyle: 'bounce',
       isTransliterating: true,
@@ -1373,7 +1375,7 @@ const doUpload = async (attempt: number) => {
           source: fileIsAudio ? 'audio' : 'video',
           language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
           translationMode: translationMode || 'transliterate',
-          aiModel: 'Gemini 3.6 Flash + Deepgram Nova-3',
+          aiModel: 'Gemini 3.7 Flash + Deepgram Nova-3',
           mediaDuration: mediaDurationStr,
           emojiStyle: emojiStyle,
           useEmojis: useEmojis,

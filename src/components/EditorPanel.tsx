@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, Component, ErrorInfo, ReactNode } from 'react';
 import { CaptionWord, SubtitleStyleSettings } from '../types';
 import { PRESETS, STYLE_CATEGORIES } from '../data/presets';
-import { Sparkles, Type, CaseSensitive, AlignCenter, AlignLeft, AlignRight, Sliders, Edit3, Check, Play, Hash, Smile } from 'lucide-react';
+import { Sparkles, Type, CaseSensitive, AlignCenter, AlignLeft, AlignRight, Sliders, Edit3, Check, Play, Hash, Smile, RotateCcw, ZoomIn } from 'lucide-react';
 import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from '../utils/subtitleExporter';
 import { stripASSTags } from '../utils/captionFormatter';
 import PresetPreview from './PresetPreview';
@@ -18,17 +18,84 @@ interface EditorPanelProps {
   onActiveTabChange?: (tab: 'presets' | 'decorations' | 'transcript') => void;
 }
 
-export default function EditorPanel({ 
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class EditorErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  override state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('[EditorPanel Error Caught]:', error, errorInfo);
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <div className="w-full h-full bg-[#161616] p-6 text-white flex flex-col items-center justify-center gap-4 text-center">
+          <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center text-xl font-bold">
+            ⚠️
+          </div>
+          <h3 className="text-base font-black uppercase tracking-wider text-red-400">Editor Auto-Recovered</h3>
+          <p className="text-xs text-gray-400 max-w-xs">
+            A temporary render error occurred in the editor panel.
+          </p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-xs font-black uppercase rounded-lg transition-colors cursor-pointer"
+          >
+            Reload Editor
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function EditorPanelContent({ 
   styleSettings, 
   onUpdateStyleSettings, 
-  words, 
-  currentTime,
+  words = [], 
+  currentTime = 0,
   onUpdateWordText,
   onSeek,
   onUpdateWords,
   activeTab: controlledActiveTab,
   onActiveTabChange
 }: EditorPanelProps) {
+  // Defensive styleSettings defaults
+  const safeSettings: SubtitleStyleSettings = {
+    preset: 'glow',
+    fontFamily: 'Inter',
+    fontSize: 1.0,
+    textColor: '#FFFFFF',
+    highlightColor: '#FACC15',
+    capitalization: 'none',
+    showBackground: false,
+    showSpotlight: false,
+    showBacklight: false,
+    showShadow: true,
+    alignment: 'center',
+    positionX: 0,
+    positionY: 0,
+    rotation: 0,
+    maxWordsPerScreen: 3,
+    showEmojis: true,
+    showPunctuation: true,
+    emojiStyle: 'vibes',
+    ...(styleSettings || {})
+  };
+
   const [localActiveTab, setLocalActiveTab] = useState<'presets' | 'decorations' | 'transcript'>('presets');
   
   const activeTab = controlledActiveTab !== undefined ? controlledActiveTab : localActiveTab;
@@ -48,6 +115,7 @@ export default function EditorPanel({
   
   const [editingWordId, setEditingWordId] = useState<string | null>(null);
   const [editingWordText, setEditingWordText] = useState("");
+  const [editingWordEmoji, setEditingWordEmoji] = useState("");
   
   const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
 
@@ -57,14 +125,14 @@ export default function EditorPanel({
 
   const handleBulkDelete = () => {
     if (!onUpdateWords) return;
-    const filtered = words.filter(w => !selectedWordIds.has(w.id));
+    const filtered = (words || []).filter(w => !selectedWordIds.has(w.id));
     onUpdateWords(filtered);
     setSelectedWordIds(new Set());
   };
 
   const handleBulkCapitalize = (mode: 'upper' | 'lower' | 'capitalize') => {
     if (!onUpdateWords) return;
-    const updated = words.map(w => {
+    const updated = (words || []).map(w => {
       if (selectedWordIds.has(w.id)) {
         let newWord = w.word;
         if (mode === 'upper') {
@@ -82,7 +150,7 @@ export default function EditorPanel({
   };
 
   const handleSelectAll = () => {
-    const allIds = words.map(w => w.id);
+    const allIds = (words || []).map(w => w.id);
     setSelectedWordIds(new Set(allIds));
   };
 
@@ -122,12 +190,14 @@ export default function EditorPanel({
     { hex: '#F97316', name: 'Orange' },
   ];
 
+  const quickEmojis = ['🔥', '💪', '😂', '❤️', '😎', '👏', '💡', '😮', '😢', '🎉', '🚀', '✨', '🤩', '🙏', '💯'];
+
   // Active word index based on playback time
-  const activeIndex = words.findIndex(w => currentTime >= w.start_time && currentTime <= w.end_time);
+  const activeIndex = (words || []).findIndex(w => currentTime >= (w.start_time || 0) && currentTime <= (w.end_time || 0));
 
   // Group individual words into sentences for the Interactive Timestamps
   const sentences = React.useMemo(() => {
-    if (words.length === 0) return [];
+    if (!words || words.length === 0) return [];
     const maxGap = 1.2; // seconds pause triggers new sentence
     const maxWords = 5; // maximum words per sentence box
     
@@ -137,14 +207,14 @@ export default function EditorPanel({
     for (let i = 1; i < words.length; i++) {
       const prev = words[i - 1];
       const curr = words[i];
-      const gap = curr.start_time - prev.end_time;
+      const gap = (curr.start_time || 0) - (prev.end_time || 0);
       
       if (gap > maxGap || currentGroup.length >= maxWords) {
         list.push({
-          id: currentGroup[0].id + '_sentence',
+          id: (currentGroup[0]?.id || `s-${i}`) + '_sentence',
           text: currentGroup.map(w => stripASSTags(w.word)).filter(Boolean).join(' '),
-          start_time: currentGroup[0].start_time,
-          end_time: currentGroup[currentGroup.length - 1].end_time,
+          start_time: currentGroup[0]?.start_time || 0,
+          end_time: currentGroup[currentGroup.length - 1]?.end_time || 0,
           words: currentGroup
         });
         currentGroup = [curr];
@@ -155,10 +225,10 @@ export default function EditorPanel({
     
     if (currentGroup.length > 0) {
       list.push({
-        id: currentGroup[0].id + '_sentence',
+        id: (currentGroup[0]?.id || 's-end') + '_sentence',
         text: currentGroup.map(w => stripASSTags(w.word)).filter(Boolean).join(' '),
-        start_time: currentGroup[0].start_time,
-        end_time: currentGroup[currentGroup.length - 1].end_time,
+        start_time: currentGroup[0]?.start_time || 0,
+        end_time: currentGroup[currentGroup.length - 1]?.end_time || 0,
         words: currentGroup
       });
     }
@@ -167,7 +237,11 @@ export default function EditorPanel({
 
   // Handle preset application
   const handleApplyPreset = (presetSettings: any) => {
-    onUpdateStyleSettings({ ...presetSettings, fontSize: 0.5, rotation: 0 });
+    onUpdateStyleSettings({ 
+      ...presetSettings, 
+      fontSize: presetSettings.fontSize || safeSettings.fontSize || 1.0, 
+      rotation: 0 
+    });
   };
 
   // Editing standard word
@@ -175,11 +249,26 @@ export default function EditorPanel({
     e.stopPropagation();
     setEditingWordId(w.id);
     setEditingWordText(stripASSTags(w.word));
+    setEditingWordEmoji(w.emoji || '');
     setEditingSentenceId(null);
   };
 
   const handleSaveWordEdit = (id: string) => {
-    onUpdateWordText(id, editingWordText);
+    if (onUpdateWords) {
+      const updated = (words || []).map(w => {
+        if (w.id === id) {
+          return {
+            ...w,
+            word: stripASSTags(editingWordText),
+            emoji: editingWordEmoji || null,
+          };
+        }
+        return w;
+      });
+      onUpdateWords(updated);
+    } else {
+      onUpdateWordText(id, stripASSTags(editingWordText));
+    }
     setEditingWordId(null);
   };
 
@@ -199,7 +288,6 @@ export default function EditorPanel({
     }
 
     if (!onUpdateWords) {
-      // Fallback: update matching indices
       sentenceWords.forEach((sw, idx) => {
         if (newWordsText[idx]) {
           onUpdateWordText(sw.id, newWordsText[idx]);
@@ -209,10 +297,9 @@ export default function EditorPanel({
       return;
     }
 
-    // Distribute time proportionally
-    const startTime = sentenceWords[0].start_time;
-    const endTime = sentenceWords[sentenceWords.length - 1].end_time;
-    const totalDuration = endTime - startTime;
+    const startTime = sentenceWords[0]?.start_time || 0;
+    const endTime = sentenceWords[sentenceWords.length - 1]?.end_time || (startTime + 1);
+    const totalDuration = Math.max(0.1, endTime - startTime);
     const wordDuration = totalDuration / newWordsText.length;
 
     const updatedSentenceWords = newWordsText.map((wText, idx) => {
@@ -222,6 +309,9 @@ export default function EditorPanel({
         word: wText,
         start_time: startTime + (idx * wordDuration),
         end_time: startTime + ((idx + 1) * wordDuration),
+        start_ms: Math.round((startTime + (idx * wordDuration)) * 1000),
+        end_ms: Math.round((startTime + ((idx + 1) * wordDuration)) * 1000),
+        emoji: originalWord?.emoji || null,
       };
     });
 
@@ -229,7 +319,7 @@ export default function EditorPanel({
     const finalWordsList: CaptionWord[] = [];
     let replaced = false;
 
-    for (let i = 0; i < words.length; i++) {
+    for (let i = 0; i < (words || []).length; i++) {
       if (originalWordIds.has(words[i].id)) {
         if (!replaced) {
           finalWordsList.push(...updatedSentenceWords);
@@ -247,13 +337,16 @@ export default function EditorPanel({
   // Filter presets based on category
   const filteredPresets = PRESETS.filter(p => selectedCategory === 'all' || p.category === selectedCategory);
 
+  const safeHighlightHex = (safeSettings.highlightColor || '#FACC15').toLowerCase();
+  const safeTextHex = (safeSettings.textColor || '#FFFFFF').toLowerCase();
+
   return (
     <div className="w-full h-auto lg:h-full bg-[#161616] flex flex-col border-l border-[#333]">
       {/* Category Tabs */}
       <div className="flex border-b border-[#333] bg-[#0A0A0A] shrink-0 sticky top-0 z-10">
         <button
           onClick={() => setActiveTab('presets')}
-          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors ${
+          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
             activeTab === 'presets' ? 'border-fuchsia-600 text-fuchsia-500' : 'border-transparent text-[#888888] hover:text-white'
           }`}
         >
@@ -261,7 +354,7 @@ export default function EditorPanel({
         </button>
         <button
           onClick={() => setActiveTab('decorations')}
-          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors ${
+          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
             activeTab === 'decorations' ? 'border-fuchsia-600 text-fuchsia-500' : 'border-transparent text-[#888888] hover:text-white'
           }`}
         >
@@ -269,7 +362,7 @@ export default function EditorPanel({
         </button>
         <button
           onClick={() => setActiveTab('transcript')}
-          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors ${
+          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
             activeTab === 'transcript' ? 'border-fuchsia-600 text-fuchsia-500' : 'border-transparent text-[#888888] hover:text-white'
           }`}
         >
@@ -287,7 +380,7 @@ export default function EditorPanel({
                 <button
                   key={cat.id}
                   onClick={() => setSelectedCategory(cat.id)}
-                  className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider shrink-0 transition-colors ${
+                  className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider shrink-0 transition-colors cursor-pointer ${
                     selectedCategory === cat.id
                       ? 'bg-fuchsia-600 text-white shadow-md shadow-fuchsia-600/20'
                       : 'bg-[#222] text-[#aaa] hover:text-white hover:bg-[#2a2a2a]'
@@ -310,12 +403,12 @@ export default function EditorPanel({
               
               <div className="grid grid-cols-2 gap-3">
                 {filteredPresets.map((p) => {
-                  const isActive = styleSettings.preset === p.id || styleSettings.preset === p.settings.preset;
+                  const isActive = safeSettings.preset === p.id || safeSettings.preset === p.settings.preset;
                   return (
                     <button
                       key={p.id}
                       onClick={() => handleApplyPreset(p.settings)}
-                      className={`relative p-3.5 rounded-xl border-2 text-left transition-all overflow-hidden flex flex-col justify-between ${
+                      className={`relative p-3.5 rounded-xl border-2 text-left transition-all overflow-hidden flex flex-col justify-between cursor-pointer ${
                         isActive 
                           ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-lg shadow-fuchsia-600/10' 
                           : 'border-transparent bg-[#222] hover:bg-[#2c2c2c]'
@@ -347,7 +440,7 @@ export default function EditorPanel({
             <div className="bg-[#222]/40 rounded-xl p-4 border border-[#333] mt-2">
               <div className="text-[12px] font-extrabold uppercase text-white mb-2">💡 Quick tip</div>
               <p className="text-[11px] text-[#888888] leading-relaxed">
-                Click any preset to instantly apply fonts, colors, and keyframe animations! Tweak colors or formatting under <strong className="text-white">Decoration</strong>.
+                Click any preset to instantly apply fonts, colors, and keyframe animations! Tweak colors, size, or formatting under <strong className="text-white">Decoration</strong>.
               </p>
             </div>
           </div>
@@ -356,6 +449,48 @@ export default function EditorPanel({
         {/* DECORATIONS TAB */}
         {activeTab === 'decorations' && (
           <div className="flex flex-col gap-6 animate-fade-in">
+            {/* Font Size & Scale Control */}
+            <div>
+              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <ZoomIn className="w-4 h-4 text-fuchsia-500" /> Font Size & Scale
+                </span>
+                <span className="text-[11px] bg-fuchsia-600/20 text-fuchsia-400 font-mono font-bold px-2 py-0.5 rounded">
+                  {Math.round((safeSettings.fontSize || 1.0) * 100)}%
+                </span>
+              </div>
+              <div className="bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] flex items-center gap-3">
+                <button
+                  onClick={() => onUpdateStyleSettings({ fontSize: Math.max(0.4, Number(((safeSettings.fontSize || 1.0) - 0.1).toFixed(1))) })}
+                  className="w-8 h-8 rounded-lg bg-[#2c2c2c] hover:bg-[#3d3d3d] text-white font-bold text-sm flex items-center justify-center cursor-pointer border border-[#444]"
+                >
+                  -
+                </button>
+                <input
+                  type="range"
+                  min="0.4"
+                  max="2.2"
+                  step="0.05"
+                  value={safeSettings.fontSize || 1.0}
+                  onChange={(e) => onUpdateStyleSettings({ fontSize: parseFloat(e.target.value) })}
+                  className="flex-1 accent-fuchsia-500 cursor-pointer"
+                />
+                <button
+                  onClick={() => onUpdateStyleSettings({ fontSize: Math.min(2.5, Number(((safeSettings.fontSize || 1.0) + 0.1).toFixed(1))) })}
+                  className="w-8 h-8 rounded-lg bg-[#2c2c2c] hover:bg-[#3d3d3d] text-white font-bold text-sm flex items-center justify-center cursor-pointer border border-[#444]"
+                >
+                  +
+                </button>
+                <button
+                  onClick={() => onUpdateStyleSettings({ fontSize: 1.0, positionX: 0, positionY: 0, rotation: 0 })}
+                  className="p-2 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600/30 text-gray-300 hover:text-white text-[10px] font-bold uppercase flex items-center gap-1 cursor-pointer border border-[#444]"
+                  title="Reset size and position"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Reset
+                </button>
+              </div>
+            </div>
+
             {/* Font Family & Genres */}
             <div>
               <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center gap-1.5">
@@ -367,7 +502,7 @@ export default function EditorPanel({
                 <div className="text-[10px] font-black uppercase tracking-wider text-[#777] mb-2">Style Genres</div>
                 <div className="grid grid-cols-3 gap-2">
                   {genres.map((g) => {
-                    const isActive = styleSettings.fontFamily === g.fontFamily;
+                    const isActive = safeSettings.fontFamily === g.fontFamily;
                     return (
                       <button
                         key={g.id}
@@ -383,18 +518,13 @@ export default function EditorPanel({
                     );
                   })}
                 </div>
-                {genres.some(g => g.fontFamily === styleSettings.fontFamily) && (
-                  <div className="text-[9px] text-fuchsia-400 font-semibold mt-2 text-center animate-fade-in">
-                    ✨ Automatically selected <strong className="uppercase font-black">{styleSettings.fontFamily}</strong> font for you!
-                  </div>
-                )}
               </div>
 
               {/* Individual Fonts */}
-              <div className="text-[10px] font-black uppercase tracking-wider text-[#777] mb-2">All Individual Fonts</div>
+              <div className="text-[10px] font-black uppercase tracking-wider text-[#777] mb-2">All Fonts</div>
               <div className="flex flex-wrap gap-1.5">
                 {fonts.map((f) => {
-                  const isActive = styleSettings.fontFamily === f.id;
+                  const isActive = safeSettings.fontFamily === f.id;
                   return (
                     <button
                       key={f.id}
@@ -419,7 +549,7 @@ export default function EditorPanel({
               </div>
               <div className="grid grid-cols-4 gap-2">
                 {(['none', 'all', 'lower', 'sentence'] as const).map((cap) => {
-                  const isActive = styleSettings.capitalization === cap;
+                  const isActive = safeSettings.capitalization === cap;
                   return (
                     <button
                       key={cap}
@@ -448,7 +578,7 @@ export default function EditorPanel({
                   { id: 'center', icon: AlignCenter, label: 'Center' },
                   { id: 'right', icon: AlignRight, label: 'Right' },
                 ].map((align) => {
-                  const isActive = styleSettings.alignment === align.id;
+                  const isActive = safeSettings.alignment === align.id;
                   const Icon = align.icon;
                   return (
                     <button
@@ -475,13 +605,13 @@ export default function EditorPanel({
                   <Hash className="w-4 h-4 text-fuchsia-500" /> Words on Screen
                 </span>
                 <span className="text-[10px] bg-fuchsia-600/20 text-fuchsia-400 px-2 py-0.5 rounded-full font-bold">
-                  Active: {styleSettings.maxWordsPerScreen === 0 ? 'Auto with AI' : `${styleSettings.maxWordsPerScreen} ${styleSettings.maxWordsPerScreen === 1 ? 'word' : 'words'}`}
+                  Active: {safeSettings.maxWordsPerScreen === 0 ? 'Auto with AI' : `${safeSettings.maxWordsPerScreen} ${safeSettings.maxWordsPerScreen === 1 ? 'word' : 'words'}`}
                 </span>
               </div>
               
               <div className="grid grid-cols-6 gap-1.5 mb-2.5">
                 {[0, 1, 2, 3, 4, 5].map((num) => {
-                  const isActive = styleSettings.maxWordsPerScreen === num;
+                  const isActive = safeSettings.maxWordsPerScreen === num;
                   return (
                     <button
                       key={num}
@@ -510,12 +640,12 @@ export default function EditorPanel({
                       showBackground: false,
                       showSpotlight: false,
                       showBacklight: false,
-                      highlightColor: '#F472B6', // pink highlight as default
+                      highlightColor: '#F472B6',
                       capitalization: 'sentence',
                       rotation: 0,
                     });
                     setIsAnalyzingAI(false);
-                  }, 1200);
+                  }, 800);
                 }}
                 disabled={isAnalyzingAI}
                 className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700 text-white font-extrabold text-[11px] uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
@@ -549,13 +679,13 @@ export default function EditorPanel({
                     <div className="text-[10px] text-[#888888]">Toggle whether to render visual reaction emojis</div>
                   </div>
                   <button
-                    onClick={() => onUpdateStyleSettings({ showEmojis: styleSettings.showEmojis !== false ? false : true })}
+                    onClick={() => onUpdateStyleSettings({ showEmojis: safeSettings.showEmojis !== false ? false : true })}
                     className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      styleSettings.showEmojis !== false ? 'bg-fuchsia-600' : 'bg-[#333]'
+                      safeSettings.showEmojis !== false ? 'bg-fuchsia-600' : 'bg-[#333]'
                     }`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      styleSettings.showEmojis !== false ? 'translate-x-5' : 'translate-x-0'
+                      safeSettings.showEmojis !== false ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                 </div>
@@ -567,19 +697,19 @@ export default function EditorPanel({
                     <div className="text-[10px] text-[#888888]">Toggle commas, periods, and question marks</div>
                   </div>
                   <button
-                    onClick={() => onUpdateStyleSettings({ showPunctuation: styleSettings.showPunctuation !== false ? false : true })}
+                    onClick={() => onUpdateStyleSettings({ showPunctuation: safeSettings.showPunctuation !== false ? false : true })}
                     className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      styleSettings.showPunctuation !== false ? 'bg-fuchsia-600' : 'bg-[#333]'
+                      safeSettings.showPunctuation !== false ? 'bg-fuchsia-600' : 'bg-[#333]'
                     }`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      styleSettings.showPunctuation !== false ? 'translate-x-5' : 'translate-x-0'
+                      safeSettings.showPunctuation !== false ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                 </div>
 
-                {/* Emoji Styles / Options Selector (Disabled if showEmojis is false) */}
-                {styleSettings.showEmojis !== false && (
+                {/* Emoji Styles / Options Selector */}
+                {safeSettings.showEmojis !== false && (
                   <div className="pt-3 border-t border-[#333] space-y-2.5 animate-fade-in">
                     <div className="text-[11px] font-black text-white uppercase tracking-wider">Emoji Theme Preset</div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -592,7 +722,7 @@ export default function EditorPanel({
                         { id: 'minimal', name: 'Minimal 👾', desc: 'Retro pixel' },
                         { id: 'custom', name: 'Magical 💖', desc: 'Cute dream' },
                       ].map((stylePreset) => {
-                        const isSel = (styleSettings.emojiStyle || 'auto') === stylePreset.id;
+                        const isSel = (safeSettings.emojiStyle || 'auto') === stylePreset.id;
                         return (
                           <button
                             key={stylePreset.id}
@@ -627,13 +757,13 @@ export default function EditorPanel({
                     <div className="text-[10px] text-[#888888]">Solid capsule background on active words</div>
                   </div>
                   <button
-                    onClick={() => onUpdateStyleSettings({ showBackground: !styleSettings.showBackground })}
+                    onClick={() => onUpdateStyleSettings({ showBackground: !safeSettings.showBackground })}
                     className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      styleSettings.showBackground ? 'bg-fuchsia-600' : 'bg-[#333]'
+                      safeSettings.showBackground ? 'bg-fuchsia-600' : 'bg-[#333]'
                     }`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      styleSettings.showBackground ? 'translate-x-5' : 'translate-x-0'
+                      safeSettings.showBackground ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                 </div>
@@ -645,13 +775,13 @@ export default function EditorPanel({
                     <div className="text-[10px] text-[#888888]">Dims inactive words to focus viewer</div>
                   </div>
                   <button
-                    onClick={() => onUpdateStyleSettings({ showSpotlight: !styleSettings.showSpotlight })}
+                    onClick={() => onUpdateStyleSettings({ showSpotlight: !safeSettings.showSpotlight })}
                     className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      styleSettings.showSpotlight ? 'bg-fuchsia-600' : 'bg-[#333]'
+                      safeSettings.showSpotlight ? 'bg-fuchsia-600' : 'bg-[#333]'
                     }`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      styleSettings.showSpotlight ? 'translate-x-5' : 'translate-x-0'
+                      safeSettings.showSpotlight ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                 </div>
@@ -663,13 +793,13 @@ export default function EditorPanel({
                     <div className="text-[10px] text-[#888888]">Neon bloom / glow behind highlights</div>
                   </div>
                   <button
-                    onClick={() => onUpdateStyleSettings({ showBacklight: !styleSettings.showBacklight })}
+                    onClick={() => onUpdateStyleSettings({ showBacklight: !safeSettings.showBacklight })}
                     className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      styleSettings.showBacklight ? 'bg-fuchsia-600' : 'bg-[#333]'
+                      safeSettings.showBacklight ? 'bg-fuchsia-600' : 'bg-[#333]'
                     }`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      styleSettings.showBacklight ? 'translate-x-5' : 'translate-x-0'
+                      safeSettings.showBacklight ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                 </div>
@@ -681,13 +811,13 @@ export default function EditorPanel({
                     <div className="text-[10px] text-[#888888]">Traditional drop-shadow and stroke outline</div>
                   </div>
                   <button
-                    onClick={() => onUpdateStyleSettings({ showShadow: !styleSettings.showShadow })}
+                    onClick={() => onUpdateStyleSettings({ showShadow: !safeSettings.showShadow })}
                     className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      styleSettings.showShadow ? 'bg-fuchsia-600' : 'bg-[#333]'
+                      safeSettings.showShadow ? 'bg-fuchsia-600' : 'bg-[#333]'
                     }`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      styleSettings.showShadow ? 'translate-x-5' : 'translate-x-0'
+                      safeSettings.showShadow ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                 </div>
@@ -697,7 +827,7 @@ export default function EditorPanel({
             {/* Custom Color Palette */}
             <div>
               <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-2">
-                Active Word Color
+                Active Word Highlight Color
               </div>
               <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] items-center">
                 {premiumColors.map((c) => (
@@ -707,7 +837,7 @@ export default function EditorPanel({
                     style={{ backgroundColor: c.hex }}
                     title={c.name}
                     className={`w-8 h-8 rounded-full border-2 transition-transform active:scale-95 cursor-pointer ${
-                      styleSettings.highlightColor.toLowerCase() === c.hex.toLowerCase()
+                      safeHighlightHex === c.hex.toLowerCase()
                         ? 'border-white scale-110 shadow-lg shadow-white/10'
                         : 'border-transparent'
                     }`}
@@ -717,7 +847,7 @@ export default function EditorPanel({
                 <div className="relative w-8 h-8 rounded-full border-2 border-dashed border-[#555] hover:border-[#888] flex items-center justify-center transition-transform active:scale-95 cursor-pointer bg-transparent" title="Custom Color Picker">
                   <input
                     type="color"
-                    value={styleSettings.highlightColor}
+                    value={safeSettings.highlightColor || '#FACC15'}
                     onChange={(e) => onUpdateStyleSettings({ highlightColor: e.target.value })}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
@@ -738,7 +868,7 @@ export default function EditorPanel({
                     style={{ backgroundColor: c.hex }}
                     title={c.name}
                     className={`w-8 h-8 rounded-full border-2 transition-transform active:scale-95 cursor-pointer ${
-                      styleSettings.textColor.toLowerCase() === c.hex.toLowerCase()
+                      safeTextHex === c.hex.toLowerCase()
                         ? 'border-white scale-110 shadow-lg shadow-white/10'
                         : 'border-transparent'
                     }`}
@@ -748,7 +878,7 @@ export default function EditorPanel({
                 <div className="relative w-8 h-8 rounded-full border-2 border-dashed border-[#555] hover:border-[#888] flex items-center justify-center transition-transform active:scale-95 cursor-pointer bg-transparent" title="Custom Color Picker">
                   <input
                     type="color"
-                    value={styleSettings.textColor}
+                    value={safeSettings.textColor || '#FFFFFF'}
                     onChange={(e) => onUpdateStyleSettings({ textColor: e.target.value })}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
@@ -772,7 +902,7 @@ export default function EditorPanel({
             </div>
 
             {/* Bulk Selection and Action Header */}
-            {words.length > 0 && (
+            {(words || []).length > 0 && (
               <div className="flex flex-col gap-2.5">
                 <div className="flex items-center justify-between bg-[#1e1e1e] p-3 rounded-xl border border-[#333]">
                   <div className="flex items-center gap-2">
@@ -835,7 +965,7 @@ export default function EditorPanel({
                         onClick={handleSelectAll}
                         className="text-[10px] font-bold uppercase text-fuchsia-400 hover:text-fuchsia-300 cursor-pointer bg-transparent border-none"
                       >
-                        Select All ({words.length})
+                        Select All ({(words || []).length})
                       </button>
                       <button
                         onClick={handleClearSelection}
@@ -850,13 +980,12 @@ export default function EditorPanel({
             )}
             
             <div className="flex-1 overflow-visible lg:overflow-y-auto max-h-none lg:max-h-[500px] space-y-3 bg-[#0A0A0A] p-4 border border-[#333] custom-scrollbar rounded-xl">
-              {words.length === 0 ? (
+              {(words || []).length === 0 ? (
                 <p className="text-sm text-[#888888] text-center py-12">Upload a video to populate transcript</p>
               ) : (
                 sentences.map((s) => {
-                  // Determine if this sentence block is currently active in the play head
                   const isSentenceActive = s.words.some((sw) => {
-                    const idx = words.indexOf(sw);
+                    const idx = (words || []).indexOf(sw);
                     return idx === activeIndex;
                   });
 
@@ -889,7 +1018,6 @@ export default function EditorPanel({
 
                         {!isCurrentlyEditing && (
                           <div className="flex gap-1.5">
-                            {/* Sentence edit button: nicely sized for mobile tapping */}
                             <button
                               onClick={(e) => handleStartSentenceEdit(s.id, s.text, e)}
                               className="p-1.5 rounded-lg bg-[#333] hover:bg-fuchsia-500 text-white transition-all shrink-0 flex items-center gap-1 text-[9px] font-bold uppercase"
@@ -934,26 +1062,44 @@ export default function EditorPanel({
                       ) : (
                         <div className="flex flex-wrap gap-1.5">
                           {s.words.map((w) => {
-                            const isWordActive = words.indexOf(w) === activeIndex;
+                            const isWordActive = (words || []).indexOf(w) === activeIndex;
                             const isWordEditing = editingWordId === w.id;
                             const isSelected = selectedWordIds.has(w.id);
 
                             if (isWordEditing) {
                               return (
-                                <div key={w.id} className="flex items-center gap-1 bg-black border border-fuchsia-500 rounded px-1.5 py-0.5" onClick={e => e.stopPropagation()}>
-                                  <input
-                                    type="text"
-                                    value={editingWordText}
-                                    onChange={e => setEditingWordText(e.target.value)}
-                                    className="bg-transparent text-[12px] font-bold text-white w-14 focus:outline-none"
-                                    autoFocus
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') handleSaveWordEdit(w.id);
-                                    }}
-                                  />
-                                  <button onClick={() => handleSaveWordEdit(w.id)} className="text-fuchsia-400">
-                                    <Check className="w-3 h-3" />
-                                  </button>
+                                <div key={w.id} className="flex flex-col gap-1.5 bg-black border border-fuchsia-500 rounded-lg p-2 z-20" onClick={e => e.stopPropagation()}>
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="text"
+                                      value={editingWordText}
+                                      onChange={e => setEditingWordText(e.target.value)}
+                                      className="bg-[#111] border border-[#444] rounded px-2 py-1 text-[13px] font-bold text-white w-28 focus:outline-none focus:border-fuchsia-500"
+                                      autoFocus
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter') handleSaveWordEdit(w.id);
+                                      }}
+                                    />
+                                    <button 
+                                      onClick={() => handleSaveWordEdit(w.id)} 
+                                      className="p-1.5 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded cursor-pointer"
+                                      title="Save word"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  {/* Quick Emoji Attachment Toolbar */}
+                                  <div className="flex items-center gap-1 overflow-x-auto max-w-[200px] py-0.5 custom-scrollbar">
+                                    {quickEmojis.map(em => (
+                                      <button
+                                        key={em}
+                                        onClick={() => setEditingWordEmoji(editingWordEmoji === em ? '' : em)}
+                                        className={`text-[14px] p-1 rounded hover:bg-[#333] transition-transform ${editingWordEmoji === em ? 'bg-fuchsia-600/40 ring-1 ring-fuchsia-400 scale-110' : ''}`}
+                                      >
+                                        {em}
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
                               );
                             }
@@ -979,7 +1125,8 @@ export default function EditorPanel({
                                   }`}
                                 >
                                   {isSelected && <span className="text-[10px] text-fuchsia-200">✓</span>}
-                                  {stripASSTags(w.word)}
+                                  <span>{stripASSTags(w.word)}</span>
+                                  {w.emoji && <span className="text-[13px] ml-0.5 select-none">{w.emoji}</span>}
                                 </span>
                               );
                             }
@@ -988,13 +1135,14 @@ export default function EditorPanel({
                               <span 
                                 key={w.id}
                                 onClick={(e) => handleStartWordEdit(w, e)}
-                                className={`px-2 py-1 rounded text-[13px] font-black tracking-wide border transition-all hover:scale-105 active:scale-95 cursor-pointer ${
+                                className={`px-2 py-1 rounded text-[13px] font-black tracking-wide border transition-all hover:scale-105 active:scale-95 cursor-pointer flex items-center gap-1 ${
                                   isWordActive 
                                     ? 'bg-yellow-300 text-black border-yellow-400 font-extrabold shadow-sm' 
                                     : 'bg-[#2a2a2a] text-zinc-100 border-[#3a3a3a] hover:border-fuchsia-500/50'
                                 }`}
                               >
-                                {stripASSTags(w.word)}
+                                <span>{stripASSTags(w.word)}</span>
+                                {w.emoji && <span className="text-[13px] ml-0.5 select-none">{w.emoji}</span>}
                               </span>
                             );
                           })}
@@ -1006,7 +1154,7 @@ export default function EditorPanel({
               )}
             </div>
 
-            {words.length > 0 && (
+            {(words || []).length > 0 && (
               <div className="bg-[#1f1f1f] border border-[#333] rounded-xl p-4 shrink-0 flex flex-col gap-3">
                 <div className="text-[11px] font-extrabold uppercase text-[#888888] tracking-wider flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-fuchsia-500 animate-pulse" /> Offline Subtitle Export (100% Free)
@@ -1014,7 +1162,7 @@ export default function EditorPanel({
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => {
-                      const content = exportToSRT(words, styleSettings.maxWordsPerScreen || 3);
+                      const content = exportToSRT(words, safeSettings.maxWordsPerScreen || 3);
                       triggerDownload(content, 'subtitles.srt', 'text/plain');
                     }}
                     className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
@@ -1023,7 +1171,7 @@ export default function EditorPanel({
                   </button>
                   <button
                     onClick={() => {
-                      const content = exportToVTT(words, styleSettings.maxWordsPerScreen || 3);
+                      const content = exportToVTT(words, safeSettings.maxWordsPerScreen || 3);
                       triggerDownload(content, 'subtitles.vtt', 'text/vtt');
                     }}
                     className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
@@ -1032,7 +1180,7 @@ export default function EditorPanel({
                   </button>
                   <button
                     onClick={() => {
-                      const content = exportToASS(words, styleSettings.maxWordsPerScreen || 3);
+                      const content = exportToASS(words, safeSettings.maxWordsPerScreen || 3);
                       triggerDownload(content, 'subtitles.ass', 'text/plain');
                     }}
                     className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
@@ -1049,5 +1197,13 @@ export default function EditorPanel({
         )}
       </div>
     </div>
+  );
+}
+
+export default function EditorPanel(props: EditorPanelProps) {
+  return (
+    <EditorErrorBoundary>
+      <EditorPanelContent {...props} />
+    </EditorErrorBoundary>
   );
 }

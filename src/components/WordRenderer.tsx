@@ -1,4 +1,4 @@
-﻿// src/components/WordRenderer.tsx
+// src/components/WordRenderer.tsx
 // ═══════════════════════════════════════════════════════
 //  DROP-IN WORD RENDERER
 //  Usage:
@@ -37,8 +37,8 @@ export const WordRenderer: React.FC<WordRendererProps> = ({
         return (
           <span key={i} className={classes}>
             {w.word}
-            {w.is_sentence_end && w.emoji && (
-              <span className="emoji-badge">{w.emoji}</span>
+            {w.emoji && (
+              <span className="emoji-badge ml-1 inline-block select-none">{w.emoji}</span>
             )}
           </span>
         );

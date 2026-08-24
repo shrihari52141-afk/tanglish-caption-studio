@@ -1,4 +1,4 @@
-const EMOJI_REGEX = /[\u{1F300}-\u{1F9FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F1E6}-\u{1F1FF}]|[\u{1F191}-\u{1F251}]|[\u{1F004}]|[\u{1F0CF}]|[\u{1F170}-\u{1F171}]|[\u{1F17E}-\u{1F17F}]|[\u{1F18E}]|[\u{3030}]|[\u{2B50}]|[\u{2B55}]|[\u{2934}-\u{2935}]|[\u{2B05}-\u{2B07}]|[\u{2194}-\u{2199}]|[\u{21A9}-\u{21AA}]|[\u{3297}]|[\u{3299}]|[\u{1F201}-\u{1F202}]|[\u{1F21A}]|[\u{1F22F}]|[\u{1F232}-\u{1F23A}]|[\u{1F250}-\u{1F251}]|[\u{1F300}-\u{1F5FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F900}-\u{1F9FF}]/gu;
+const EMOJI_REGEX = /(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|[\u{1F300}-\u{1FAFF}]|[\u{2600}-\u{27BF}])/gu;
 
 // Category mappings for word associations
 const ASSOCIATIONS: Record<string, Record<string, string>> = {
@@ -196,7 +196,7 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
   wordsList: T[],
   maxWordsPerScreen: number = 0
 ): T[][] {
-  if (wordsList.length === 0) return [];
+  if (!wordsList || wordsList.length === 0) return [];
   const frames: T[][] = [];
   let currentFrame: T[] = [];
 
@@ -251,18 +251,6 @@ export function countSyllables(word: string): number {
 
 /**
  * Auto-Speedup Caption Algorithm for translation sync.
- *
- * When translating between languages, syllable count and word lengths change,
- * but the speaker's video time window never changes. If Kanglish speech lasts
- * 1.2s, the English translation highlights MUST complete in exactly 1.2s.
- *
- * This function takes translated words and forces their timestamps into the
- * source audio's exact millisecond bounds using SYLLABLE-weighted proportioning.
- *
- * @param translatedWords - Array of words with at least { word: string }
- * @param sourceStartMs   - Start of the source audio segment in ms
- * @param sourceEndMs     - End of the source audio segment in ms
- * @returns Array of words with start_ms and end_ms compressed to fit the window
  */
 export function calculateSpeedupTimestamps<T extends { word: string; is_expression?: boolean; is_question?: boolean; is_name?: boolean; is_sentence_end?: boolean; emoji?: string | null }>(
   translatedWords: T[],
@@ -281,7 +269,6 @@ export function calculateSpeedupTimestamps<T extends { word: string; is_expressi
   }
 
   // Use SYLLABLE-WEIGHTED proportioning (not character count).
-  // Syllables determine speech time, not letters.
   const totalSyllables = translatedWords.reduce((sum, item) => sum + countSyllables(item.word), 1);
   const msPerSyllable = totalWindowMs / totalSyllables;
 
@@ -309,51 +296,99 @@ export function calculateSpeedupTimestamps<T extends { word: string; is_expressi
 /**
  * Continuous Piecewise Alignment Algorithm with Acoustic Guardrail
  * 
- * Re-anchors Gemini-refined timestamps to Deepgram Nova-3 ground truth.
- * Three rules:
- * 1. Overlap Prevention: Enforce Start(N) >= End(N-1)
- * 2. Acoustic Guardrail: Snap to Deepgram if drift > 150ms
- * 3. Reading Duration Floor: Clamp minimum duration to (charLength × 22ms)
+ * Re-anchors Gemini-refined timestamps to Deepgram Nova-3 ground truth without stripping metadata.
  */
-export function continuousPiecewiseAlignment(
-  geminiWords: Array<{ word: string; start: number; end: number; highlight?: boolean }>,
-  deepgramWords: Array<{ word: string; start: number; end: number }>
-): Array<{ word: string; start: number; end: number; highlight?: boolean }> {
+export function continuousPiecewiseAlignment<T extends {
+  word: string;
+  start?: number;
+  end?: number;
+  start_ms?: number;
+  end_ms?: number;
+  start_time?: number;
+  end_time?: number;
+  highlight?: boolean;
+  is_expression?: boolean;
+  is_question?: boolean;
+  is_name?: boolean;
+  is_sentence_end?: boolean;
+  emoji?: string | null;
+  pause_after_ms?: number;
+  emotion_tone?: string;
+}>(
+  geminiWords: T[],
+  deepgramWords: Array<{ word?: string; start?: number; end?: number; start_ms?: number; end_ms?: number }>
+): T[] {
   if (!geminiWords || !geminiWords.length) return [];
 
+  // Helper to extract ms
+  const getMs = (val: number | undefined, defaultVal: number): number => {
+    if (typeof val !== 'number' || isNaN(val)) return defaultVal;
+    return val < 100 && val > 0 ? val * 1000 : val; // Normalize seconds to ms if under 100s
+  };
+
+  const dgNormalized = (deepgramWords || []).map((dg, i) => {
+    const s = getMs(dg.start_ms ?? dg.start, i * 400);
+    const e = getMs(dg.end_ms ?? dg.end, s + 350);
+    return { start: s, end: e, word: dg.word || '' };
+  });
+
+  let previousEnd = 0;
+
   return geminiWords.map((w, idx) => {
-    let start = w.start;
-    let end = w.end;
+    const rawStart = w.start_ms ?? w.start ?? (w.start_time !== undefined ? w.start_time * 1000 : undefined);
+    const rawEnd = w.end_ms ?? w.end ?? (w.end_time !== undefined ? w.end_time * 1000 : undefined);
+
+    let start = getMs(rawStart, previousEnd);
+    let end = getMs(rawEnd, start + 300);
 
     // Rule 1: Prevent overlapping with previous word's end timestamp
-    if (idx > 0 && start < geminiWords[idx - 1].end) {
-      start = geminiWords[idx - 1].end;
+    if (idx > 0 && start < previousEnd) {
+      start = previousEnd;
     }
 
-    // Rule 2: Anchor tightly to Deepgram ground-truth acoustic sound onset if Gemini drifts > 150ms
-    const sttMatch = deepgramWords[idx];
-    if (sttMatch) {
-      if (Math.abs(start - sttMatch.start) > 150) {
-        const duration = Math.max(40, end - start);
-        start = sttMatch.start;
-        end = Math.min(sttMatch.end, start + duration);
+    // Rule 2: Anchor to closest Deepgram acoustic word timestamp if drift > 200ms
+    if (dgNormalized.length > 0) {
+      // Find closest STT word in acoustic timeline
+      let bestMatch = dgNormalized[idx];
+      if (!bestMatch || Math.abs(bestMatch.start - start) > 1000) {
+        let minDiff = Infinity;
+        for (const dg of dgNormalized) {
+          const diff = Math.abs(dg.start - start);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestMatch = dg;
+          }
+        }
+      }
+
+      if (bestMatch && Math.abs(start - bestMatch.start) > 200 && Math.abs(start - bestMatch.start) < 2500) {
+        const duration = Math.max(50, end - start);
+        start = bestMatch.start;
+        end = Math.min(bestMatch.end, start + duration);
       }
     }
 
     // Rule 3: Enforce minimum display floor based on character length
-    const charCount = w.word.trim().length;
-    const minDuration = Math.max(30, Math.min(350, charCount * 22));
+    const charCount = (w.word || '').trim().length;
+    const minDuration = Math.max(40, Math.min(350, charCount * 24));
     if (end - start < minDuration) {
       end = start + minDuration;
     }
 
-    if (end <= start) end = start + 40;
+    if (end <= start) end = start + 50;
+    previousEnd = end;
+
+    const sSec = start / 1000;
+    const eSec = end / 1000;
 
     return {
-      word: w.word,
+      ...w,
       start: Math.round(start),
       end: Math.round(end),
-      highlight: !!w.highlight
+      start_ms: Math.round(start),
+      end_ms: Math.round(end),
+      start_time: sSec,
+      end_time: eSec,
     };
   });
 }

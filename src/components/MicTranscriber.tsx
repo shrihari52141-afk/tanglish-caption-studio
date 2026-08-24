@@ -8,7 +8,7 @@ const _envApiMic = (import.meta.env.VITE_API_URL || '').trim();
 const _isBrowserLocalhostMic =
   typeof window !== 'undefined' &&
   /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname);
-const API_BASE = _isBrowserLocalhost
+const API_BASE = _isBrowserLocalhostMic
   ? (_envApiMic || 'https://tanglish-caption-api.onrender.com')
   : ''; // Empty = same-origin (Cloudflare Pages functions)
 
@@ -222,13 +222,19 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
       setTranscript(data.transcript);
 
       if (data.words && Array.isArray(data.words)) {
-        const sanitized = sanitizeCaptionWords(
-          data.words.map((w: any, i: number) => ({
-            ...w,
-            word: stripASSTags(String(w.word ?? '')),
+        const rawWords: CaptionWord[] = data.words.map((w: any, i: number) => {
+          const startSec = typeof w.start_time === 'number' ? w.start_time : ((w.start || w.start_ms || 0) / 1000);
+          const endSec = typeof w.end_time === 'number' ? w.end_time : ((w.end || w.end_ms || (startSec * 1000 + 350)) / 1000);
+          return {
             id: `mic-word-${i}`,
-          }))
-        );
+            word: stripASSTags(String(w.word ?? '')),
+            start_time: startSec,
+            end_time: endSec,
+            is_hotword: !!w.is_hotword || !!w.highlight,
+            emoji: w.emoji || null,
+          };
+        });
+        const sanitized = sanitizeCaptionWords(rawWords);
         setTimedWords(sanitized);
       }
 

@@ -381,8 +381,8 @@ export default function VideoPlayer({
       styleSettings.emojiStyle || 'vibes'
     );
     
-    // Include emoji from API response if present
-    if (word.emoji && styleSettings.showEmojis !== false) {
+    // Include emoji from API response if present and not already part of formatted string
+    if (word.emoji && styleSettings.showEmojis !== false && !formatted.includes(word.emoji)) {
       formatted = `${formatted} ${word.emoji}`;
     }
     

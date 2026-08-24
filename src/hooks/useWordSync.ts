@@ -1,15 +1,15 @@
-﻿// src/hooks/useWordSync.ts
+// src/hooks/useWordSync.ts
 // ═══════════════════════════════════════════════════════
 //  requestAnimationFrame WORD SYNC WITH HOLD
 //  Replaces: setInterval(() => index++, 500)  ← BROKEN
 //  With:     RAF loop + getActiveIndex()      ← CORRECT
 // ═══════════════════════════════════════════════════════
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, RefObject } from "react";
 import { Word, getActiveIndex } from "../lib/captionEngine";
 
 export function useWordSync(
-  audioRef: React.RefObject<HTMLAudioElement | null>,
+  audioRef: RefObject<HTMLAudioElement | null>,
   romanTrack: Word[],
   englishTrack: Word[]
 ) {

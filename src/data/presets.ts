@@ -12,6 +12,8 @@ export interface PresetStyle {
     showBackground: boolean;
     showSpotlight: boolean;
     showBacklight: boolean;
+    showShadow?: boolean;
+    fontSize?: number;
     rotation: number;
     maxWordsPerScreen: number;
   };

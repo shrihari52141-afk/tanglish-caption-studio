@@ -16,7 +16,7 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 interface PresetPreviewProps {
-  settings: SubtitleStyleSettings;
+  settings: Partial<SubtitleStyleSettings>;
 }
 
 export default function PresetPreview({ settings }: PresetPreviewProps) {
@@ -35,15 +35,19 @@ export default function PresetPreview({ settings }: PresetPreviewProps) {
     const scaleX = W / 170; // reference width 170 (half of standard 340)
     const baseFontSize = 14 * scaleX;
 
+    const highlightCol = settings?.highlightColor || '#FACC15';
+    const textCol = settings?.textColor || '#FFFFFF';
+    const fontFamily = settings?.fontFamily || 'Inter';
+
     let fontName = 'sans-serif';
     let fontStyle = 'bold';
-    if (settings.fontFamily === 'Impact') { fontName = 'Impact, sans-serif'; fontStyle = '900 italic'; }
-    else if (settings.fontFamily === 'Courier') { fontName = '"Courier New", Courier, monospace'; fontStyle = 'bold'; }
-    else if (settings.fontFamily === 'Fredoka') { fontName = '"Fredoka", "Inter", sans-serif'; fontStyle = '900'; }
-    else if (settings.fontFamily === 'Space Grotesk') { fontName = '"Space Grotesk", sans-serif'; fontStyle = '900'; }
-    else if (settings.fontFamily === 'Playfair Display') { fontName = '"Playfair Display", Georgia, serif'; fontStyle = '900 italic'; }
-    else if (settings.fontFamily === 'Pacifico') { fontName = '"Pacifico", cursive'; fontStyle = 'normal'; }
-    else if (settings.fontFamily === 'Black Han Sans') { fontName = '"Black Han Sans", sans-serif'; fontStyle = '900'; }
+    if (fontFamily === 'Impact') { fontName = 'Impact, sans-serif'; fontStyle = '900 italic'; }
+    else if (fontFamily === 'Courier') { fontName = '"Courier New", Courier, monospace'; fontStyle = 'bold'; }
+    else if (fontFamily === 'Fredoka') { fontName = '"Fredoka", "Inter", sans-serif'; fontStyle = '900'; }
+    else if (fontFamily === 'Space Grotesk') { fontName = '"Space Grotesk", sans-serif'; fontStyle = '900'; }
+    else if (fontFamily === 'Playfair Display') { fontName = '"Playfair Display", Georgia, serif'; fontStyle = '900 italic'; }
+    else if (fontFamily === 'Pacifico') { fontName = '"Pacifico", cursive'; fontStyle = 'normal'; }
+    else if (fontFamily === 'Black Han Sans') { fontName = '"Black Han Sans", sans-serif'; fontStyle = '900'; }
     else { fontName = '"Helvetica Neue", Arial, sans-serif'; fontStyle = 'bold'; }
 
     ctx.font = `${fontStyle} ${baseFontSize}px ${fontName}`;
@@ -80,7 +84,6 @@ export default function PresetPreview({ settings }: PresetPreviewProps) {
         if (w.highlight) {
           // Animate the "Sample" word
           let scale = 1;
-          let dy = 0;
           if (cycle < 0.3) {
             const p = cycle / 0.3;
             scale = 0.8 + p * 0.4;
@@ -116,17 +119,17 @@ export default function PresetPreview({ settings }: PresetPreviewProps) {
           ctx.closePath();
           ctx.fill();
 
-          ctx.fillStyle = settings.highlightColor;
-          if (settings.showBacklight) {
-            ctx.shadowColor = settings.highlightColor;
+          ctx.fillStyle = highlightCol;
+          if (settings?.showBacklight) {
+            ctx.shadowColor = highlightCol;
             ctx.shadowBlur = 10 * scaleX;
           }
         } else {
-          ctx.fillStyle = settings.textColor;
-          if (settings.showShadow) {
+          ctx.fillStyle = textCol;
+          if (settings?.showShadow) {
             ctx.fillStyle = '#000';
             ctx.fillText(w.word, w.centerX + 1.5 * scaleX, curY + 1.5 * scaleX);
-            ctx.fillStyle = settings.textColor;
+            ctx.fillStyle = textCol;
           }
         }
         ctx.fillText(w.word, w.centerX, curY);

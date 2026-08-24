@@ -1,4 +1,4 @@
-﻿// src/lib/qwenEngine.ts — Qwen-powered forced aligner + Hold Algorithm
+// src/lib/qwenEngine.ts — Qwen-powered forced aligner + Hold Algorithm
 import OpenAI from "openai";
 
 const qwen = new OpenAI({
@@ -71,7 +71,7 @@ export async function transcribeWithQwen(
             role: "user",
             content: [
               { type: "text", text: `Transcribe. TARGET=${targetLanguage}, USE_EMOJIS=${useEmojis}. JSON only.` },
-              { type: "input_audio", input_audio: { data: audioBase64, format: audioFormat } },
+              { type: "input_audio", input_audio: { data: audioBase64, format: (audioFormat === "mp3" ? "mp3" : "wav") as "wav" | "mp3" } },
             ],
           },
         ],

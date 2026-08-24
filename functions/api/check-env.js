@@ -64,8 +64,8 @@ export async function onRequest(context) {
       hasDeepgramKeys: dgKeys.length > 0,
       deepgramKeysCount: dgKeys.length,
       envDetails,
-      primaryModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+      primaryModel: "gemini-3.7-flash",
+      fallbackModels: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
       timestamp: new Date().toISOString()
     }, null, 2),
     {
