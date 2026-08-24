@@ -1308,6 +1308,8 @@ export default function App() {
     }
   };
 
+  const handleUpload = handleProcessMedia;
+
   const handleCancelProcessing = () => {
     setState(s => ({
       ...s,
