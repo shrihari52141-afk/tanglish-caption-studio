@@ -200,8 +200,8 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
       contents: [{
         parts: [
           {
-            inline_data: {
-              mime_type: file.type || 'audio/wav',
+            inlineData: {
+              mimeType: file.type || 'audio/wav',
               data: base64Audio
             }
           },

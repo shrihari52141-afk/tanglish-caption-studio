@@ -36,6 +36,16 @@ export interface SubtitleStyleSettings {
   emojiStyle: 'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom' | 'auto';
 }
 
+export interface ProcessingStep {
+  id: string;
+  name: string;
+  description: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  startTime?: number;
+  durationMs?: number;
+  error?: string;
+}
+
 export interface AppState {
   videoUrl: string | null;
   videoFile: File | null;
@@ -51,6 +61,8 @@ export interface AppState {
   styleSettings: SubtitleStyleSettings;
   activeModel?: string;
   hasFailed?: boolean;
+  processingSteps?: ProcessingStep[];
+  processingStartTime?: number | null;
   lastUploadParams?: {
     file: File;
     language: string;

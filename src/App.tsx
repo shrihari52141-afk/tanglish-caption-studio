@@ -2,9 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import VideoPlayer from './components/VideoPlayer';
 import VideoUploader from './components/VideoUploader';
 import EditorPanel from './components/EditorPanel';
-import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings } from './types';
+import { ProcessingModal } from './components/ProcessingModal';
+import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings, ProcessingStep } from './types';
 import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages, Check } from 'lucide-react';
 import { extractAudioTrack } from './utils/audioExtractor';
+import { directTranscribe } from './utils/directTranscriber';
 import { getAccessToken, logout, initAuth, googleSignIn } from './utils/firebaseAuth';
 import { 
   applyCaptionFormatting, 
@@ -360,6 +362,33 @@ function drawSubtitlesOnCanvas(
   ctx.restore();
 }
 
+const INITIAL_PROCESSING_STEPS: ProcessingStep[] = [
+  {
+    id: 'step-audio',
+    name: '1. Local Audio Extraction',
+    description: 'Hardware 16kHz mono WAV extraction & compression in browser',
+    status: 'pending',
+  },
+  {
+    id: 'step-deepgram',
+    name: '2. Deepgram Nova-3 Direct Pass',
+    description: 'Direct acoustic speech analysis, sound onsets & language detection',
+    status: 'pending',
+  },
+  {
+    id: 'step-gemini',
+    name: '3. Gemini 3.6 Flash Direct Pass',
+    description: 'Direct AI transliteration of Tanglish slang, hotwords & contextual emojis',
+    status: 'pending',
+  },
+  {
+    id: 'step-align',
+    name: '4. Continuous Piecewise Alignment',
+    description: 'Client-side acoustic locking & zero-lag lip sync generation',
+    status: 'pending',
+  },
+];
+
 export default function App() {
   const [state, setState] = useState<AppState>({
     videoUrl: null,
@@ -372,7 +401,9 @@ export default function App() {
     currentTime: 0,
     uploadProgress: 0,
     logs: [],
-    activeModel: "gemini-3.6-flash",
+    activeModel: "Gemini 3.6 Flash",
+    processingSteps: INITIAL_PROCESSING_STEPS,
+    processingStartTime: null,
     styleSettings: {
       preset: 'bounce',
       fontFamily: 'Inter',
@@ -1130,10 +1161,10 @@ export default function App() {
     }
   };
 
-  const handleUpload = async (
+  const handleProcessMedia = async (
     file: File, 
     language: string, 
-    useEmojis: boolean, 
+    useEmojis: boolean,
     translationMode: string,
     usePunctuation: boolean,
     emojiStyle: 'none' | 'emotions' | 'vibes' | 'objects' | 'energetic' | 'minimal' | 'custom' | 'auto',
@@ -1141,9 +1172,17 @@ export default function App() {
     preExtractedAudioBlob?: Blob | null
   ) => {
     const videoUrl = URL.createObjectURL(file);
-    const jobId = Math.random().toString(36).substring(7);
+    const processStart = Date.now();
     
-    await wakeServer();
+    // Initialize steps fresh
+    const initialSteps = INITIAL_PROCESSING_STEPS.map((st, idx) => ({
+      ...st,
+      status: (idx === 0 ? 'in_progress' : 'pending') as 'pending' | 'in_progress' | 'completed' | 'failed',
+      startTime: idx === 0 ? Date.now() : undefined,
+      durationMs: undefined,
+      error: undefined,
+    }));
+
     setState(s => ({ 
       ...s, 
       videoFile: file, 
@@ -1152,6 +1191,8 @@ export default function App() {
       isTransliterating: true,
       uploadProgress: 0,
       hasFailed: false,
+      processingStartTime: processStart,
+      processingSteps: initialSteps,
       lastUploadParams: {
         file,
         language,
@@ -1162,9 +1203,7 @@ export default function App() {
         enableHotwords,
         preExtractedAudioBlob
       },
-      logs: preExtractedAudioBlob 
-        ? ["Using pre-extracted background audio for ultra-fast startup! 🚀"]
-        : ["Extracting audio track locally in browser for maximum speed..."],
+      logs: ["🚀 Initializing Direct AI Caption Engine (Zero Server Limits)..."],
       styleSettings: {
         ...s.styleSettings,
         showEmojis: useEmojis,
@@ -1173,239 +1212,100 @@ export default function App() {
       }
     }));
 
-    let audioBlob: Blob;
-    if (preExtractedAudioBlob) {
-      audioBlob = preExtractedAudioBlob;
-      setState(s => ({ 
-        ...s, 
-        logs: [...s.logs, `Ready! Pre-extracted audio size: ${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB. Uploading lightweight audio track...`] 
+    const updateStep = (stepId: string, status: 'pending' | 'in_progress' | 'completed' | 'failed', extra?: { durationMs?: number; error?: string }) => {
+      setState(s => ({
+        ...s,
+        processingSteps: (s.processingSteps || INITIAL_PROCESSING_STEPS).map(st => {
+          if (st.id === stepId) {
+            return {
+              ...st,
+              status,
+              ...(status === 'in_progress' ? { startTime: Date.now() } : {}),
+              ...(extra?.durationMs != null ? { durationMs: extra.durationMs } : (status === 'completed' && st.startTime ? { durationMs: Date.now() - st.startTime } : {})),
+              ...(extra?.error ? { error: extra.error } : {})
+            };
+          }
+          return st;
+        })
       }));
-    } else {
-      try {
-        audioBlob = await extractAudioTrack(file, (msg) => {
-          setState(s => ({ ...s, logs: [...s.logs, msg] }));
-        });
-        setState(s => ({ 
-          ...s, 
-          logs: [...s.logs, `Audio extraction complete! File size reduced from ${(file.size / (1024 * 1024)).toFixed(2)}MB to ${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB. Uploading lightweight audio track...`] 
-        }));
-      } catch (err) {
-        console.warn("Local audio extraction failed, falling back to original file upload.", err);
-        setState(s => ({ ...s, logs: [...s.logs, "Local audio extraction failed, uploading original file as fallback..."] }));
-        audioBlob = file;
-      }
-    }
+    };
 
-    const formData = new FormData();
-    const audioFile = new File([audioBlob], file.name.replace(/\.[^/.]+$/, "") + ".wav", { type: audioBlob.type || "audio/wav" });
-
-    // Map translationMode to scriptMode for the new dual-pass API
-    const scriptModeMap: Record<string, string> = {
-      'auto_roman': 'tanglish',      // Auto-detect language → Roman script
-      'transliterate': 'tanglish',   // Specified language → Roman script
-      'keep_script': 'native',       // Keep native script
-      'translate_english': 'english', // Translate to English
+    // Map translationMode to scriptMode
+    const scriptModeMap: Record<string, 'tanglish' | 'native' | 'english'> = {
+      'auto_roman': 'tanglish',
+      'transliterate': 'tanglish',
+      'keep_script': 'native',
+      'translate_english': 'english',
     };
     const scriptMode = scriptModeMap[translationMode] || 'tanglish';
 
-    formData.append('file', audioFile);
-    formData.append('language', language);
-    formData.append('scriptMode', scriptMode);
-    formData.append('useEmojis', useEmojis.toString());
-    formData.append('usePunctuation', usePunctuation.toString());
-    formData.append('emojiStyle', emojiStyle);
-    formData.append('translationMode', translationMode);
-    formData.append('enableHotwords', enableHotwords.toString());
-    formData.append('model', 'gemini-3.6-flash');
-
-    // Append client API keys from Vite env or localStorage if present
-    const clientGeminiKey = (import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || localStorage.getItem('saved_gemini_api_key') || '').trim();
-    const clientDgKey = (import.meta.env.VITE_DEEPGRAM_API_KEY || import.meta.env.DEEPGRAM_API_KEY || localStorage.getItem('deepgram_api_key') || localStorage.getItem('saved_deepgram_api_key') || '').trim();
-    if (clientGeminiKey) formData.append('geminiApiKey', clientGeminiKey);
-    if (clientDgKey) formData.append('deepgramApiKey', clientDgKey);
-
-    // Tracker metadata (emailed to owner on each upload)
-    let mediaDurationStr = 'Unknown';
-    let probedDurationSeconds: number | null = null;
     try {
-      const durationSeconds = await probeMediaDuration(file);
-      if (durationSeconds != null) {
-        probedDurationSeconds = durationSeconds;
-        mediaDurationStr = `${Math.floor(durationSeconds / 60)}m ${Math.floor(durationSeconds % 60)}s (${durationSeconds.toFixed(1)}s)`;
-      }
-      const meta = await buildTrackerClientMeta({
-        durationSeconds,
-        title: file.name,
+      const result = await directTranscribe({
+        file,
+        language,
+        scriptMode,
+        translationMode,
+        useEmojis,
+        usePunctuation,
+        emojiStyle,
+        enableHotwords,
+        preExtractedAudioBlob,
+        onStepUpdate: updateStep,
+        onLog: (msg) => {
+          setState(s => ({ ...s, logs: [...s.logs, msg] }));
+        }
       });
-      formData.append("sessionId", meta.sessionId);
-      formData.append("sessionFailCount", String(meta.sessionFailCount));
-      formData.append("clientTimezone", meta.timezone);
-      formData.append("clientLanguage", meta.language);
-      formData.append("clientUserAgent", meta.userAgent);
-      formData.append("mediaDurationSeconds", meta.durationSeconds != null ? String(meta.durationSeconds) : "");
-      formData.append("mediaTitle", meta.title || file.name);
-      if (meta.location) {
-        formData.append("clientLocation", JSON.stringify(meta.location));
-      }
-      formData.append(
-        "styleSettingsJson",
-        JSON.stringify({
-          ...state.styleSettings,
-          showEmojis: useEmojis,
-          showPunctuation: usePunctuation,
-          emojiStyle,
-        })
-      );
-    } catch (err) {
-      console.warn("Tracker meta collection failed (upload continues):", err);
-    }
 
-const doUpload = async (attempt: number) => {
       setState(s => ({ 
         ...s, 
-        logs: [...s.logs, attempt > 1 ? `↻ Retrying upload (attempt ${attempt}/3)...` : "📤 Uploading audio to Cloudflare Pages..."]
+        words: result.words, 
+        activeModel: `Gemini ${result.modelUsed.replace('gemini-', '').replace('-flash', ' Flash')}`,
+        isProcessing: false,
+        hasFailed: false,
+      }));
+      setMobileTab('preview');
+
+      // Tracker notification in background
+      const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
+      const fileIsVideo = file.type.startsWith('video/');
+      notifyTelegram({
+        fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
+        fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+        audioSize: `Direct Client API`,
+        aiProcessingCount: result.words.length,
+        source: fileIsAudio ? 'audio' : 'video',
+        language: result.detectedLanguage,
+        translationMode: translationMode || 'transliterate',
+        aiModel: `Deepgram Nova-3 + Gemini ${result.modelUsed}`,
+        mediaDuration: 'Direct',
+        emojiStyle: emojiStyle,
+        useEmojis: useEmojis,
+        usePunctuation: usePunctuation,
+        captionWords: result.words.length,
+      });
+
+    } catch (err: any) {
+      incrementSessionFails();
+      const em = err.message || 'Direct transcription failed';
+      
+      setState(s => ({
+        ...s,
+        hasFailed: true,
+        processingSteps: (s.processingSteps || INITIAL_PROCESSING_STEPS).map(st => {
+          if (st.status === 'in_progress') {
+            return { ...st, status: 'failed', error: em };
+          }
+          return st;
+        }),
+        logs: [...s.logs, `❌ ERROR: ${em}`]
       }));
 
-      try {
-        setState(s => ({ ...s, logs: [...s.logs, "🔊 Deepgram Nova-3 analyzing audio (with filler_words=true)..."] }));
-        
-        const response = await fetch('/api/transcribe', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
-
-        setState(s => ({ ...s, logs: [...s.logs, "🤖 Gemini text-only refiner processing timestamps..."] }));
-
-        const data = await response.json();
-
-        // Safely extract words array from server response
-        const roughWords = Array.isArray(data.roughWords) ? data.roughWords : [];
-        const rawWordsArray = Array.isArray(data.words)
-          ? data.words
-          : (Array.isArray(data.alignedWords)
-              ? data.alignedWords
-              : (Array.isArray(data.rawGeminiResult)
-                  ? data.rawGeminiResult
-                  : (data.rawGeminiResult?.segments
-                      ? data.rawGeminiResult.segments.flatMap((s: any) => (s.words || []).map((w: any) => ({ ...w, emoji: s.emoji || '' })))
-                      : [])));
-        
-        setState(s => ({ ...s, logs: [...s.logs, "🎯 Continuous piecewise alignment applied (acoustic guardrail)..."] }));
-        
-        let alignedWords = rawWordsArray;
-        if (roughWords.length > 0 && rawWordsArray.length > 0) {
-          alignedWords = continuousPiecewiseAlignment(rawWordsArray, roughWords);
-        }
-
-        // Extract raw words list
-        const rawWordsList = Array.isArray(alignedWords) ? alignedWords : [];
-
-        // ── TIMESTAMP UNIT DETECTION (sync fix) ─────────────────────────
-        // The old per-word heuristic (`raw < 100 ? raw*1000 : raw`) desynced
-        // captions: second-based values >= 100 (any word after 1:40) were kept
-        // as milliseconds, and ms-based values < 100ms were multiplied x1000.
-        // Detect the unit ONCE for the whole track instead.
-        const extractRaw = (w: any) => ({
-          start: typeof w.start_ms === 'number' ? w.start_ms : (typeof w.start === 'number' ? w.start : (w.start_time || 0) * 1000),
-          end: typeof w.end_ms === 'number' ? w.end_ms : (typeof w.end === 'number' ? w.end : (w.end_time || 0) * 1000),
-          explicitMs: typeof w.start_ms === 'number' || typeof w.end_ms === 'number',
-        });
-        const rawPairs = rawWordsList.map(extractRaw);
-        const maxRawEnd = rawPairs.reduce((m, r) => Math.max(m, r.end || 0), 0);
-        const hasExplicitMs = rawPairs.some(r => r.explicitMs);
-        // Decide whether raw values are milliseconds:
-        //  - explicit *_ms fields are always milliseconds
-        //  - if we know the real media duration, values far exceeding it
-        //    (in seconds) must be milliseconds
-        //  - otherwise, anything above 3 hours "in seconds" is assumed ms
-        const trackIsMs = hasExplicitMs
-          || (probedDurationSeconds != null && probedDurationSeconds > 0
-                ? maxRawEnd > probedDurationSeconds * 10
-                : maxRawEnd > 10800);
-        const toMs = (v: number) => (trackIsMs ? v : v * 1000);
-
-        const wordsWithIds = sanitizeCaptionWords(
-          rawWordsList.map((w: any, i: number, arr: any[]) => {
-            const sMs = toMs(rawPairs[i].start);
-            const eMs = toMs(rawPairs[i].end);
-
-            const sSec = sMs / 1000;
-            const eSec = eMs / 1000;
-
-            const nextSMs = i < arr.length - 1 ? toMs(rawPairs[i + 1].start) : eMs;
-
-            const pauseAfterMs = typeof w.pause_after_ms === 'number'
-              ? w.pause_after_ms
-              : Math.max(0, nextSMs - eMs);
-
-            return {
-              ...w,
-              word: stripASSTags(String(w.word ?? '')),
-              start_time: sSec,
-              end_time: eSec,
-              start_ms: Math.round(sMs),
-              end_ms: Math.round(eMs),
-              pause_after_ms: Math.round(pauseAfterMs),
-              id: `word-${i}`,
-            };
-          })
-        );
-
-        setState(s => ({ ...s, logs: [...s.logs, `✅ Captions ready - ${wordsWithIds.length} words perfectly synced!`] }));
-        
-        setState(s => ({ 
-          ...s, 
-          words: wordsWithIds, 
-          serverFilename: data.filename,
-          isProcessing: false 
-        }));
-        setMobileTab('preview');
-
-        const fileIsAudio = file.type.startsWith('audio/') || file.name.endsWith('.mp3') || file.name.endsWith('.wav') || file.name.endsWith('.m4a') || file.name.endsWith('.webm');
-        const fileIsVideo = file.type.startsWith('video/');
-        notifyTelegram({
-          fileName: `${fileIsVideo ? '🎬' : '🎵'} ${file.name}`,
-          fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-          audioSize: `${(audioBlob.size / (1024 * 1024)).toFixed(2)} MB`,
-          aiProcessingCount: wordsWithIds.length,
-          source: fileIsAudio ? 'audio' : 'video',
-          language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
-          translationMode: translationMode || 'transliterate',
-          aiModel: 'Gemini 3.6 Flash + Deepgram Nova-3',
-          mediaDuration: mediaDurationStr,
-          emojiStyle: emojiStyle,
-          useEmojis: useEmojis,
-          usePunctuation: usePunctuation,
-          captionWords: wordsWithIds.length,
-        });
-      } catch (err: any) {
-        if (attempt < 3) {
-          setState(s => ({ ...s, logs: [...s.logs, `⚠ Attempt ${attempt} failed: ${err.message}. Retrying...`] }));
-          await new Promise(r => setTimeout(r, 1000 * attempt));
-          await doUpload(attempt + 1);
-        } else {
-          incrementSessionFails();
-          const em = err.message || 'Transcription failed after 3 attempts';
-          setState(s => ({ 
-            ...s, 
-            hasFailed: true,
-            logs: [...s.logs, `ERROR: ${em}`]
-          }));
-          notifyTelegramError(em, 'Transcription (dual-pass)', {
-            fileName: file.name,
-            fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-            source: file.type.startsWith('video/') ? 'video' : 'audio',
-          });
-        }
-      }
-    };
-
-    doUpload(1);
+      notifyTelegramError(em, 'Direct Client Transcription', {
+        fileName: file.name,
+        fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+        source: file.type.startsWith('video/') ? 'video' : 'audio',
+      });
+    }
   };
 
   const handleCancelProcessing = () => {
@@ -1632,103 +1532,6 @@ const doUpload = async (attempt: number) => {
                 onDisplaySizeChange={(size) => { editorDisplayRef.current = size; }}
                 onRemoveVideo={() => setShowRemoveDialog(true)}
               />
-              {state.isProcessing && (
-                <div className="absolute inset-0 bg-black/85 backdrop-blur-md z-20 flex flex-col items-center justify-center p-8">
-                  <div className="w-full max-w-md bg-[#161616] border border-[#333] rounded-2xl p-7 shadow-[0_0_50px_rgba(219,39,119,0.15)] flex flex-col gap-6 animate-fade-in">
-                    
-                    {state.hasFailed ? (
-                      <>
-                        {/* Header */}
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-[15px] font-black uppercase text-red-500 tracking-wider flex items-center gap-2">
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
-                            </span>
-                            Processing Failed
-                          </h3>
-                        </div>
-
-                        {/* Error details */}
-                        <div className="bg-[#111] border border-red-900/40 p-4 rounded-xl text-left max-h-[160px] overflow-y-auto custom-scrollbar">
-                          <p className="text-[11px] font-mono text-red-400 leading-relaxed whitespace-pre-wrap">
-                            {state.logs[state.logs.length - 1] || "An unexpected API or network issue occurred."}
-                          </p>
-                        </div>
-
-                        {/* Action Buttons */}
-                        <div className="flex flex-col gap-2">
-                          <button
-                            onClick={handleRetry}
-                            className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-black uppercase text-xs tracking-wider py-3.5 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-fuchsia-600/10 active:scale-95"
-                          >
-                            <RefreshCw className="w-4 h-4" /> Retry Subtitle Generation
-                          </button>
-                          <button
-                            onClick={handleCancelProcessing}
-                            className="w-full bg-[#1e1e1e] hover:bg-[#252525] text-gray-300 font-bold uppercase text-xs tracking-wider py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 border border-[#333] active:scale-95"
-                          >
-                            Cancel & Choose New Video
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        {/* Header */}
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-[15px] font-black uppercase text-fuchsia-500 tracking-wider flex items-center gap-2">
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
-                            </span>
-                             <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1 flex items-center gap-1">
-                              🤖 Gemini 3.6 Flash
-                            </span>
-                            <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
-                          </h3>
-                        </div>
-                        
-                        {/* Progress Bar Container */}
-                        <div className="space-y-3">
-                          <div className="w-full bg-[#0A0A0A] rounded-full h-3.5 overflow-hidden border border-[#222] p-0.5">
-                            <div 
-                              className="bg-gradient-to-r from-purple-600 to-fuchsia-600 h-full rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(219,39,119,0.5)]" 
-                              style={{ width: `${smoothProgress}%` }}
-                            ></div>
-                          </div>
-                          
-                          <p className="text-[12px] font-bold text-center text-[#aaaaaa] uppercase tracking-wide min-h-[18px] animate-pulse">
-                            {getProcessingStatusMessage()}
-                          </p>
-                        </div>
-
-                        {/* Live Logs Panel (Shows real-time progress steps) */}
-                        <div className="mt-2 bg-[#0A0A0A] border border-[#252525] rounded-xl p-3 max-h-52 overflow-y-auto custom-scrollbar flex flex-col-reverse">
-                          <div className="flex flex-col gap-1 text-[10px] font-mono text-[#888]">
-                            {state.logs.slice(-15).map((log, i) => (
-                              <div key={i} className="flex items-start gap-2 py-0.5 border-l-2 border-fuchsia-500/40 pl-2 bg-fuchsia-500/5 rounded-r">
-                                <span className="text-fuchsia-400 shrink-0 font-mono">›</span>
-                                <span className="text-[#eee] font-medium leading-tight">{log}</span>
-                              </div>
-                            ))}
-                            {state.logs.length === 0 && (
-                              <div className="text-center text-[#555] py-3">
-                                Initializing AI Caption Engine...
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </>
-                    )}
-
-                    {/* Branding */}
-                    <div className="flex items-center justify-center gap-2 pt-4 border-t border-[#252525] mt-1 text-[11px] font-black uppercase tracking-[3px] text-[#444] select-none">
-                      <span>Made with Batman 🦇</span>
-                    </div>
-
-                  </div>
-                </div>
-              )}
             </div>
             
             <div className={`h-auto lg:h-full bg-[#161616] overflow-visible lg:overflow-y-auto ${mobileTab === 'preview' ? 'hidden lg:block' : 'block'}`}>
@@ -1953,6 +1756,18 @@ const doUpload = async (attempt: number) => {
           </div>
         </div>
       )}
+
+      {/* Real-time Step-by-Step Processing Modal with pass checks, timers & live logs */}
+      <ProcessingModal
+        isOpen={state.isProcessing}
+        hasFailed={state.hasFailed}
+        steps={state.processingSteps || INITIAL_PROCESSING_STEPS}
+        startTime={state.processingStartTime}
+        logs={state.logs}
+        activeModel={state.activeModel}
+        onRetry={handleRetry}
+        onCancel={handleCancelProcessing}
+      />
     </div>
   );
 }
