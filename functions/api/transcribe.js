@@ -64,68 +64,49 @@ export async function onRequestPost(context) {
     const arrayBuffer = await file.arrayBuffer();
 
     // 1. Pass 1: Enhanced Deepgram Nova-3 API Call (Exact requested endpoint & params)
-    const validLanguages = ['ta', 'kn', 'hi', 'te', 'ml', 'mr', 'bn', 'gu', 'en', 'es', 'fr', 'de', 'pt', 'it', 'ru', 'ar', 'ja', 'ko', 'zh'];
-    let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
-    if (spokenLang && spokenLang !== 'auto' && validLanguages.includes(spokenLang)) {
-      dgUrl += `&language=${encodeURIComponent(spokenLang)}`;
-    } else {
-      dgUrl += `&detect_language=true`;
-    }
+    const candidateLanguages = (spokenLang && spokenLang !== 'auto')
+      ? [spokenLang, 'auto', 'ta', 'hi', 'te', 'kn', 'en']
+      : ['auto', 'ta', 'hi', 'te', 'kn', 'en'];
 
     const shuffledDgKeys = [...dgKeys].sort(() => Math.random() - 0.5);
     let dgResult = null;
     let lastDgError = null;
 
     if (shuffledDgKeys.length > 0) {
-      for (let i = 0; i < shuffledDgKeys.length; i++) {
-        const currentKey = shuffledDgKeys[i];
-        const authHeader = currentKey.toLowerCase().startsWith('token ') ? currentKey : `Token ${currentKey}`;
-
-        try {
-          const dgRes = await fetch(dgUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': authHeader,
-              'Content-Type': file.type || 'audio/wav'
-            },
-            body: arrayBuffer,
-            signal: AbortSignal.timeout(4000)
-          });
-
-          if (!dgRes.ok) {
-            const text = await dgRes.text();
-            throw new Error(`Deepgram API error (${dgRes.status}): ${text}`);
-          }
-
-          dgResult = await dgRes.json();
-          break;
-        } catch (err) {
-          lastDgError = err;
+      langLoop:
+      for (const testLang of candidateLanguages) {
+        let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
+        if (testLang === 'auto') {
+          dgUrl += `&detect_language=true`;
+        } else {
+          dgUrl += `&language=${encodeURIComponent(testLang)}`;
         }
-      }
 
-      // Fallback if language parameter was rejected by Deepgram
-      if (!dgResult) {
-        const fallbackUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
-        for (let i = 0; i < Math.min(1, shuffledDgKeys.length); i++) {
+        for (let i = 0; i < shuffledDgKeys.length; i++) {
           const currentKey = shuffledDgKeys[i];
           const authHeader = currentKey.toLowerCase().startsWith('token ') ? currentKey : `Token ${currentKey}`;
+
           try {
-            const dgRes = await fetch(fallbackUrl, {
+            const dgRes = await fetch(dgUrl, {
               method: 'POST',
               headers: {
                 'Authorization': authHeader,
                 'Content-Type': file.type || 'audio/wav'
               },
               body: arrayBuffer,
-              signal: AbortSignal.timeout(4000)
+              signal: AbortSignal.timeout(6000)
             });
+
             if (dgRes.ok) {
-              dgResult = await dgRes.json();
-              break;
+              const resJson = await dgRes.json();
+              const words = resJson?.results?.channels?.[0]?.alternatives?.[0]?.words || [];
+              if (words.length > 0) {
+                dgResult = resJson;
+                break langLoop;
+              }
             }
-          } catch {
-            // continue
+          } catch (err) {
+            lastDgError = err;
           }
         }
       }
@@ -137,6 +118,10 @@ export async function onRequestPost(context) {
       start: Math.round(w.start * 1000),
       end: Math.round(w.end * 1000)
     }));
+
+    const totalAudioDurationMs = roughWords.length > 0
+      ? roughWords[roughWords.length - 1].end + 1000
+      : 60000;
 
     // 2. Convert ArrayBuffer to Base64 in RAM for Gemini payload
     const bytes = new Uint8Array(arrayBuffer);
@@ -153,48 +138,25 @@ export async function onRequestPost(context) {
       native: spokenLang && spokenLang !== 'auto'
         ? `transcribe the spoken words with full punctuation in the NATIVE SCRIPT of language '${spokenLang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी).`
         : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with full punctuation in its native script.`,
-      tanglish: `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, etc.) and transcribe the spoken words with full punctuation in ROMANIZED / TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script using English letters (e.g. "Maanu", "Thappa", "Nee sari kadaiyathu", "madbeka?", "bhai kaisa hai").`,
+      tanglish: `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, etc.) and transcribe the spoken words with full punctuation in ROMANIZED / TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script using English letters (e.g. "Maa Behen movie la vandhu", "avanga society la irukavanga", "Nee sari kadaiyathu", "madbeka?", "bhai kaisa hai").`,
       english: `translate the audio accurately into standard, polished, natural ENGLISH words with full punctuation.`
     };
     const targetScriptInstruction = scriptPromptMap[scriptMode] || scriptPromptMap.tanglish;
 
     // 4. Gemini System Prompt
-    const systemPrompt = `You are an ultra-precise audio transcription, translation, multilingual slang recognition, and auto-speedup subtitle alignment engine.
+    const systemPrompt = `You are an ultra-precise audio transcription, translation, multilingual slang recognition, and zero-lag lip-sync subtitle engine.
 
-Your primary objective is ZERO-LAG LIP SYNC, EXACT SEMANTIC BREAKING, and PRECISE MULTILINGUAL PRONUNCIATION. The total duration of any translated or transcribed caption MUST strictly equal the acoustic speech duration of the source audio segment.
+TOTAL AUDIO DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
+PASS 1 ACOUSTIC TIMINGS FROM DEEPGRAM:
+${JSON.stringify(roughWords)}
 
-INPUT DATA:
-1. Audio file.
-2. Pass 1 baseline word timestamps: ${JSON.stringify(roughWords)}
-
-=== 1. SPEECH DURATION & TIMING LOCK ===
-- Detect exact acoustic start (\`start_ms\`) and acoustic end (\`end_ms\`) of each spoken source phrase in milliseconds.
-- NEVER stretch timestamps to fill silent audio gaps, pauses, or breath breaks.
-- When speech stops, end timestamps immediately.
-
-=== 2. MULTILINGUAL SLANG & ACCURATE PUNCTUATION ===
-- Intelligently recognize local slang, code-switching, Tanglish/Kanglish/Hinglish interjections, and colloquial expressions.
-- Correct misspelled or mistranscribed words from Pass 1 baseline while preserving exact vocal timing.
-- Add accurate punctuation (\`.\`, \`?\`, \`!\`, \`,\`) to words based on speaker tone, cadence, and pause markers.
-
-=== 3. CAPTION TRANSLATION & AUTO-SPEEDUP ===
-- Script Target: ${targetScriptInstruction}
-- Translate or transliterate speech accurately into the target script while strictly locking phrases inside the acoustic speech window.
-- AUTO-SPEEDUP: If target text contains more words/syllables, compress word durations proportionally so that the last word finishes EXACTLY when speech ends.
-- Do NOT expand time bounds beyond when the speaker finishes talking.
-
-=== 4. SEMANTIC BREAKING & HOT-WORD OVERRIDES ===
-Analyze tone and vocal expressions continuously. Tag special words:
-- \`is_expression\`: Set TRUE for sudden vocal interjections, emotional reactions, or tone shifts (e.g., "Ayyo!", "Ahaa!", "Shut up", "Oh god", "Aiyo", "Wow!").
-- \`is_question\`: Set TRUE for standalone interrogatives or questions (e.g., "madbeka?", "Hassan?", "book?", "can I book?").
-- \`is_name\`: Set TRUE for proper nouns, brand names, or people names (e.g., "Zara", "Shrihari", "Ani Cabs", "Bengaluru").
-- \`is_sentence_end\`: Set TRUE when a word ends with a full stop (\`.\`), exclamation mark (\`!\`), or question mark (\`?\`).
-- \`highlight\`: Set TRUE if the word is a name, exclamation, or key emotional hot-word.
-
-=== 5. SMART EMOJI MATCHING ===
-- Include 1 perfectly matching, contextually relevant emoji per segment matching the exact tone or main noun (e.g., "😟", "😱", "🚕", "🔥").
-
-Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
+=== STRICT FULL-COVERAGE TRANSCRIPTION MANDATE ===
+1. You MUST transcribe the COMPLETE audio track from 0ms all the way to the very end (${totalAudioDurationMs}ms).
+2. DO NOT STOP, TRUNCATE, OR SUMMARIZE. The last segment MUST reach the end of the audio track near ${totalAudioDurationMs}ms.
+3. Script Target: ${targetScriptInstruction}
+4. Use the Pass 1 acoustic timestamps as ground truth for start (\`s\`) and end (\`e\`) milliseconds.
+5. Add 1 contextually relevant emoji for key words / emotions.
+6. Return valid JSON adhering strictly to the JSON schema.`;
 
     const geminiReqBody = {
       contents: [{
@@ -206,7 +168,7 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
             }
           },
           {
-            text: "Transcribe the audio accurately with zero-lag lip-sync word timestamps in milliseconds adhering strictly to the JSON schema."
+            text: `Transcribe all spoken words from 0ms to ${totalAudioDurationMs}ms with millisecond timestamps and contextual emojis adhering strictly to the JSON schema.`
           }
         ]
       }],
@@ -214,62 +176,40 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
         parts: [{ text: systemPrompt }]
       },
       generationConfig: {
+        maxOutputTokens: 8192,
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
           properties: {
-            source_language: { type: "STRING" },
-            target_language: { type: "STRING" },
-            total_speech_duration_ms: { type: "INTEGER" },
             segments: {
               type: "ARRAY",
               items: {
                 type: "OBJECT",
                 properties: {
-                  segment_id: { type: "INTEGER" },
-                  source_text: { type: "STRING" },
-                  translated_text: { type: "STRING" },
+                  start_ms: { type: "INTEGER" },
+                  end_ms: { type: "INTEGER" },
+                  tanglish: { type: "STRING" },
                   emoji: { type: "STRING" },
-                  speech_window_ms: {
-                    type: "OBJECT",
-                    properties: {
-                      start_ms: { type: "INTEGER" },
-                      end_ms: { type: "INTEGER" }
-                    },
-                    required: ["start_ms", "end_ms"]
-                  },
                   words: {
                     type: "ARRAY",
                     items: {
                       type: "OBJECT",
                       properties: {
-                        word: { type: "STRING" },
-                        start_ms: { type: "INTEGER" },
-                        end_ms: { type: "INTEGER" },
-                        highlight: { type: "BOOLEAN" },
-                        is_expression: { type: "BOOLEAN" },
-                        is_question: { type: "BOOLEAN" },
-                        is_name: { type: "BOOLEAN" },
-                        is_sentence_end: { type: "BOOLEAN" }
+                        w: { type: "STRING" },
+                        s: { type: "INTEGER" },
+                        e: { type: "INTEGER" },
+                        emoji: { type: "STRING" },
+                        highlight: { type: "BOOLEAN" }
                       },
-                      required: [
-                        "word",
-                        "start_ms",
-                        "end_ms",
-                        "highlight",
-                        "is_expression",
-                        "is_question",
-                        "is_name",
-                        "is_sentence_end"
-                      ]
+                      required: ["w", "s", "e"]
                     }
                   }
                 },
-                required: ["segment_id", "source_text", "translated_text", "emoji", "speech_window_ms", "words"]
+                required: ["start_ms", "end_ms", "tanglish", "words"]
               }
             }
           },
-          required: ["source_language", "target_language", "segments"]
+          required: ["segments"]
         }
       }
     };
@@ -333,21 +273,27 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
     if (rawGeminiResult?.segments && Array.isArray(rawGeminiResult.segments)) {
       rawGeminiResult.segments.forEach((seg) => {
         const segEmoji = seg.emoji || '';
-        if (seg.words && Array.isArray(seg.words)) {
-          seg.words.forEach((w, wIdx) => {
-            extractedWords.push({
-              word: w.word,
-              start: w.start_ms,
-              end: w.end_ms,
-              start_ms: w.start_ms,
-              end_ms: w.end_ms,
-              highlight: !!w.highlight,
-              is_expression: !!w.is_expression,
-              is_question: !!w.is_question,
-              is_name: !!w.is_name,
-              is_sentence_end: !!w.is_sentence_end,
-              emoji: w.emoji || (wIdx === seg.words.length - 1 ? segEmoji : '')
-            });
+        const segWords = seg.words || [];
+        if (Array.isArray(segWords)) {
+          segWords.forEach((w, wIdx) => {
+            const wordText = w.w || w.word || '';
+            const sMs = w.s ?? w.start_ms ?? seg.start_ms;
+            const eMs = w.e ?? w.end_ms ?? seg.end_ms;
+            if (wordText) {
+              extractedWords.push({
+                word: wordText,
+                start: sMs,
+                end: eMs,
+                start_ms: sMs,
+                end_ms: eMs,
+                highlight: !!w.highlight,
+                is_expression: false,
+                is_question: wordText.includes('?'),
+                is_name: false,
+                is_sentence_end: wIdx === segWords.length - 1 || /[.!?]/.test(wordText),
+                emoji: w.emoji || (wIdx === segWords.length - 1 ? segEmoji : '')
+              });
+            }
           });
         }
       });

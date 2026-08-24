@@ -326,11 +326,13 @@ export function continuousPiecewiseAlignment<T extends {
     return val < 100 && val > 0 ? val * 1000 : val; // Normalize seconds to ms if under 100s
   };
 
-  const dgNormalized = (deepgramWords || []).map((dg, i) => {
-    const s = getMs(dg.start_ms ?? dg.start, i * 400);
-    const e = getMs(dg.end_ms ?? dg.end, s + 350);
-    return { start: s, end: e, word: dg.word || '' };
-  });
+  const dgNormalized = (deepgramWords || [])
+    .map((dg, i) => {
+      const s = getMs(dg.start_ms ?? dg.start, i * 400);
+      const e = getMs(dg.end_ms ?? dg.end, s + 350);
+      return { start: s, end: e, word: dg.word || '' };
+    })
+    .sort((a, b) => a.start - b.start);
 
   let previousEnd = 0;
 
@@ -346,25 +348,26 @@ export function continuousPiecewiseAlignment<T extends {
       start = previousEnd;
     }
 
-    // Rule 2: Anchor to closest Deepgram acoustic word timestamp if drift > 200ms
+    // Rule 2: Chronological Acoustic Anchoring to Deepgram
     if (dgNormalized.length > 0) {
-      // Find closest STT word in acoustic timeline
-      let bestMatch = dgNormalized[idx];
-      if (!bestMatch || Math.abs(bestMatch.start - start) > 1000) {
-        let minDiff = Infinity;
-        for (const dg of dgNormalized) {
+      // Find the closest acoustic word within a strict chronological window
+      let bestDg: { start: number; end: number; word: string } | null = null;
+      let minDiff = Infinity;
+
+      for (const dg of dgNormalized) {
+        if (dg.start >= previousEnd - 150) {
           const diff = Math.abs(dg.start - start);
-          if (diff < minDiff) {
+          if (diff < minDiff && diff <= 1200) {
             minDiff = diff;
-            bestMatch = dg;
+            bestDg = dg;
           }
         }
       }
 
-      if (bestMatch && Math.abs(start - bestMatch.start) > 200 && Math.abs(start - bestMatch.start) < 2500) {
-        const duration = Math.max(50, end - start);
-        start = bestMatch.start;
-        end = Math.min(bestMatch.end, start + duration);
+      if (bestDg && minDiff <= 800) {
+        const originalDuration = Math.max(50, end - start);
+        start = Math.max(previousEnd, bestDg.start);
+        end = Math.max(start + 50, Math.min(bestDg.end, start + originalDuration));
       }
     }
 

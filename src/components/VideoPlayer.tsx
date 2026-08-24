@@ -85,13 +85,19 @@ export default function VideoPlayer({
         
         let found: string | null = null;
         const currentWords = wordsRef.current;
-        for (let i = 0; i < currentWords.length; i++) {
-          const w = currentWords[i];
-          const pauseSec = (w.pause_after_ms || 0) / 1000;
-          const holdUntil = w.end_time + pauseSec;
-          if (t >= w.start_time && t < holdUntil) {
-            found = w.id;
-            break;
+        if (currentWords.length > 0) {
+          const firstWord = currentWords[0];
+          const lastWord = currentWords[currentWords.length - 1];
+          if (t >= firstWord.start_time - 0.05 && t <= lastWord.end_time + 0.8) {
+            for (let i = 0; i < currentWords.length; i++) {
+              const w = currentWords[i];
+              const pauseSec = Math.min(0.2, (w.pause_after_ms || 0) / 1000);
+              const holdUntil = w.end_time + pauseSec;
+              if (t >= w.start_time && t < holdUntil) {
+                found = w.id;
+                break;
+              }
+            }
           }
         }
         // Only update state if highlighted word actually changed
