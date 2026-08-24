@@ -86,17 +86,13 @@ export default function VideoPlayer({
         let found: string | null = null;
         const currentWords = wordsRef.current;
         if (currentWords.length > 0) {
-          const firstWord = currentWords[0];
-          const lastWord = currentWords[currentWords.length - 1];
-          if (t >= firstWord.start_time - 0.05 && t <= lastWord.end_time + 0.8) {
-            for (let i = 0; i < currentWords.length; i++) {
-              const w = currentWords[i];
-              const pauseSec = Math.min(0.2, (w.pause_after_ms || 0) / 1000);
-              const holdUntil = w.end_time + pauseSec;
-              if (t >= w.start_time && t < holdUntil) {
-                found = w.id;
-                break;
-              }
+          for (let i = 0; i < currentWords.length; i++) {
+            const w = currentWords[i];
+            // Only highlight while the speaker is actively pronouncing the word
+            // During pauses or silence between words, found is null so highlighter freezes
+            if (t >= w.start_time && t <= w.end_time) {
+              found = w.id;
+              break;
             }
           }
         }
@@ -357,15 +353,14 @@ export default function VideoPlayer({
       const idx = words.findIndex((w) => w.id === highlightedWordId);
       if (idx !== -1) return idx;
     }
-    // Find closest word by timestamp
-    let closestIdx = 0;
-    let minDiff = Math.abs(localTime - words[0].start_time);
+    // If in pause/silence, anchor to the current or most recent spoken word to prevent skipping
+    let activeIdx = 0;
     for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      const diff = Math.min(Math.abs(localTime - w.start_time), Math.abs(localTime - w.end_time));
-      if (diff < minDiff) { minDiff = diff; closestIdx = i; }
+      if (localTime >= words[i].start_time) {
+        activeIdx = i;
+      }
     }
-    return closestIdx;
+    return activeIdx;
   })();
 
   // Construct displayWords based on styleSettings.maxWordsPerScreen in a stable chunked block

@@ -192,7 +192,9 @@ export function applyCaptionFormatting(
   return wordOnly;
 }
 
-export function generateCaptionFrames<T extends { id: string; word: string; is_question?: boolean; is_expression?: boolean; is_sentence_end?: boolean }>(
+const EXPRESSION_REGEX = /^(?:ayyo|aiyo|ahaa|wow|oh\s+god|shut\s+up|seriously|wait|kya|enna|arere|chee|hurray|oops|hey|omg|super|sema|mass)[!,?.]*$/i;
+
+export function generateCaptionFrames<T extends { id: string; word: string; is_question?: boolean; is_expression?: boolean; is_sentence_end?: boolean; is_name?: boolean }>(
   wordsList: T[],
   maxWordsPerScreen: number = 0
 ): T[][] {
@@ -202,9 +204,15 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
 
   for (let i = 0; i < wordsList.length; i++) {
     const wordObj = wordsList[i];
+    const rawText = (wordObj.word || '').trim();
+    const cleanWord = rawText.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"'’]/g, "").trim().toLowerCase();
 
-    // RULE 1: Hot Word / Expression Override — isolate standalone reaction words
-    if (wordObj.is_expression) {
+    const isExpressionWord = !!wordObj.is_expression || EXPRESSION_REGEX.test(cleanWord) || (rawText.endsWith('!') && cleanWord.length < 10);
+    const isQuestionWord = !!wordObj.is_question || rawText.endsWith('?') || rawText.includes('?');
+    const isSentenceEndWord = !!wordObj.is_sentence_end || rawText.endsWith('.') || rawText.endsWith('!') || rawText.endsWith('?');
+
+    // RULE 1: Standalone reaction/expression words (e.g. "Ayyo!", "Shut up", "Oh god")
+    if (isExpressionWord) {
       if (currentFrame.length > 0) {
         frames.push(currentFrame);
         currentFrame = [];
@@ -216,14 +224,21 @@ export function generateCaptionFrames<T extends { id: string; word: string; is_q
     // Add current word to frame
     currentFrame.push(wordObj);
 
-    // RULE 2: Full Stop / Sentence End Override
-    if (wordObj.is_sentence_end || wordObj.word.includes('.') || wordObj.word.includes('!') || wordObj.word.includes('?')) {
+    // RULE 2: Question clause break (e.g. "madbeka? 🚕" or "tension yaake?" -> isolate question into its own frame)
+    if (isQuestionWord) {
       frames.push(currentFrame);
       currentFrame = [];
       continue;
     }
 
-    // RULE 3: Max Word Limit Fallback
+    // RULE 3: Sentence full-stop break (e.g. "agutho anno tension." -> isolate sentence round)
+    if (isSentenceEndWord) {
+      frames.push(currentFrame);
+      currentFrame = [];
+      continue;
+    }
+
+    // RULE 4: Max words per screen limit
     const effectiveLimit = maxWordsPerScreen > 0 ? maxWordsPerScreen : 6;
     if (currentFrame.length >= effectiveLimit) {
       frames.push(currentFrame);
