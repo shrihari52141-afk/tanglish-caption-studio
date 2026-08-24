@@ -1682,7 +1682,7 @@ const doUpload = async (attempt: number) => {
                               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-fuchsia-500"></span>
                             </span>
                              <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300 bg-fuchsia-500/15 border border-fuchsia-500/30 rounded-full px-2.5 py-1 flex items-center gap-1">
-                              🤖 {state.activeModel || "Gemini 2.5 Flash"}
+                              🤖 Gemini 3.6 Flash
                             </span>
                             <span className="text-[16px] font-black text-white">{Math.round(smoothProgress)}%</span>
                           </h3>

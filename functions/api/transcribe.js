@@ -277,12 +277,10 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
     // 6. Failover Execution over Models (3.6 Flash primary -> 3.5 Flash -> 3.5 Flash Lite) with key rotation
     const shuffledKeys = [...geminiKeys].sort(() => Math.random() - 0.5);
     const modelsToTry = [
-      ...(requestedModel && requestedModel !== 'gemini-3.7-flash' ? [requestedModel] : []),
       'gemini-3.6-flash',
       'gemini-3.5-flash',
-      'gemini-3.5-flash-lite',
-      'gemini-3.7-flash'
-    ].filter((v, idx, self) => self.indexOf(v) === idx);
+      'gemini-3.5-flash-lite'
+    ];
 
     let rawGeminiResult = null;
     let lastErr = null;
