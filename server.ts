@@ -1564,7 +1564,7 @@ Execute strictly based on configured OUTPUT_MODE:
     return null;
   }
 
-  app.post("/api/transcribe", upload.single("video"), async (req, res) => {
+  app.post("/api/transcribe", upload.fields([{ name: "file", maxCount: 1 }, { name: "video", maxCount: 1 }]), async (req, res) => {
     const jobId = req.query.jobId as string;
     const accessToken = getAccessTokenFromHeader(req);
     let audioPath: string | null = null;
@@ -1577,9 +1577,13 @@ Execute strictly based on configured OUTPUT_MODE:
     }
 
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No video file provided" });
+      const filesMap = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+      const uploadedFile = filesMap?.file?.[0] || filesMap?.video?.[0] || req.file;
+
+      if (!uploadedFile) {
+        return res.status(400).json({ error: "No video/audio file provided" });
       }
+      req.file = uploadedFile;
 
       const {
         language = "tamil",

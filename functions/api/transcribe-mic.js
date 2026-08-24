@@ -357,7 +357,8 @@ async function callGemini(base64Audio, mimeType, promptBody, geminiKeys) {
   let lastError;
 
   for (const model of models) {
-    for (const key of shuffledKeys) {
+    const keysToTry = shuffledKeys.slice(0, 3);
+    for (const key of keysToTry) {
       try {
         const geminiReqBody = {
           contents: [{
@@ -391,11 +392,15 @@ async function callGemini(base64Audio, mimeType, promptBody, geminiKeys) {
         };
 
         const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+              'Content-Type': 'application/json',
+              'x-goog-api-key': key
+            },
             body: JSON.stringify(geminiReqBody),
+            signal: AbortSignal.timeout(15000),
           }
         );
 

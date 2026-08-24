@@ -88,7 +88,8 @@ export async function onRequestPost(context) {
               'Authorization': authHeader,
               'Content-Type': file.type || 'audio/wav'
             },
-            body: arrayBuffer
+            body: arrayBuffer,
+            signal: AbortSignal.timeout(4000)
           });
 
           if (!dgRes.ok) {
@@ -106,7 +107,7 @@ export async function onRequestPost(context) {
       // Fallback if language parameter was rejected by Deepgram
       if (!dgResult) {
         const fallbackUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
-        for (let i = 0; i < shuffledDgKeys.length; i++) {
+        for (let i = 0; i < Math.min(1, shuffledDgKeys.length); i++) {
           const currentKey = shuffledDgKeys[i];
           const authHeader = currentKey.toLowerCase().startsWith('token ') ? currentKey : `Token ${currentKey}`;
           try {
@@ -116,7 +117,8 @@ export async function onRequestPost(context) {
                 'Authorization': authHeader,
                 'Content-Type': file.type || 'audio/wav'
               },
-              body: arrayBuffer
+              body: arrayBuffer,
+              signal: AbortSignal.timeout(4000)
             });
             if (dgRes.ok) {
               dgResult = await dgRes.json();
@@ -272,16 +274,14 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
       }
     };
 
-    // 6. Failover Execution over Models (3.7 Flash -> 3.6 Flash -> 3.5 Flash -> 2.5 Flash -> 2.0 -> 1.5) with key rotation
+    // 6. Failover Execution over Models (3.7 Flash -> 3.6 Flash -> 3.5 Flash -> 2.5 Flash) with key rotation
     const shuffledKeys = [...geminiKeys].sort(() => Math.random() - 0.5);
     const modelsToTry = [
       ...(requestedModel ? [requestedModel] : []),
       'gemini-3.7-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash',
-      'gemini-2.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash'
+      'gemini-2.5-flash'
     ].filter((v, idx, self) => self.indexOf(v) === idx);
 
     let rawGeminiResult = null;
@@ -291,13 +291,22 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
     outerLoop:
     for (const m of modelsToTry) {
       if (shuffledKeys.length === 0) break;
-      for (let i = 0; i < shuffledKeys.length; i++) {
-        const currentKey = shuffledKeys[i];
+      const keysToTest = shuffledKeys.slice(0, 3);
+      for (let i = 0; i < keysToTest.length; i++) {
+        const currentKey = keysToTest[i];
+        const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(currentKey)}`;
+        
+        const headers = { 
+          'Content-Type': 'application/json',
+          'x-goog-api-key': currentKey
+        };
+
         try {
-          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${currentKey}`, {
+          const geminiRes = await fetch(fetchUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(geminiReqBody)
+            headers,
+            body: JSON.stringify(geminiReqBody),
+            signal: AbortSignal.timeout(10000)
           });
 
           if (!geminiRes.ok) {
@@ -338,7 +347,7 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
               is_question: !!w.is_question,
               is_name: !!w.is_name,
               is_sentence_end: !!w.is_sentence_end,
-              emoji: wIdx === seg.words.length - 1 ? segEmoji : ''
+              emoji: w.emoji || (wIdx === seg.words.length - 1 ? segEmoji : '')
             });
           });
         }

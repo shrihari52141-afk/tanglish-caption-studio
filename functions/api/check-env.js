@@ -60,6 +60,7 @@ export async function onRequest(context) {
       status: "ok",
       hasGeminiKeys: geminiKeys.length > 0,
       geminiKeysCount: geminiKeys.length,
+      geminiKeyPrefixes: geminiKeys.map(k => k.substring(0, 10) + '... (len ' + k.length + ')'),
       geminiKeySource: geminiSource,
       hasDeepgramKeys: dgKeys.length > 0,
       deepgramKeysCount: dgKeys.length,
