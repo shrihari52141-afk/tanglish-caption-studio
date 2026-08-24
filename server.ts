@@ -166,14 +166,12 @@ export async function startServer() {
   let geminiKeys: string[] = [];
   let nextKeyIndex = 0;
 
-  // Model priority: 3.7-flash (primary) → 3.6-flash (backup 1) → 3.5-flash (backup 2) → 2.5-flash → 2.0-flash → 1.5-flash
-  const GEMINI_PRIMARY_MODEL = "gemini-3.7-flash";
+  // Model priority: 3.6-flash (primary) → 3.5-flash (backup 1) → 3.5-flash-lite (backup 2) → 3.7-flash
+  const GEMINI_PRIMARY_MODEL = "gemini-3.6-flash";
   const GEMINI_FALLBACK_MODELS = [
-    "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
   ];
   function geminiModelList(): string[] {
     return [GEMINI_PRIMARY_MODEL, ...GEMINI_FALLBACK_MODELS];

@@ -372,7 +372,7 @@ export default function App() {
     currentTime: 0,
     uploadProgress: 0,
     logs: [],
-    activeModel: "gemini-3.7-flash",
+    activeModel: "gemini-3.6-flash",
     styleSettings: {
       preset: 'bounce',
       fontFamily: 'Inter',
@@ -1216,6 +1216,7 @@ export default function App() {
     formData.append('emojiStyle', emojiStyle);
     formData.append('translationMode', translationMode);
     formData.append('enableHotwords', enableHotwords.toString());
+    formData.append('model', 'gemini-3.6-flash');
 
     // Append client API keys from Vite env or localStorage if present
     const clientGeminiKey = (import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || localStorage.getItem('saved_gemini_api_key') || '').trim();
@@ -1375,7 +1376,7 @@ const doUpload = async (attempt: number) => {
           source: fileIsAudio ? 'audio' : 'video',
           language: language === 'auto' ? 'Auto-Detect' : language.charAt(0).toUpperCase() + language.slice(1),
           translationMode: translationMode || 'transliterate',
-          aiModel: 'Gemini 3.7 Flash + Deepgram Nova-3',
+          aiModel: 'Gemini 3.6 Flash + Deepgram Nova-3',
           mediaDuration: mediaDurationStr,
           emojiStyle: emojiStyle,
           useEmojis: useEmojis,

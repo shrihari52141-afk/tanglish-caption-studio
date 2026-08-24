@@ -346,12 +346,10 @@ function getLanguageSpecificInstructions(language, translationMode) {
 
 async function callGemini(base64Audio, mimeType, promptBody, geminiKeys) {
   const models = [
-    'gemini-3.7-flash',
     'gemini-3.6-flash',
     'gemini-3.5-flash',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash'
+    'gemini-3.5-flash-lite',
+    'gemini-3.7-flash'
   ];
   const shuffledKeys = [...geminiKeys].sort(() => Math.random() - 0.5);
   let lastError;
