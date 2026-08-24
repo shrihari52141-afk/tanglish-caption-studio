@@ -216,26 +216,35 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
 
   const scriptPromptMap = {
     native: language && language !== 'auto'
-      ? `transcribe the spoken words with full punctuation in the NATIVE SCRIPT of language '${language}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी).`
-      : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with full punctuation in its native script.`,
-    tanglish: `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, etc.) and transcribe the spoken words with full punctuation in ROMANIZED / TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script using English letters (e.g. "Maa Behen movie la vandhu", "avanga society la irukavanga", "Nee sari kadaiyathu", "madbeka?", "bhai kaisa hai").`,
-    english: `translate the audio accurately into standard, polished, natural ENGLISH words with full punctuation.`
+      ? `transcribe the spoken words with full punctuation, authentic dialogue flow, and emotional nuance in the NATIVE SCRIPT of language '${language}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`
+      : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with full punctuation, authentic dialogue flow, and natural phrasing in its native script.`,
+    tanglish: `transcribe into natural, authentic, modern TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script with top creator / YouTube Shorts / Reels media channel quality readability.
+- Use natural, popular modern spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").
+- Retain the exact colloquial punch, slang, emotional intensity, conversational nuances, and pauses of the speaker.
+- Avoid robotic literal transliteration; make it read with natural, effortless broadcast flow.`,
+    english: `translate into professional, broadcast-grade, natural idiomatic ENGLISH subtitles (matching Netflix, Hotstar, and BBC subtitle standards).
+- Capture the EXACT emotional tone, intent, nuance, intensity, and meaning of the original spoken language.
+- Ensure natural phrasing and grammatical excellence without losing the speaker's personal intent or emotional weight.
+- Create concise, punchy subtitle lines that read smoothly in sync with the audio.`
   };
   const targetScriptInstruction = scriptPromptMap[scriptMode] || scriptPromptMap.tanglish;
 
-  const systemPrompt = `You are an ultra-precise audio transcription, translation, multilingual slang recognition, and zero-lag lip-sync subtitle engine.
+  const systemPrompt = `You are a professional broadcast media subtitle translator and dialogue adaptation expert (Netflix, Hotstar, YouTube Shorts standards).
 
 TOTAL AUDIO DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
 PASS 1 ACOUSTIC TIMINGS FROM DEEPGRAM:
 ${JSON.stringify(roughWords)}
 
-=== STRICT FULL-COVERAGE TRANSCRIPTION MANDATE ===
-1. You MUST transcribe the COMPLETE audio track from 0ms all the way to the very end (${totalAudioDurationMs}ms).
-2. DO NOT STOP, TRUNCATE, OR SUMMARIZE. The last segment MUST reach the end of the audio track near ${totalAudioDurationMs}ms.
-3. Script Target: ${targetScriptInstruction}
-4. Use the Pass 1 acoustic timestamps as ground truth for start (\`s\`) and end (\`e\`) milliseconds.
-5. Add 1 contextually relevant emoji for key words / emotions.
-6. Return valid JSON adhering strictly to the JSON schema.`;
+=== BROADCAST MEDIA SUBTITLE STANDARDS ===
+1. FULL-COVERAGE MANDATE: You MUST transcribe / translate the complete audio from 0ms all the way to ${totalAudioDurationMs}ms. Never truncate or stop early.
+2. TRANSLATION / ADAPTATION GOAL:
+${targetScriptInstruction}
+3. ZERO-LAG LIP-SYNC & SYLLABLE-WEIGHTED TIMINGS:
+   - Anchor each segment (\`start_ms\`, \`end_ms\`) strictly to the acoustic speech boundaries from Pass 1.
+   - For every word inside a segment, assign smooth, syllable-weighted start (\`s\`) and end (\`e\`) milliseconds that fit seamlessly within the segment window.
+   - The first word of a segment must begin exactly when speech starts, and the last word must end exactly when the speaker finishes the phrase.
+4. EMOJIS: Add 1 perfectly matched, high-impact emoji per segment for key emotional peaks or vivid nouns (e.g. 💔, 😭, 👗, 🎬, 🪞, 👥).
+5. Return strictly valid JSON matching the schema.`;
 
   const geminiReqBody = {
     contents: [{
