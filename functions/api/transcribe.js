@@ -281,7 +281,7 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
       'gemini-3.7-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash',
-      'gemini-2.5-flash'
+      'gemini-3.5-flash-lite'
     ].filter((v, idx, self) => self.indexOf(v) === idx);
 
     let rawGeminiResult = null;
@@ -302,11 +302,12 @@ Return ONLY valid JSON adhering strictly to the provided JSON Schema.`;
         };
 
         try {
+          const timeoutMs = m === 'gemini-3.7-flash' ? 5000 : 25000;
           const geminiRes = await fetch(fetchUrl, {
             method: 'POST',
             headers,
             body: JSON.stringify(geminiReqBody),
-            signal: AbortSignal.timeout(10000)
+            signal: AbortSignal.timeout(timeoutMs)
           });
 
           if (!geminiRes.ok) {
