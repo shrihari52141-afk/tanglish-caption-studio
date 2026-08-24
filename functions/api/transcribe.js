@@ -136,28 +136,31 @@ export async function onRequestPost(context) {
     // 3. Script Target Instruction
     const scriptPromptMap = {
       native: spokenLang && spokenLang !== 'auto'
-        ? `transcribe the spoken words with full punctuation, authentic dialogue flow, and emotional nuance in the NATIVE SCRIPT of language '${spokenLang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`
-        : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with full punctuation, authentic dialogue flow, and natural phrasing in its native script.`,
+        ? `transcribe the spoken words with 100% EXHAUSTIVE completeness, full punctuation, authentic dialogue flow, and emotional nuance in the NATIVE SCRIPT of language '${spokenLang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`
+        : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with 100% EXHAUSTIVE completeness, full punctuation, authentic dialogue flow, and natural phrasing in its native script.`,
       tanglish: `transcribe into natural, authentic, modern TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script with top creator / YouTube Shorts / Reels media channel quality readability.
+- 100% EXHAUSTIVE WORD RETENTION: Account for EVERY SINGLE SPOKEN WORD, particle, connector, and colloquial expression from the original audio (e.g. "vandhu", "kooda", "apdinra", "adhuve", "dhan", "seriously", "innum", "melum", "apdi", "madhiri", etc.). Never omit or skip any spoken word.
 - Use natural, popular modern spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").
-- Retain the exact colloquial punch, slang, emotional intensity, conversational nuances, and pauses of the speaker.
-- Avoid robotic literal transliteration; make it read with natural, effortless broadcast flow.`,
+- Retain the exact colloquial punch, slang, emotional intensity, conversational nuances, and pauses of the speaker.`,
       english: `translate into professional, broadcast-grade, natural idiomatic ENGLISH subtitles (matching Netflix, Hotstar, and BBC subtitle standards).
-- Capture the EXACT emotional tone, intent, nuance, intensity, and meaning of the original spoken language.
-- Ensure natural phrasing and grammatical excellence without losing the speaker's personal intent or emotional weight.
+- 100% FAITHFUL MEANING: Capture the EXACT emotional tone, intent, nuance, intensity, and every spoken clause of the original dialogue.
+- Ensure natural phrasing and grammatical excellence without losing any subtle details, emotional weight, or speaker intent.
 - Create concise, punchy subtitle lines that read smoothly in sync with the audio.`
     };
     const targetScriptInstruction = scriptPromptMap[scriptMode] || scriptPromptMap.tanglish;
 
     // 4. Gemini System Prompt
-    const systemPrompt = `You are a professional broadcast media subtitle translator and dialogue adaptation expert (Netflix, Hotstar, YouTube Shorts standards).
+    const systemPrompt = `You are a professional broadcast media subtitle translator, dialogue transcription, and syllable-synchronization engine (Netflix, Hotstar, YouTube Shorts standards).
 
 TOTAL AUDIO DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
 PASS 1 ACOUSTIC TIMINGS FROM DEEPGRAM:
 ${JSON.stringify(roughWords)}
 
-=== BROADCAST MEDIA SUBTITLE STANDARDS ===
-1. FULL-COVERAGE MANDATE: You MUST transcribe / translate the complete audio from 0ms all the way to ${totalAudioDurationMs}ms. Never truncate or stop early.
+=== 100% EXHAUSTIVE WORD RETENTION & BROADCAST SUBTITLE RULES ===
+1. ZERO OMISSIONS MANDATE:
+   - You MUST account for EVERY SINGLE SPOKEN WORD, particle, connector, and expression from the original speech.
+   - NEVER drop, skip, summarize, or gloss over any spoken word or sentence part.
+   - Maintain 100% complete coverage from 0ms all the way to ${totalAudioDurationMs}ms.
 2. TRANSLATION / ADAPTATION GOAL:
 ${targetScriptInstruction}
 3. ZERO-LAG LIP-SYNC & SYLLABLE-WEIGHTED TIMINGS:
