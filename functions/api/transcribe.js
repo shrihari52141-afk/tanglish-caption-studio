@@ -402,11 +402,35 @@ ${targetScriptInstruction}
           is_expression: false,
           is_question: false,
           is_name: false,
-          is_sentence_end: i === roughWords.length - 1,
+          is_sentence_end: i === roughWords.length - 1 || /[.!?]/.test(w.word),
           emoji: ''
         }));
       } else {
         throw new Error(lastErr?.message || 'Transcription failed to generate words.');
+      }
+    } else if (roughWords.length > 0) {
+      // 100% Full-Duration Coverage Guarantee: Check if Gemini stopped early
+      const lastExtractedEnd = extractedWords[extractedWords.length - 1].end_ms;
+      const lastAcousticEnd = roughWords[roughWords.length - 1].end_ms || roughWords[roughWords.length - 1].end;
+      if (lastExtractedEnd < lastAcousticEnd - 1500) {
+        const missingWords = roughWords.filter(w => (w.start_ms || w.start) >= lastExtractedEnd - 100);
+        missingWords.forEach((w, i) => {
+          const sMs = w.start_ms || w.start;
+          const eMs = w.end_ms || w.end;
+          extractedWords.push({
+            word: w.word,
+            start: sMs,
+            end: eMs,
+            start_ms: sMs,
+            end_ms: eMs,
+            highlight: false,
+            is_expression: false,
+            is_question: w.word.includes('?'),
+            is_name: false,
+            is_sentence_end: i === missingWords.length - 1 || /[.!?]/.test(w.word),
+            emoji: ''
+          });
+        });
       }
     }
 

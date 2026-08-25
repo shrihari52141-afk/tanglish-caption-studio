@@ -502,6 +502,31 @@ function safeJSONParse(text: string): any {
     } else {
       throw new Error(lastGeminiErr?.message || "Direct transcription failed to generate words.");
     }
+  } else if (roughWords.length > 0) {
+    // 100% Full-Duration Coverage Guarantee: Check if Gemini stopped early
+    const lastExtractedEnd = extractedWords[extractedWords.length - 1].end_ms;
+    const lastAcousticEnd = roughWords[roughWords.length - 1].end_ms;
+    if (lastExtractedEnd < lastAcousticEnd - 1500) {
+      onLog(`✓ Guaranteeing 100% full-duration coverage: Stitching remaining audio tail (${lastExtractedEnd}ms -> ${lastAcousticEnd}ms)...`);
+      const missingWords = roughWords.filter(w => (w.start_ms || w.start) >= lastExtractedEnd - 100);
+      missingWords.forEach((w, i) => {
+        const sMs = w.start_ms || w.start;
+        const eMs = w.end_ms || w.end;
+        extractedWords.push({
+          word: w.word,
+          start: sMs,
+          end: eMs,
+          start_ms: sMs,
+          end_ms: eMs,
+          highlight: false,
+          is_expression: false,
+          is_question: w.word.includes('?'),
+          is_name: false,
+          is_sentence_end: i === missingWords.length - 1 || /[.!?]/.test(w.word),
+          emoji: ''
+        });
+      });
+    }
   }
 
   onStepUpdate('step-gemini', 'completed', { durationMs: Date.now() - step3Start });
