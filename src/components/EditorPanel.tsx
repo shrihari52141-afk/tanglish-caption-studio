@@ -4,6 +4,7 @@ import { PRESETS, STYLE_CATEGORIES } from '../data/presets';
 import { Sparkles, Type, CaseSensitive, AlignCenter, AlignLeft, AlignRight, Sliders, Edit3, Check, Play, Hash, Smile, RotateCcw, ZoomIn } from 'lucide-react';
 import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from '../utils/subtitleExporter';
 import { stripASSTags } from '../utils/captionFormatter';
+import { ensureRomanScript } from '../utils/indicTransliterate';
 import PresetPreview from './PresetPreview';
 
 interface EditorPanelProps {
@@ -143,6 +144,17 @@ function EditorPanelContent({
           newWord = w.word.charAt(0).toUpperCase() + w.word.slice(1).toLowerCase();
         }
         return { ...w, word: newWord };
+      }
+      return w;
+    });
+    onUpdateWords(updated);
+  };
+
+  const handleBulkRomanize = () => {
+    if (!onUpdateWords || !words || words.length === 0) return;
+    const updated = (words || []).map(w => {
+      if (selectedWordIds.size === 0 || selectedWordIds.has(w.id)) {
+        return { ...w, word: ensureRomanScript(w.word) };
       }
       return w;
     });
@@ -958,6 +970,13 @@ function EditorPanelContent({
                         className="py-2.5 px-3 bg-[#2c2c2c] hover:bg-[#3d3d3d] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer border-none"
                       >
                         ✍️ Title Case
+                      </button>
+                      <button
+                        onClick={handleBulkRomanize}
+                        disabled={selectedWordIds.size === 0}
+                        className="col-span-2 py-2.5 px-3 bg-fuchsia-600/30 hover:bg-fuchsia-600 text-fuchsia-200 hover:text-white border border-fuchsia-500/50 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        🔤 Convert to Roman Script (A-Z)
                       </button>
                     </div>
                     <div className="flex gap-2 justify-between border-t border-[#2a2a2a] pt-2 mt-0.5">

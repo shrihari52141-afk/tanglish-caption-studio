@@ -358,32 +358,29 @@ export function continuousPiecewiseAlignment<T extends {
     let start = getMs(rawStart, previousEnd);
     let end = getMs(rawEnd, start + 300);
 
-    // Rule 1: Prevent overlapping with previous word's end timestamp
-    if (idx > 0 && start < previousEnd) {
-      start = previousEnd;
-    }
-
-    // Rule 2: Chronological Acoustic Anchoring to Deepgram
+    // Rule 1: Chronological Acoustic Anchoring to Deepgram
     if (dgNormalized.length > 0) {
-      // Find the closest acoustic word within a strict chronological window
       let bestDg: { start: number; end: number; word: string } | null = null;
       let minDiff = Infinity;
 
       for (const dg of dgNormalized) {
-        if (dg.start >= previousEnd - 150) {
-          const diff = Math.abs(dg.start - start);
-          if (diff < minDiff && diff <= 1200) {
-            minDiff = diff;
-            bestDg = dg;
-          }
+        const diff = Math.abs(dg.start - start);
+        if (diff < minDiff && diff <= 1200) {
+          minDiff = diff;
+          bestDg = dg;
         }
       }
 
-      if (bestDg && minDiff <= 800) {
+      if (bestDg && minDiff <= 700) {
         const originalDuration = Math.max(50, end - start);
-        start = Math.max(previousEnd, bestDg.start);
+        start = Math.max(previousEnd > start ? previousEnd : 0, bestDg.start);
         end = Math.max(start + 50, Math.min(bestDg.end, start + originalDuration));
       }
+    }
+
+    // Rule 2: Prevent backward overlapping without destroying pauses
+    if (idx > 0 && start < previousEnd) {
+      start = previousEnd;
     }
 
     // Rule 3: Enforce minimum display floor based on character length

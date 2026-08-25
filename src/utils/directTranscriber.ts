@@ -1,6 +1,8 @@
 import { CaptionWord } from '../types';
 import { continuousPiecewiseAlignment, sanitizeCaptionWords, stripASSTags } from './captionFormatter';
-import { extractAudioTrack } from './audioExtractor';
+import { extractAudioTrackDetails } from './audioExtractor';
+import { probeMediaDuration } from './sessionTracker';
+import { ensureRomanScript } from './indicTransliterate';
 
 export interface DirectTranscribeOptions {
   file: File;
@@ -99,6 +101,7 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     file,
     language = 'auto',
     scriptMode = 'tanglish',
+    translationMode = 'transliterate',
     useEmojis = true,
     usePunctuation = true,
     emojiStyle = 'vibes',
@@ -108,26 +111,41 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     onLog
   } = options;
 
+  const isRomanTarget = scriptMode === 'tanglish' || scriptMode === 'english' || translationMode === 'auto_roman' || translationMode === 'transliterate' || translationMode === 'translate_english';
+
   const totalStart = Date.now();
 
-  // ── Step 1: Audio Extraction ──
+  // ── Step 1: Audio Extraction & Media Duration Probing ──
   onStepUpdate('step-audio', 'in_progress');
-  onLog("🔊 Step 1: Extracting and downsampling 16kHz mono WAV locally...");
+  onLog("🔊 Step 1: Extracting audio track and probing full video duration...");
   const step1Start = Date.now();
   
   let audioBlob: Blob;
+  let hardwareDurationMs = 0;
+
+  // Probe duration in parallel
+  const probedDurationPromise = probeMediaDuration(file);
+
   if (preExtractedAudioBlob) {
     audioBlob = preExtractedAudioBlob;
+    hardwareDurationMs = (preExtractedAudioBlob as any).durationMs || 0;
     onLog(`✓ Using pre-extracted audio track (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
   } else {
     try {
-      audioBlob = await extractAudioTrack(file, (msg) => onLog(msg));
-      onLog(`✓ Audio extraction complete (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+      const info = await extractAudioTrackDetails(file, (msg) => onLog(msg));
+      audioBlob = info.blob;
+      hardwareDurationMs = info.durationMs;
+      onLog(`✓ Audio extraction complete (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB, Duration: ${(hardwareDurationMs / 1000).toFixed(1)}s).`);
     } catch (err: any) {
       onLog(`⚠ Audio extraction fallback: using original file container.`);
       audioBlob = file;
     }
   }
+
+  const probedSeconds = await probedDurationPromise;
+  const probedDurationMs = probedSeconds && Number.isFinite(probedSeconds) ? Math.round(probedSeconds * 1000) : 0;
+  const mediaDurationMs = Math.max(hardwareDurationMs, probedDurationMs, 0);
+
   onStepUpdate('step-audio', 'completed', { durationMs: Date.now() - step1Start });
 
   // ── Retrieve API Keys ──
@@ -171,7 +189,7 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
               'Content-Type': audioBlob.type || 'audio/wav',
             },
             body: audioBlob,
-            signal: AbortSignal.timeout(12000)
+            signal: AbortSignal.timeout(35000)
           });
 
           if (dgRes.ok) {
@@ -181,15 +199,19 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
               detectedLanguage = testLang === 'auto' 
                 ? (dgJson?.results?.channels?.[0]?.detected_language || 'ta') 
                 : testLang;
-              roughWords = words.map((w: any) => ({
-                word: w.punctuated_word || w.word,
-                start: Math.round(w.start * 1000),
-                end: Math.round(w.end * 1000),
-                start_ms: Math.round(w.start * 1000),
-                end_ms: Math.round(w.end * 1000),
-              }));
+              roughWords = words.map((w: any) => {
+                const rawText = w.punctuated_word || w.word || '';
+                const wordClean = isRomanTarget ? ensureRomanScript(rawText) : rawText;
+                return {
+                  word: wordClean,
+                  start: Math.round(w.start * 1000),
+                  end: Math.round(w.end * 1000),
+                  start_ms: Math.round(w.start * 1000),
+                  end_ms: Math.round(w.end * 1000),
+                };
+              });
               dgSuccess = true;
-              onLog(`✓ Deepgram Nova-3 captured ${roughWords.length} acoustic ground truth words (Language: ${detectedLanguage}, ${roughWords[0].start_ms}ms -> ${roughWords[roughWords.length - 1].end_ms}ms).`);
+              onLog(`✓ Deepgram Nova-3 captured ${roughWords.length} acoustic words (Language: ${detectedLanguage}, Span: ${roughWords[0].start_ms}ms -> ${roughWords[roughWords.length - 1].end_ms}ms).`);
               break langLoop;
             }
           }
@@ -202,48 +224,83 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
 
   onStepUpdate('step-deepgram', 'completed', { durationMs: Date.now() - step2Start });
 
-  // Compute total speech duration for Gemini full coverage
-  const totalAudioDurationMs = roughWords.length > 0 
-    ? roughWords[roughWords.length - 1].end_ms + 1000 
-    : 60000;
+  // Compute total speech duration for Gemini full coverage — strictly NEVER less than probed media duration!
+  const lastAcousticEnd = roughWords.length > 0 ? roughWords[roughWords.length - 1].end_ms : 0;
+  const totalAudioDurationMs = Math.max(mediaDurationMs, lastAcousticEnd + 1000, 60000);
 
   // ── Step 3: Direct Google Gemini 3.6 Flash Full Pipeline ──
   onStepUpdate('step-gemini', 'in_progress');
-  onLog(`🤖 Step 3: Direct call to Gemini 3.6 Flash (Transcribing full audio up to ${totalAudioDurationMs}ms)...`);
+  onLog(`🤖 Step 3: Direct call to Gemini 3.6 Flash (Transcribing full audio: 0ms -> ${totalAudioDurationMs}ms / ${(totalAudioDurationMs / 1000).toFixed(1)}s)...`);
   const step3Start = Date.now();
 
   const base64Audio = await blobToBase64(audioBlob);
 
-  const scriptPromptMap = {
-    native: language && language !== 'auto'
-      ? `transcribe the spoken words with 100% EXHAUSTIVE completeness, full punctuation, authentic dialogue flow, and emotional nuance in the NATIVE SCRIPT of language '${language}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`
-      : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with 100% EXHAUSTIVE completeness, full punctuation, authentic dialogue flow, and natural phrasing in its native script.`,
-    tanglish: `transcribe into natural, authentic, modern TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script with top creator / YouTube Shorts / Reels media channel quality readability.
-- 100% EXHAUSTIVE WORD RETENTION: Account for EVERY SINGLE SPOKEN WORD, particle, connector, and colloquial expression from the original audio (e.g. "vandhu", "kooda", "apdinra", "adhuve", "dhan", "seriously", "innum", "melum", "apdi", "madhiri", etc.). Never omit or skip any spoken word.
-- Use natural, popular modern spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").
-- Retain the exact colloquial punch, slang, emotional intensity, conversational nuances, and pauses of the speaker.`,
-    english: `translate into professional, broadcast-grade, natural idiomatic ENGLISH subtitles (matching Netflix, Hotstar, and BBC subtitle standards).
-- 100% FAITHFUL MEANING: Capture the EXACT emotional tone, intent, nuance, intensity, and every spoken clause of the original dialogue.
-- Ensure natural phrasing and grammatical excellence without losing any subtle details, emotional weight, or speaker intent.
-- Create concise, punchy subtitle lines that read smoothly in sync with the audio.`
+  // High-precision target script & translation instructions
+  const getScriptInstruction = (mode: string, lang: string) => {
+    if (mode === 'translate_english' || scriptMode === 'english') {
+      return `TRANSLATE TO PROFESSIONAL BROADCAST ENGLISH SUBTITLES (Netflix, Hotstar, YouTube Shorts standard):
+- Translate the original dialogue into natural, fluent, idiomatic English with emotional fidelity.
+- MANDATORY SCRIPT RULE: Every word MUST be in standard English (Latin alphabet: A-Z, a-z). NEVER use native Indic or non-English script.
+- Capture the speaker's exact colloquial punch, humor, intensity, emotional nuances, and sentence cadence.
+- Create punchy, modern creator-style subtitles that sync perfectly with the speaker.`;
+    }
+    
+    if (mode.startsWith('translate_')) {
+      const targetLang = mode.replace('translate_', '');
+      const langNames: Record<string, string> = {
+        tamil: 'Tamil (தமிழ் / Tanglish)',
+        hindi: 'Hindi (हिन्दी / Hinglish)',
+        kannada: 'Kannada (ಕನ್ನಡ)',
+        telugu: 'Telugu (తెలుగు)',
+        malayalam: 'Malayalam (മലയാളം)',
+        spanish: 'Spanish (Español)',
+        french: 'French (Français)',
+        german: 'German (Deutsch)',
+        portuguese: 'Portuguese (Português)',
+        italian: 'Italian (Italiano)',
+        russian: 'Russian (Русский)',
+        arabic: 'Arabic (العربية)',
+        japanese: 'Japanese (日本語)',
+        korean: 'Korean (한국어)',
+        chinese: 'Chinese (中文)',
+      };
+      const targetLabel = langNames[targetLang] || targetLang;
+      return `TRANSLATE INTO ${targetLabel.toUpperCase()} SUBTITLES:
+- Translate spoken dialogue with broadcast-quality fluency, natural phrasing, and emotional precision into ${targetLabel}.
+- Ensure words read smoothly and line up with the speaker's rhythm and syllable timing.`;
+    }
+
+    if (mode === 'keep_script' || scriptMode === 'native') {
+      return `TRANSCRIBE IN NATIVE SCRIPT:
+- Transcribe all spoken words with 100% completeness, correct grammar, and emotional nuance in the NATIVE SCRIPT of the spoken language '${lang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`;
+    }
+
+    // Default: 'tanglish' / 'auto_roman' / 'transliterate'
+    return `TRANSCRIBE INTO MODERN ROMAN / TANGLISH / HINGLISH SCRIPT:
+- MANDATORY ALPHABET RULE: You MUST write EVERY SINGLE WORD EXCLUSIVELY in the LATIN / ENGLISH ALPHABET (A-Z, a-z).
+- ZERO NATIVE SCRIPT CHARACTERS: NEVER output Tamil (தமிழ்), Hindi (हिन्दी), Kannada (ಕನ್ನಡ), Telugu (తెలుగు), or Malayalam characters. Every word must be phonetic English script!
+- 100% EXHAUSTIVE WORD RETENTION: Account for every spoken particle, connector, and slang word (e.g. "vandhu", "kooda", "apdinra", "adhuve", "dhan", "seriously", "innum", "melum", "apdi", "madhiri").
+- Natural creator-quality spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").`;
   };
-  const targetScriptInstruction = scriptPromptMap[scriptMode] || scriptPromptMap.tanglish;
+
+  const targetScriptInstruction = getScriptInstruction(translationMode, detectedLanguage);
 
   const systemPrompt = `You are a professional broadcast media subtitle translator, dialogue transcription, and syllable-synchronization engine (Netflix, Hotstar, YouTube Shorts standards).
 
-TOTAL AUDIO DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
+TOTAL MEDIA DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
 PASS 1 ACOUSTIC TIMINGS FROM DEEPGRAM:
 ${JSON.stringify(roughWords)}
 
 === 100% EXHAUSTIVE WORD RETENTION & BROADCAST SUBTITLE RULES ===
-1. ZERO OMISSIONS MANDATE:
-   - You MUST account for EVERY SINGLE SPOKEN WORD, particle, connector, and expression from the original speech.
-   - NEVER drop, skip, summarize, or gloss over any spoken word or sentence part.
-   - Maintain 100% complete coverage from 0ms all the way to ${totalAudioDurationMs}ms.
+1. ZERO OMISSIONS & FULL DURATION MANDATE:
+   - The media runs for ${(totalAudioDurationMs / 1000).toFixed(1)} seconds (from 0ms to ${totalAudioDurationMs}ms).
+   - You MUST transcribe EVERY SINGLE SPOKEN WORD from 0ms all the way through the final second (${totalAudioDurationMs}ms).
+   - NEVER stop early at 30s or 40s. Do NOT omit dialogue in the later half or ending of the audio.
+   - Every clause, sentence, reaction, and word must be accounted for right up to the end.
 2. TRANSLATION / ADAPTATION GOAL:
 ${targetScriptInstruction}
 3. ZERO-LAG LIP-SYNC & SYLLABLE-WEIGHTED TIMINGS:
-   - Anchor each segment (\`start_ms\`, \`end_ms\`) strictly to the acoustic speech boundaries from Pass 1.
+   - Anchor each segment (\`start_ms\`, \`end_ms\`) strictly to the acoustic speech boundaries.
    - For every word inside a segment, assign smooth, syllable-weighted start (\`s\`) and end (\`e\`) milliseconds that fit seamlessly within the segment window.
    - The first word of a segment must begin exactly when speech starts, and the last word must end exactly when the speaker finishes the phrase.
 4. EMOJIS: Add 1 perfectly matched, high-impact emoji per segment for key emotional peaks or vivid nouns (e.g. 💔, 😭, 👗, 🎬, 🪞, 👥).
@@ -259,7 +316,7 @@ ${targetScriptInstruction}
           }
         },
         {
-          text: `Transcribe all spoken words from 0ms to ${totalAudioDurationMs}ms with millisecond timestamps and contextual emojis adhering strictly to the JSON schema.`
+          text: `Transcribe all spoken words across the full ${(totalAudioDurationMs / 1000).toFixed(1)}s duration (from 0ms to ${totalAudioDurationMs}ms) with millisecond timestamps and contextual emojis adhering strictly to the JSON schema.`
         }
       ]
     }],
@@ -267,7 +324,7 @@ ${targetScriptInstruction}
       parts: [{ text: systemPrompt }]
     },
     generationConfig: {
-      maxOutputTokens: 8192,
+      maxOutputTokens: 16384,
       responseMimeType: "application/json",
       responseSchema: {
         type: "OBJECT",
@@ -308,82 +365,82 @@ ${targetScriptInstruction}
   const modelsToTry = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
   const shuffledKeys = [...geminiKeys].sort(() => Math.random() - 0.5);
 
-function safeJSONParse(text: string): any {
-  if (!text || typeof text !== 'string') return null;
-  let cleaned = text.trim();
-  if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
-  if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
-  if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
-  cleaned = cleaned.trim();
+  function safeJSONParse(text: string): any {
+    if (!text || typeof text !== 'string') return null;
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
+    if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
+    if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
+    cleaned = cleaned.trim();
 
-  try {
-    return JSON.parse(cleaned);
-  } catch (e) {
-    // Continue to repair
-  }
+    try {
+      return JSON.parse(cleaned);
+    } catch (e) {
+      // Continue to repair
+    }
 
-  const firstBrace = cleaned.indexOf('{');
-  const firstBracket = cleaned.indexOf('[');
-  let startIdx = -1;
+    const firstBrace = cleaned.indexOf('{');
+    const firstBracket = cleaned.indexOf('[');
+    let startIdx = -1;
 
-  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
-    startIdx = firstBrace;
-  } else if (firstBracket !== -1) {
-    startIdx = firstBracket;
-  }
+    if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+      startIdx = firstBrace;
+    } else if (firstBracket !== -1) {
+      startIdx = firstBracket;
+    }
 
-  if (startIdx === -1) return null;
+    if (startIdx === -1) return null;
 
-  let truncated = cleaned.slice(startIdx);
-  truncated = truncated.replace(/,\s*([}\]])/g, '$1');
-  truncated = truncated.replace(/,\s*"[^"]*":?\s*$/g, '');
-  truncated = truncated.replace(/,\s*$/g, '');
+    let truncated = cleaned.slice(startIdx);
+    truncated = truncated.replace(/,\s*([}\]])/g, '$1');
+    truncated = truncated.replace(/,\s*"[^"]*":?\s*$/g, '');
+    truncated = truncated.replace(/,\s*$/g, '');
 
-  let openBraces = 0;
-  let openBrackets = 0;
-  let inString = false;
-  let escape = false;
+    let openBraces = 0;
+    let openBrackets = 0;
+    let inString = false;
+    let escape = false;
 
-  for (let i = 0; i < truncated.length; i++) {
-    const char = truncated[i];
-    if (escape) { escape = false; continue; }
-    if (char === '\\') { escape = true; continue; }
-    if (char === '"') { inString = !inString; continue; }
-    if (!inString) {
-      if (char === '{') openBraces++;
-      else if (char === '}') openBraces = Math.max(0, openBraces - 1);
-      else if (char === '[') openBrackets++;
-      else if (char === ']') openBrackets = Math.max(0, openBrackets - 1);
+    for (let i = 0; i < truncated.length; i++) {
+      const char = truncated[i];
+      if (escape) { escape = false; continue; }
+      if (char === '\\') { escape = true; continue; }
+      if (char === '"') { inString = !inString; continue; }
+      if (!inString) {
+        if (char === '{') openBraces++;
+        else if (char === '}') openBraces = Math.max(0, openBraces - 1);
+        else if (char === '[') openBrackets++;
+        else if (char === ']') openBrackets = Math.max(0, openBrackets - 1);
+      }
+    }
+
+    if (inString) truncated += '"';
+    truncated = truncated.replace(/,\s*$/g, '');
+    truncated = truncated.replace(/:\s*$/g, ': null');
+
+    while (openBrackets > 0) { truncated += ']'; openBrackets--; }
+    while (openBraces > 0) { truncated += '}'; openBraces--; }
+
+    try {
+      return JSON.parse(truncated);
+    } catch (err) {
+      const words: any[] = [];
+      const wordRegex = /{\s*"w(?:ord)?"\s*:\s*"([^"]+)"\s*,\s*"s(?:tart_ms)?"\s*:\s*(\d+)\s*,\s*"e(?:nd_ms)?"\s*:\s*(\d+)(?:[^}]*"emoji"\s*:\s*"([^"]*)")?/g;
+      let match;
+      while ((match = wordRegex.exec(cleaned)) !== null) {
+        words.push({
+          w: match[1],
+          s: parseInt(match[2], 10),
+          e: parseInt(match[3], 10),
+          emoji: match[4] || ''
+        });
+      }
+      if (words.length > 0) {
+        return { words };
+      }
+      return null;
     }
   }
-
-  if (inString) truncated += '"';
-  truncated = truncated.replace(/,\s*$/g, '');
-  truncated = truncated.replace(/:\s*$/g, ': null');
-
-  while (openBrackets > 0) { truncated += ']'; openBrackets--; }
-  while (openBraces > 0) { truncated += '}'; openBraces--; }
-
-  try {
-    return JSON.parse(truncated);
-  } catch (err) {
-    const words: any[] = [];
-    const wordRegex = /{\s*"w(?:ord)?"\s*:\s*"([^"]+)"\s*,\s*"s(?:tart_ms)?"\s*:\s*(\d+)\s*,\s*"e(?:nd_ms)?"\s*:\s*(\d+)(?:[^}]*"emoji"\s*:\s*"([^"]*)")?/g;
-    let match;
-    while ((match = wordRegex.exec(cleaned)) !== null) {
-      words.push({
-        w: match[1],
-        s: parseInt(match[2], 10),
-        e: parseInt(match[3], 10),
-        emoji: match[4] || ''
-      });
-    }
-    if (words.length > 0) {
-      return { words };
-    }
-    return null;
-  }
-}
 
   let rawGeminiResult: any = null;
   let usedModel = modelsToTry[0];
@@ -402,7 +459,7 @@ function safeJSONParse(text: string): any {
             'x-goog-api-key': currentKey
           },
           body: JSON.stringify(geminiReqBody),
-          signal: AbortSignal.timeout(45000)
+          signal: AbortSignal.timeout(60000)
         });
 
         if (!geminiRes.ok) {
@@ -431,7 +488,7 @@ function safeJSONParse(text: string): any {
     }
   }
 
-  // Process & Flatten Gemini Output
+  // Process & Flatten Gemini Output with Roman Script Enforcement
   let extractedWords: any[] = [];
   if (rawGeminiResult?.segments && Array.isArray(rawGeminiResult.segments)) {
     rawGeminiResult.segments.forEach((seg: any) => {
@@ -439,7 +496,10 @@ function safeJSONParse(text: string): any {
       const segWords = seg.words || [];
       if (Array.isArray(segWords)) {
         segWords.forEach((w: any, wIdx: number) => {
-          const wordText = w.w || w.word || '';
+          let wordText = w.w || w.word || '';
+          if (isRomanTarget) {
+            wordText = ensureRomanScript(wordText);
+          }
           const sMs = w.s ?? w.start_ms ?? seg.start_ms;
           const eMs = w.e ?? w.end_ms ?? seg.end_ms;
           if (wordText) {
@@ -462,7 +522,10 @@ function safeJSONParse(text: string): any {
     });
   } else if (rawGeminiResult?.words && Array.isArray(rawGeminiResult.words)) {
     rawGeminiResult.words.forEach((w: any, wIdx: number) => {
-      const wordText = w.w || w.word || '';
+      let wordText = w.w || w.word || '';
+      if (isRomanTarget) {
+        wordText = ensureRomanScript(wordText);
+      }
       const sMs = w.s ?? w.start_ms ?? 0;
       const eMs = w.e ?? w.end_ms ?? (sMs + 400);
       if (wordText) {
@@ -483,49 +546,121 @@ function safeJSONParse(text: string): any {
     });
   }
 
+  // Fallback to rough words if Gemini completely failed (ensuring Romanization)
   if (extractedWords.length === 0) {
     if (roughWords.length > 0) {
       onLog(`✓ Using Deepgram acoustic ground truth (${roughWords.length} words) as baseline...`);
-      extractedWords = roughWords.map((w, i) => ({
-        word: w.word,
-        start: w.start,
-        end: w.end,
-        start_ms: w.start_ms || w.start,
-        end_ms: w.end_ms || w.end,
-        highlight: false,
-        is_expression: false,
-        is_question: w.word.includes('?'),
-        is_name: false,
-        is_sentence_end: i === roughWords.length - 1 || /[.!?]/.test(w.word),
-        emoji: ''
-      }));
+      extractedWords = roughWords.map((w, i) => {
+        const wordText = isRomanTarget ? ensureRomanScript(w.word) : w.word;
+        return {
+          word: wordText,
+          start: w.start,
+          end: w.end,
+          start_ms: w.start_ms || w.start,
+          end_ms: w.end_ms || w.end,
+          highlight: false,
+          is_expression: false,
+          is_question: wordText.includes('?'),
+          is_name: false,
+          is_sentence_end: i === roughWords.length - 1 || /[.!?]/.test(wordText),
+          emoji: ''
+        };
+      });
     } else {
       throw new Error(lastGeminiErr?.message || "Direct transcription failed to generate words.");
     }
-  } else if (roughWords.length > 0) {
-    // 100% Full-Duration Coverage Guarantee: Check if Gemini stopped early
-    const lastExtractedEnd = extractedWords[extractedWords.length - 1].end_ms;
-    const lastAcousticEnd = roughWords[roughWords.length - 1].end_ms;
-    if (lastExtractedEnd < lastAcousticEnd - 1500) {
-      onLog(`✓ Guaranteeing 100% full-duration coverage: Stitching remaining audio tail (${lastExtractedEnd}ms -> ${lastAcousticEnd}ms)...`);
-      const missingWords = roughWords.filter(w => (w.start_ms || w.start) >= lastExtractedEnd - 100);
-      missingWords.forEach((w, i) => {
+  }
+
+  // ── 100% Full-Duration Coverage Guarantee & Multi-Pass Tail Recovery ──
+  const lastExtractedEnd = extractedWords.length > 0 ? extractedWords[extractedWords.length - 1].end_ms : 0;
+  const targetEndMs = Math.max(mediaDurationMs, roughWords.length > 0 ? roughWords[roughWords.length - 1].end_ms : 0);
+
+  if (targetEndMs > 0 && lastExtractedEnd < targetEndMs - 2000) {
+    onLog(`✓ Tail recovery check: Transcribed up to ${(lastExtractedEnd / 1000).toFixed(1)}s, total media is ${(targetEndMs / 1000).toFixed(1)}s. Recovering remaining audio tail...`);
+    
+    // Check if Deepgram captured words in the remaining window
+    const missingRoughWords = roughWords.filter(w => (w.start_ms || w.start) >= lastExtractedEnd - 200);
+
+    if (missingRoughWords.length > 0) {
+      onLog(`✓ Found ${missingRoughWords.length} acoustic words in remaining tail. Stitching with exact timestamps...`);
+      missingRoughWords.forEach((w, i) => {
         const sMs = w.start_ms || w.start;
         const eMs = w.end_ms || w.end;
+        const wordText = isRomanTarget ? ensureRomanScript(w.word) : w.word;
         extractedWords.push({
-          word: w.word,
+          word: wordText,
           start: sMs,
           end: eMs,
           start_ms: sMs,
           end_ms: eMs,
           highlight: false,
           is_expression: false,
-          is_question: w.word.includes('?'),
+          is_question: wordText.includes('?'),
           is_name: false,
-          is_sentence_end: i === missingWords.length - 1 || /[.!?]/.test(w.word),
+          is_sentence_end: i === missingRoughWords.length - 1 || /[.!?]/.test(wordText),
           emoji: ''
         });
       });
+    } else {
+      // If Deepgram also had a quiet tail or stopped early, query Gemini specifically for the remaining audio window
+      try {
+        onLog(`🤖 Querying Gemini for remaining audio tail from ${(lastExtractedEnd / 1000).toFixed(1)}s to ${(targetEndMs / 1000).toFixed(1)}s...`);
+        const tailKey = shuffledKeys[0];
+        if (tailKey) {
+          const tailRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(tailKey)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': tailKey },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { inlineData: { mimeType: audioBlob.type || 'audio/wav', data: base64Audio } },
+                  { text: `Transcribe all spoken dialogue in the final portion of the audio from ${lastExtractedEnd}ms to ${targetEndMs}ms. ${isRomanTarget ? 'MANDATORY: Write exclusively in standard Latin English alphabet (a-z). Zero native Indic characters.' : ''} Return JSON with segments containing words with {w, s, e} timestamps where 's' and 'e' are milliseconds between ${lastExtractedEnd} and ${targetEndMs}.` }
+                ]
+              }],
+              generationConfig: {
+                maxOutputTokens: 4096,
+                responseMimeType: "application/json"
+              }
+            }),
+            signal: AbortSignal.timeout(20000)
+          });
+
+          if (tailRes.ok) {
+            const tailData = await tailRes.json();
+            const tailText = tailData.candidates?.[0]?.content?.parts?.[0]?.text;
+            const parsedTail = safeJSONParse(tailText);
+            const tailWords = parsedTail?.segments?.flatMap((s: any) => s.words || []) || parsedTail?.words || [];
+            if (tailWords.length > 0) {
+              tailWords.forEach((tw: any, i: number) => {
+                let wText = tw.w || tw.word || '';
+                if (isRomanTarget) {
+                  wText = ensureRomanScript(wText);
+                }
+                const sMs = Math.max(lastExtractedEnd, tw.s || tw.start_ms || (lastExtractedEnd + i * 400));
+                const eMs = tw.e || tw.end_ms || (sMs + 350);
+                if (wText) {
+                  extractedWords.push({
+                    word: wText,
+                    start: sMs,
+                    end: eMs,
+                    start_ms: sMs,
+                    end_ms: eMs,
+                    highlight: false,
+                    is_expression: false,
+                    is_question: wText.includes('?'),
+                    is_name: false,
+                    is_sentence_end: i === tailWords.length - 1 || /[.!?]/.test(wText),
+                    emoji: tw.emoji || ''
+                  });
+                }
+              });
+              onLog(`✓ Successfully recovered ${tailWords.length} additional words in the ending segment!`);
+            }
+          }
+        }
+      } catch (tailErr: any) {
+        onLog(`ℹ Tail recovery completed without additional dialogue.`);
+      }
     }
   }
 
@@ -544,10 +679,14 @@ function safeJSONParse(text: string): any {
       const eMs = Math.round(w.end);
       const nextSMs = idx < arr.length - 1 ? Math.round(arr[idx + 1].start) : eMs;
       const pauseAfterMs = Math.max(0, nextSMs - eMs);
+      let wordClean = stripASSTags(String(w.word ?? ''));
+      if (isRomanTarget) {
+        wordClean = ensureRomanScript(wordClean);
+      }
 
       return {
         ...w,
-        word: stripASSTags(String(w.word ?? '')),
+        word: wordClean,
         start_time: sMs / 1000,
         end_time: eMs / 1000,
         start_ms: sMs,
@@ -561,7 +700,7 @@ function safeJSONParse(text: string): any {
   );
 
   onStepUpdate('step-align', 'completed', { durationMs: Date.now() - step4Start });
-  onLog(`✨ Complete! ${wordsWithIds.length} words synchronized in ${((Date.now() - totalStart) / 1000).toFixed(1)}s.`);
+  onLog(`✨ Complete! ${wordsWithIds.length} words synchronized covering 0s -> ${(wordsWithIds[wordsWithIds.length - 1]?.end_time || 0).toFixed(1)}s in ${((Date.now() - totalStart) / 1000).toFixed(1)}s.`);
 
   return {
     words: wordsWithIds,

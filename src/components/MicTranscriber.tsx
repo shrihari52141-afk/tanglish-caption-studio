@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, Square, Pause, Play, Copy, Download, Loader2, Check, Send, Globe, ChevronDown } from 'lucide-react';
 import { CaptionWord } from '../types';
 import { sanitizeCaptionWords, stripASSTags } from '../utils/captionFormatter';
+import { ensureRomanScript } from '../utils/indicTransliterate';
 import { getDeviceId, getDeviceInfo } from '../utils/deviceTracker';
 
 const _envApiMic = (import.meta.env.VITE_API_URL || '').trim();
@@ -222,12 +223,17 @@ export default function MicTranscriber({ onSendToEditor, onVideoFileSelected }: 
       setTranscript(data.transcript);
 
       if (data.words && Array.isArray(data.words)) {
+        const isRomanMode = !enableTranslation || translateTarget === 'en';
         const rawWords: CaptionWord[] = data.words.map((w: any, i: number) => {
           const startSec = typeof w.start_time === 'number' ? w.start_time : ((w.start || w.start_ms || 0) / 1000);
           const endSec = typeof w.end_time === 'number' ? w.end_time : ((w.end || w.end_ms || (startSec * 1000 + 350)) / 1000);
+          let wordClean = stripASSTags(String(w.word ?? ''));
+          if (isRomanMode) {
+            wordClean = ensureRomanScript(wordClean);
+          }
           return {
             id: `mic-word-${i}`,
-            word: stripASSTags(String(w.word ?? '')),
+            word: wordClean,
             start_time: startSec,
             end_time: endSec,
             is_hotword: !!w.is_hotword || !!w.highlight,

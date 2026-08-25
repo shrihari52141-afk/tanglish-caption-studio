@@ -213,170 +213,83 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
           </span>
         </div>
       </div>
-
       {/* Scrollable middle section for options */}
-      <div style={{ marginTop: '-14px' }} className="flex-1 p-5 sm:p-6 space-y-6 overflow-y-auto custom-scrollbar">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#111] p-4 rounded-xl border border-[#222]">
+      <div className="flex-1 p-4 sm:p-6 space-y-5 overflow-y-auto custom-scrollbar">
+        {/* Source Language & Target Output Script Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#141414] p-4 rounded-2xl border border-[#2a2a2a] shadow-inner">
           {/* Source Language */}
           <div className="space-y-2">
-            <label className="text-[11px] font-black uppercase tracking-wider text-[#aaa] flex items-center gap-1.5">
-              🎙️ Source Language
+            <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400 flex items-center gap-1.5">
+              🎙️ Spoken Audio Language
             </label>
             <div className="relative">
               <select
                 value={selectedLanguage}
                 onChange={(e) => setSelectedLanguage(e.target.value)}
-                className="bg-[#0A0A0A] border border-[#333] rounded-xl text-white text-sm font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-600 appearance-none cursor-pointer"
+                className="bg-[#0A0A0A] border border-[#3a3a3a] hover:border-fuchsia-500 rounded-xl text-white text-xs font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-500 appearance-none cursor-pointer transition-colors"
               >
-                <option value="auto">Auto Detect</option>
-                <option value="tamil">Tamil</option>
-                <option value="hindi">Hindi</option>
-                <option value="english">English</option>
-                <option value="kannada">Kannada</option>
-                <option value="telugu">Telugu</option>
-                <option value="malayalam">Malayalam</option>
-                <option value="bengali">Bengali</option>
-                <option value="marathi">Marathi</option>
-                <option value="gujarati">Gujarati</option>
-                <option value="punjabi">Punjabi</option>
-                <option value="odia">Odia</option>
-                <option value="assamese">Assamese</option>
-                <option value="urdu">Urdu</option>
-                <option value="sanskrit">Sanskrit</option>
-                <option value="korean">Korean</option>
-                <option value="japanese">Japanese</option>
-                <option value="chinese">Chinese (Mandarin)</option>
-                <option value="cantonese">Chinese (Cantonese)</option>
-                <option value="spanish">Spanish</option>
-                <option value="french">French</option>
-                <option value="german">German</option>
-                <option value="portuguese">Portuguese</option>
-                <option value="italian">Italian</option>
-                <option value="russian">Russian</option>
-                <option value="arabic">Arabic</option>
-                <option value="turkish">Turkish</option>
-                <option value="thai">Thai</option>
-                <option value="vietnamese">Vietnamese</option>
-                <option value="indonesian">Indonesian</option>
-                <option value="malay">Malay</option>
-                <option value="dutch">Dutch</option>
-                <option value="polish">Polish</option>
-                <option value="romanian">Romanian</option>
-                <option value="czech">Czech</option>
-                <option value="swedish">Swedish</option>
-                <option value="norwegian">Norwegian</option>
-                <option value="danish">Danish</option>
-                <option value="finnish">Finnish</option>
-                <option value="greek">Greek</option>
-                <option value="hebrew">Hebrew</option>
-                <option value="persian">Persian</option>
-                <option value="swahili">Swahili</option>
+                <option value="auto">⚡ Auto Detect (Tamil, Hindi, English, etc.)</option>
+                <option value="tamil">தமிழ் (Tamil)</option>
+                <option value="hindi">हिन्दी (Hindi)</option>
+                <option value="english">English (Global)</option>
+                <option value="kannada">ಕನ್ನಡ (Kannada)</option>
+                <option value="telugu">తెలుగు (Telugu)</option>
+                <option value="malayalam">മലയാളം (Malayalam)</option>
+                <option value="bengali">বাংলা (Bengali)</option>
+                <option value="marathi">मराठी (Marathi)</option>
+                <option value="gujarati">ગુજરાતી (Gujarati)</option>
+                <option value="punjabi">ਪੰਜਾਬੀ (Punjabi)</option>
+                <option value="urdu">اردو (Urdu)</option>
+                <option value="spanish">Español (Spanish)</option>
+                <option value="french">Français (French)</option>
+                <option value="german">Deutsch (German)</option>
+                <option value="japanese">日本語 (Japanese)</option>
+                <option value="korean">한국어 (Korean)</option>
+                <option value="chinese">中文 (Chinese)</option>
+                <option value="arabic">العربية (Arabic)</option>
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-fuchsia-500">
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-fuchsia-400">
                 <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
                   <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
                 </svg>
-</div>
-        </div>
-
-        {/* Hot Words Toggle */}
-        <div className="pt-4 border-t border-[#252525]">
-          <div className="flex items-center gap-2 mb-3">
-            <Zap className="w-5 h-5 text-fuchsia-500" />
-            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
-              Hot Words Highlight
-            </h3>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setEnableHotwords(true)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
-                enableHotwords
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md'
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
-                  Enable Hot Words 🔥
-                </span>
-                {enableHotwords && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
               </div>
-              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                Highlight slang, exclamations & brand names as single bold words.
-              </p>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setEnableHotwords(false)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
-                !enableHotwords
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md'
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
-                  Standard Words 🚫
-                </span>
-                {!enableHotwords && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                Regular word-by-word display without special highlighting.
-              </p>
-            </button>
+            </div>
           </div>
-        </div>
 
-      </div>
           {/* Translation Mode */}
           <div className="space-y-2">
-            <label className="text-[11px] font-black uppercase tracking-wider text-[#aaa] flex items-center gap-1.5">
-              🌐 Output Script
+            <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400 flex items-center gap-1.5">
+              🌐 Output Script & Language
             </label>
             <div className="relative">
               <select
                 value={translationMode}
                 onChange={(e) => setTranslationMode(e.target.value)}
-                className="bg-[#0A0A0A] border border-[#333] rounded-xl text-white text-sm font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-600 appearance-none cursor-pointer"
+                className="bg-[#0A0A0A] border border-[#3a3a3a] hover:border-fuchsia-500 rounded-xl text-white text-xs font-bold px-3 py-2.5 w-full focus:outline-none focus:border-fuchsia-500 appearance-none cursor-pointer transition-colors"
               >
                 <option value="auto_roman">
-                  Auto Roman Script (Detect → Roman Script)
+                  🔤 Roman Script (Tanglish / Hinglish in English Script) ✨
+                </option>
+                <option value="translate_english">
+                  🇬🇧 Translate to English (Netflix / BBC Quality)
                 </option>
                 <option value="keep_script">
-                  Keep {selectedLanguage === 'auto' ? 'Detected' : selectedLanguage.charAt(0).toUpperCase() + selectedLanguage.slice(1)} Script
+                  🇮🇳 Keep Original Native Script (தமிழ், हिन्दी, etc.)
                 </option>
-                <option value="transliterate">
-                  {selectedLanguage === 'auto' ? 'Auto' : selectedLanguage.charAt(0).toUpperCase() + selectedLanguage.slice(1)} → Roman Script
-                </option>
-                <option value="translate_english">Translate to English</option>
-                <option value="translate_tamil">Translate to Tamil</option>
-                <option value="translate_hindi">Translate to Hindi</option>
-                <option value="translate_kannada">Translate to Kannada</option>
-                <option value="translate_telugu">Translate to Telugu</option>
-                <option value="translate_malayalam">Translate to Malayalam</option>
-                <option value="translate_spanish">Translate to Spanish</option>
-                <option value="translate_french">Translate to French</option>
-                <option value="translate_german">Translate to German</option>
-                <option value="translate_portuguese">Translate to Portuguese</option>
-                <option value="translate_italian">Translate to Italian</option>
-                <option value="translate_russian">Translate to Russian</option>
-                <option value="translate_arabic">Translate to Arabic</option>
-                <option value="translate_japanese">Translate to Japanese</option>
-                <option value="translate_korean">Translate to Korean</option>
-                <option value="translate_chinese">Translate to Chinese</option>
+                <option value="translate_tamil">🇮🇳 Translate to Tamil (தமிழ்)</option>
+                <option value="translate_hindi">🇮🇳 Translate to Hindi (हिन्दी)</option>
+                <option value="translate_kannada">🇮🇳 Translate to Kannada (ಕನ್ನಡ)</option>
+                <option value="translate_telugu">🇮🇳 Translate to Telugu (తెలుగు)</option>
+                <option value="translate_malayalam">🇮🇳 Translate to Malayalam (മലയാളം)</option>
+                <option value="translate_spanish">🇪🇸 Translate to Spanish (Español)</option>
+                <option value="translate_french">🇫🇷 Translate to French (Français)</option>
+                <option value="translate_german">🇩🇪 Translate to German (Deutsch)</option>
+                <option value="translate_japanese">🇯🇵 Translate to Japanese (日本語)</option>
+                <option value="translate_korean">🇰🇷 Translate to Korean (한국어)</option>
+                <option value="translate_chinese">🇨🇳 Translate to Chinese (中文)</option>
+                <option value="translate_arabic">🇸🇦 Translate to Arabic (العربية)</option>
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-fuchsia-500">
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-fuchsia-400">
                 <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
                   <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
                 </svg>
@@ -385,11 +298,70 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
           </div>
         </div>
 
+        {/* Hot Words Highlight Selection */}
+        <div className="pt-2">
+          <div className="flex items-center gap-2 mb-2.5">
+            <Zap className="w-4 h-4 text-fuchsia-500" />
+            <h3 className="text-[13px] font-black uppercase tracking-wider text-white">
+              Hot Words Emphasis
+            </h3>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setEnableHotwords(true)}
+              className={`p-3.5 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+                enableHotwords
+                  ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-md ring-1 ring-fuchsia-500/50'
+                  : 'border-[#2c2c2c] bg-[#161616] hover:bg-[#202020]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-black uppercase text-white flex items-center gap-1.5">
+                  Hot Words 🔥
+                </span>
+                {enableHotwords && (
+                  <span className="w-4 h-4 rounded-full bg-fuchsia-600 flex items-center justify-center text-white text-[10px]">
+                    <Check className="w-2.5 h-2.5" />
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
+                Highlight slang, brand names & emotional words with gold glow.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEnableHotwords(false)}
+              className={`p-3.5 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+                !enableHotwords
+                  ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-md ring-1 ring-fuchsia-500/50'
+                  : 'border-[#2c2c2c] bg-[#161616] hover:bg-[#202020]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-black uppercase text-white flex items-center gap-1.5">
+                  Standard 🚫
+                </span>
+                {!enableHotwords && (
+                  <span className="w-4 h-4 rounded-full bg-fuchsia-600 flex items-center justify-center text-white text-[10px]">
+                    <Check className="w-2.5 h-2.5" />
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
+                Standard subtitle display with uniform word highlighting.
+              </p>
+            </button>
+          </div>
+        </div>
+
         {/* Emojis Option Selection */}
-        <div className="pt-4 border-t border-[#252525]">
-          <div className="flex items-center gap-2 mb-3">
-            <Smile className="w-5 h-5 text-fuchsia-500" />
-            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
+        <div className="pt-2 border-t border-[#222]">
+          <div className="flex items-center gap-2 mb-2.5">
+            <Smile className="w-4 h-4 text-fuchsia-500" />
+            <h3 className="text-[13px] font-black uppercase tracking-wider text-white">
               AI Expressive Emojis
             </h3>
           </div>
@@ -398,60 +370,59 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
             <button
               type="button"
               onClick={() => setUseEmojis(true)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+              className={`p-3.5 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
                 useEmojis 
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+                  ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-md ring-1 ring-fuchsia-500/50' 
+                  : 'border-[#2c2c2c] bg-[#161616] hover:bg-[#202020]'
               }`}
             >
               <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                <span className="text-[12px] font-black uppercase text-white flex items-center gap-1.5">
                   With Emojis 🔥
                 </span>
                 {useEmojis && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
+                  <span className="w-4 h-4 rounded-full bg-fuchsia-600 flex items-center justify-center text-white text-[10px]">
+                    <Check className="w-2.5 h-2.5" />
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                AI adds relevant visual emojis on key adjectives & emotion words.
+                AI attaches matching high-impact emojis to emotional keywords.
               </p>
             </button>
 
             <button
               type="button"
               onClick={() => setUseEmojis(false)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+              className={`p-3.5 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
                 !useEmojis 
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+                  ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-md ring-1 ring-fuchsia-500/50' 
+                  : 'border-[#2c2c2c] bg-[#161616] hover:bg-[#202020]'
               }`}
             >
               <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
-                  Plain Text 🚫
+                <span className="text-[12px] font-black uppercase text-white flex items-center gap-1.5">
+                  Text Only 🚫
                 </span>
                 {!useEmojis && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
+                  <span className="w-4 h-4 rounded-full bg-fuchsia-600 flex items-center justify-center text-white text-[10px]">
+                    <Check className="w-2.5 h-2.5" />
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                Clean and minimal subtitle words without any auto-generated symbols.
+                Clean text without auto-generated emojis.
               </p>
             </button>
+
             {useEmojis && (
-              <div 
-                className="col-span-2 mt-3 bg-[#111] p-4 rounded-xl border border-[#222] space-y-2.5 animate-fade-in"
-              >
+              <div className="col-span-2 mt-2 bg-[#121212] p-3.5 rounded-xl border border-[#2a2a2a] space-y-2.5 animate-fade-in">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-black uppercase tracking-wider text-[#aaa]">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-gray-400">
                     Emoji Theme Preset
                   </span>
                   <span className="text-[9px] text-fuchsia-400 font-bold bg-fuchsia-500/10 px-2 py-0.5 rounded-full uppercase">
-                    AI Auto-Fit Available
+                    AI Auto-Synced
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -472,8 +443,8 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
                         onClick={() => setEmojiStyle(stylePreset.id as any)}
                         className={`p-2.5 rounded-lg border text-center transition-all cursor-pointer flex items-center justify-center gap-1 ${
                           isSel 
-                            ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-sm text-fuchsia-400 font-black' 
-                            : 'border-[#222] bg-[#0A0A0A] text-zinc-400 hover:text-white hover:bg-[#151515]'
+                            ? 'border-fuchsia-600 bg-fuchsia-600/20 shadow-sm text-fuchsia-300 font-black' 
+                            : 'border-[#2a2a2a] bg-[#0A0A0A] text-zinc-400 hover:text-white hover:bg-[#181818]'
                         }`}
                       >
                         <span className="text-[11px] font-bold leading-none">{stylePreset.name}</span>
@@ -487,10 +458,10 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
         </div>
 
         {/* Punctuation Selection */}
-        <div className="pt-4 border-t border-[#252525]">
-          <div className="flex items-center gap-2 mb-3">
-            <Sparkles className="w-5 h-5 text-fuchsia-500" />
-            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
+        <div className="pt-2 border-t border-[#222]">
+          <div className="flex items-center gap-2 mb-2.5">
+            <Sparkles className="w-4 h-4 text-fuchsia-500" />
+            <h3 className="text-[13px] font-black uppercase tracking-wider text-white">
               AI Smart Punctuation
             </h3>
           </div>
@@ -499,113 +470,53 @@ export default function VideoUploader({ onUpload, isProcessing, initialFile }: V
             <button
               type="button"
               onClick={() => setUsePunctuation(true)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+              className={`p-3.5 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
                 usePunctuation 
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+                  ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-md ring-1 ring-fuchsia-500/50' 
+                  : 'border-[#2c2c2c] bg-[#161616] hover:bg-[#202020]'
               }`}
             >
               <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                <span className="text-[12px] font-black uppercase text-white flex items-center gap-1.5">
                   With Punctuation ✍️
                 </span>
                 {usePunctuation && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
+                  <span className="w-4 h-4 rounded-full bg-fuchsia-600 flex items-center justify-center text-white text-[10px]">
+                    <Check className="w-2.5 h-2.5" />
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                Include normal commas, periods, exclamation, and question marks.
+                Include natural commas, question marks, and full stops.
               </p>
             </button>
 
             <button
               type="button"
               onClick={() => setUsePunctuation(false)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
+              className={`p-3.5 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
                 !usePunctuation 
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
+                  ? 'border-fuchsia-600 bg-fuchsia-600/15 shadow-md ring-1 ring-fuchsia-500/50' 
+                  : 'border-[#2c2c2c] bg-[#161616] hover:bg-[#202020]'
               }`}
             >
               <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
+                <span className="text-[12px] font-black uppercase text-white flex items-center gap-1.5">
                   No Punctuation 🚫
                 </span>
                 {!usePunctuation && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
+                  <span className="w-4 h-4 rounded-full bg-fuchsia-600 flex items-center justify-center text-white text-[10px]">
+                    <Check className="w-2.5 h-2.5" />
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                Clean words with all commas, periods, and questions stripped.
-              </p>
-            </button>
-          </div>
-</div>
-        </div>
-
-        {/* Hot Words Selection */}
-        <div className="pt-4 border-t border-[#252525]">
-          <div className="flex items-center gap-2 mb-3">
-            <Zap className="w-5 h-5 text-fuchsia-500" />
-            <h3 className="text-[14px] font-black uppercase tracking-wider text-white">
-              Hot Words (Single-Word Highlight)
-            </h3>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setEnableHotwords(true)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
-                enableHotwords 
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
-                  Hot Words ⚡
-                </span>
-                {enableHotwords && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                AI highlights slang, exclamations & brand names as single impact words.
-              </p>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setEnableHotwords(false)}
-              className={`p-4 rounded-xl border-2 text-left transition-all flex flex-col gap-1 cursor-pointer ${
-                !enableHotwords 
-                  ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-md' 
-                  : 'border-[#2c2c2c] bg-[#1d1d1d] hover:bg-[#252525]'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-black uppercase text-white flex items-center gap-1.5">
-                  Normal Words 🚫
-                </span>
-                {!enableHotwords && (
-                  <span className="w-5 h-5 rounded-full bg-fuchsia-600 flex items-center justify-center text-white">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] text-[#888888] font-semibold leading-normal">
-                Standard word-by-word subtitle rendering.
+                Clean words with all punctuation marks stripped.
               </p>
             </button>
           </div>
         </div>
+      </div>
 
         {/* Footer containing Background Extraction status and Generate Button (shrink-0) */}
       <div style={{ marginTop: '1px', paddingTop: '4px' }} className="p-4 sm:p-5 bg-[#0E0E0E] border-t border-[#252525] shrink-0 flex flex-col gap-3">

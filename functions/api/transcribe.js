@@ -120,7 +120,7 @@ export async function onRequestPost(context) {
     }));
 
     const totalAudioDurationMs = roughWords.length > 0
-      ? roughWords[roughWords.length - 1].end + 1000
+      ? Math.max(roughWords[roughWords.length - 1].end + 1000, 60000)
       : 60000;
 
     // 2. Convert ArrayBuffer to Base64 in RAM for Gemini payload
@@ -134,37 +134,72 @@ export async function onRequestPost(context) {
     const base64Audio = btoa(binary);
 
     // 3. Script Target Instruction
-    const scriptPromptMap = {
-      native: spokenLang && spokenLang !== 'auto'
-        ? `transcribe the spoken words with 100% EXHAUSTIVE completeness, full punctuation, authentic dialogue flow, and emotional nuance in the NATIVE SCRIPT of language '${spokenLang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`
-        : `detect the spoken language automatically (Tamil, Kannada, Hindi, Telugu, Malayalam, English, etc.) and transcribe the spoken words with 100% EXHAUSTIVE completeness, full punctuation, authentic dialogue flow, and natural phrasing in its native script.`,
-      tanglish: `transcribe into natural, authentic, modern TANGLISH / HINGLISH / TELUGISH / MANGLISH / KANNADISH phonetic script with top creator / YouTube Shorts / Reels media channel quality readability.
-- 100% EXHAUSTIVE WORD RETENTION: Account for EVERY SINGLE SPOKEN WORD, particle, connector, and colloquial expression from the original audio (e.g. "vandhu", "kooda", "apdinra", "adhuve", "dhan", "seriously", "innum", "melum", "apdi", "madhiri", etc.). Never omit or skip any spoken word.
-- Use natural, popular modern spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").
-- Retain the exact colloquial punch, slang, emotional intensity, conversational nuances, and pauses of the speaker.`,
-      english: `translate into professional, broadcast-grade, natural idiomatic ENGLISH subtitles (matching Netflix, Hotstar, and BBC subtitle standards).
-- 100% FAITHFUL MEANING: Capture the EXACT emotional tone, intent, nuance, intensity, and every spoken clause of the original dialogue.
-- Ensure natural phrasing and grammatical excellence without losing any subtle details, emotional weight, or speaker intent.
-- Create concise, punchy subtitle lines that read smoothly in sync with the audio.`
+    const getScriptInstruction = (mode, lang) => {
+      if (mode === 'translate_english' || mode === 'english') {
+        return `TRANSLATE TO PROFESSIONAL BROADCAST ENGLISH SUBTITLES (Netflix, Hotstar, YouTube Shorts standard):
+- Translate the original dialogue into natural, fluent, idiomatic English with emotional fidelity.
+- MANDATORY SCRIPT RULE: Every word MUST be in standard English (Latin alphabet: A-Z, a-z). NEVER use native Indic or non-English script.
+- Capture the speaker's exact colloquial punch, humor, intensity, emotional nuances, and sentence cadence.
+- Create punchy, modern creator-style subtitles that sync perfectly with the speaker.`;
+      }
+      
+      if (mode && mode.startsWith('translate_')) {
+        const targetLang = mode.replace('translate_', '');
+        const langNames = {
+          tamil: 'Tamil (தமிழ் / Tanglish)',
+          hindi: 'Hindi (हिन्दी / Hinglish)',
+          kannada: 'Kannada (ಕನ್ನಡ)',
+          telugu: 'Telugu (తెలుగు)',
+          malayalam: 'Malayalam (മലയാളം)',
+          spanish: 'Spanish (Español)',
+          french: 'French (Français)',
+          german: 'German (Deutsch)',
+          portuguese: 'Portuguese (Português)',
+          italian: 'Italian (Italiano)',
+          russian: 'Russian (Русский)',
+          arabic: 'Arabic (العربية)',
+          japanese: 'Japanese (日本語)',
+          korean: 'Korean (한국어)',
+          chinese: 'Chinese (中文)',
+        };
+        const targetLabel = langNames[targetLang] || targetLang;
+        return `TRANSLATE INTO ${targetLabel.toUpperCase()} SUBTITLES:
+- Translate spoken dialogue with broadcast-quality fluency, natural phrasing, and emotional precision into ${targetLabel}.
+- Ensure words read smoothly and line up with the speaker's rhythm and syllable timing.`;
+      }
+
+      if (mode === 'keep_script' || mode === 'native') {
+        return `TRANSCRIBE IN NATIVE SCRIPT:
+- Transcribe all spoken words with 100% completeness, correct grammar, and emotional nuance in the NATIVE SCRIPT of the spoken language '${lang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`;
+      }
+
+      // Default: 'tanglish' / 'auto_roman' / 'transliterate'
+      return `TRANSCRIBE INTO MODERN ROMAN / TANGLISH / HINGLISH SCRIPT:
+- MANDATORY ALPHABET RULE: You MUST write EVERY SINGLE WORD EXCLUSIVELY in the LATIN / ENGLISH ALPHABET (A-Z, a-z).
+- ZERO NATIVE SCRIPT CHARACTERS: NEVER output Tamil (தமிழ்), Hindi (हिन्दी), Kannada (ಕನ್ನಡ), Telugu (తెలుగు), or Malayalam characters. Every word must be phonetic English script!
+- 100% EXHAUSTIVE WORD RETENTION: Account for every spoken particle, connector, and slang word (e.g. "vandhu", "kooda", "apdinra", "adhuve", "dhan", "seriously", "innum", "melum", "apdi", "madhiri").
+- Natural creator-quality spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").`;
     };
-    const targetScriptInstruction = scriptPromptMap[scriptMode] || scriptPromptMap.tanglish;
+
+    const targetScriptInstruction = getScriptInstruction(scriptMode, spokenLang);
 
     // 4. Gemini System Prompt
     const systemPrompt = `You are a professional broadcast media subtitle translator, dialogue transcription, and syllable-synchronization engine (Netflix, Hotstar, YouTube Shorts standards).
 
-TOTAL AUDIO DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
+TOTAL MEDIA DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
 PASS 1 ACOUSTIC TIMINGS FROM DEEPGRAM:
 ${JSON.stringify(roughWords)}
 
 === 100% EXHAUSTIVE WORD RETENTION & BROADCAST SUBTITLE RULES ===
-1. ZERO OMISSIONS MANDATE:
-   - You MUST account for EVERY SINGLE SPOKEN WORD, particle, connector, and expression from the original speech.
-   - NEVER drop, skip, summarize, or gloss over any spoken word or sentence part.
-   - Maintain 100% complete coverage from 0ms all the way to ${totalAudioDurationMs}ms.
+1. ZERO OMISSIONS & FULL DURATION MANDATE:
+   - The media runs for ${(totalAudioDurationMs / 1000).toFixed(1)} seconds (from 0ms to ${totalAudioDurationMs}ms).
+   - You MUST transcribe EVERY SINGLE SPOKEN WORD from 0ms all the way through the final second (${totalAudioDurationMs}ms).
+   - NEVER stop early at 30s or 40s. Do NOT omit dialogue in the later half or ending of the audio.
+   - Every clause, sentence, reaction, and word must be accounted for right up to the end.
 2. TRANSLATION / ADAPTATION GOAL:
 ${targetScriptInstruction}
 3. ZERO-LAG LIP-SYNC & SYLLABLE-WEIGHTED TIMINGS:
-   - Anchor each segment (\`start_ms\`, \`end_ms\`) strictly to the acoustic speech boundaries from Pass 1.
+   - Anchor each segment (\`start_ms\`, \`end_ms\`) strictly to the acoustic speech boundaries.
    - For every word inside a segment, assign smooth, syllable-weighted start (\`s\`) and end (\`e\`) milliseconds that fit seamlessly within the segment window.
    - The first word of a segment must begin exactly when speech starts, and the last word must end exactly when the speaker finishes the phrase.
 4. EMOJIS: Add 1 perfectly matched, high-impact emoji per segment for key emotional peaks or vivid nouns (e.g. 💔, 😭, 👗, 🎬, 🪞, 👥).
@@ -180,7 +215,7 @@ ${targetScriptInstruction}
             }
           },
           {
-            text: `Transcribe all spoken words from 0ms to ${totalAudioDurationMs}ms with millisecond timestamps and contextual emojis adhering strictly to the JSON schema.`
+            text: `Transcribe all spoken words across the full ${(totalAudioDurationMs / 1000).toFixed(1)}s duration (from 0ms to ${totalAudioDurationMs}ms) with millisecond timestamps and contextual emojis adhering strictly to the JSON schema.`
           }
         ]
       }],
@@ -188,7 +223,7 @@ ${targetScriptInstruction}
         parts: [{ text: systemPrompt }]
       },
       generationConfig: {
-        maxOutputTokens: 8192,
+        maxOutputTokens: 16384,
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
@@ -496,7 +531,7 @@ function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
     const s = getMs(dg.start_ms ?? dg.start, i * 400);
     const e = getMs(dg.end_ms ?? dg.end, s + 350);
     return { start: s, end: e, word: dg.word || '' };
-  });
+  }).sort((a, b) => a.start - b.start);
 
   let previousEnd = 0;
 
@@ -507,30 +542,29 @@ function continuousPiecewiseAlignment(geminiWords, deepgramWords) {
     let start = getMs(rawStart, previousEnd);
     let end = getMs(rawEnd, start + 300);
 
-    // Rule 1: Prevent overlapping with previous word's end timestamp
-    if (idx > 0 && start < previousEnd) {
-      start = previousEnd;
-    }
-
-    // Rule 2: Anchor to closest Deepgram acoustic word timestamp if drift > 200ms
+    // Rule 1: Chronological Acoustic Anchoring to Deepgram
     if (dgNormalized.length > 0) {
-      let bestMatch = dgNormalized[idx];
-      if (!bestMatch || Math.abs(bestMatch.start - start) > 1000) {
-        let minDiff = Infinity;
-        for (const dg of dgNormalized) {
-          const diff = Math.abs(dg.start - start);
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestMatch = dg;
-          }
+      let bestDg = null;
+      let minDiff = Infinity;
+
+      for (const dg of dgNormalized) {
+        const diff = Math.abs(dg.start - start);
+        if (diff < minDiff && diff <= 1200) {
+          minDiff = diff;
+          bestDg = dg;
         }
       }
 
-      if (bestMatch && Math.abs(start - bestMatch.start) > 200 && Math.abs(start - bestMatch.start) < 2500) {
-        const duration = Math.max(50, end - start);
-        start = bestMatch.start;
-        end = Math.min(bestMatch.end, start + duration);
+      if (bestDg && minDiff <= 700) {
+        const originalDuration = Math.max(50, end - start);
+        start = Math.max(previousEnd > start ? previousEnd : 0, bestDg.start);
+        end = Math.max(start + 50, Math.min(bestDg.end, start + originalDuration));
       }
+    }
+
+    // Rule 2: Prevent backward overlapping without destroying pauses
+    if (idx > 0 && start < previousEnd) {
+      start = previousEnd;
     }
 
     // Rule 3: Enforce minimum display floor based on character length

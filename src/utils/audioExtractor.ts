@@ -3,7 +3,12 @@
  * This sends only a highly-compressed 16kHz mono WAV file to the server.
  */
 
-export async function extractAudioTrack(file: File, onProgress?: (msg: string) => void): Promise<Blob> {
+export interface ExtractedAudioInfo {
+  blob: Blob;
+  durationMs: number;
+}
+
+export async function extractAudioTrackDetails(file: File, onProgress?: (msg: string) => void): Promise<ExtractedAudioInfo> {
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   if (!AudioContextClass) {
     throw new Error("Web Audio API is not supported in this browser.");
@@ -29,6 +34,7 @@ export async function extractAudioTrack(file: File, onProgress?: (msg: string) =
   const targetSampleRate = 16000;
   const numberOfChannels = 1;
   const duration = audioBuffer.duration;
+  const durationMs = Math.round(duration * 1000);
   const numSamples = Math.floor(duration * targetSampleRate);
 
   // Use OfflineAudioContext for extremely fast server-like hardware resynthesis/resampling
@@ -42,7 +48,14 @@ export async function extractAudioTrack(file: File, onProgress?: (msg: string) =
   const resampledBuffer = await offlineCtx.startRendering();
 
   onProgress?.("Encoding resampled audio to WAV...");
-  return bufferToWav(resampledBuffer);
+  const blob = bufferToWav(resampledBuffer);
+  (blob as any).durationMs = durationMs;
+  return { blob, durationMs };
+}
+
+export async function extractAudioTrack(file: File, onProgress?: (msg: string) => void): Promise<Blob> {
+  const info = await extractAudioTrackDetails(file, onProgress);
+  return info.blob;
 }
 
 function bufferToWav(buffer: AudioBuffer): Blob {

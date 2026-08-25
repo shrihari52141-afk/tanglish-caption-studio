@@ -1237,7 +1237,7 @@ export default function App() {
       'keep_script': 'native',
       'translate_english': 'english',
     };
-    const scriptMode = scriptModeMap[translationMode] || 'tanglish';
+    const scriptMode = scriptModeMap[translationMode] || (translationMode.startsWith('translate_') ? 'english' : 'tanglish');
 
     try {
       const result = await directTranscribe({
