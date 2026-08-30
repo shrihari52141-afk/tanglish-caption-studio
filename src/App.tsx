@@ -5,7 +5,7 @@ import EditorPanel from './components/EditorPanel';
 import { ProcessingModal } from './components/ProcessingModal';
 import { AppState, CaptionStyle, CaptionWord, SubtitleStyleSettings, ProcessingStep, DubbingSettings } from './types';
 import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, Laptop, Loader2, X, XCircle, Undo2, Redo2, Replace, Languages, Check, Download, Volume2 } from 'lucide-react';
-import { directTranscribe } from './utils/directTranscriber';
+import { directTranscribe, executeReDub } from './utils/directTranscriber';
 import { generateExpressiveDubbedAudio, fitAudioToDuration, cancelAndClearSession } from './utils/dubbingEngine';
 import { continuousPiecewiseAlignment, sanitizeCaptionWords } from './utils/captionFormatter';
 
@@ -214,73 +214,23 @@ export default function App() {
   const handleReDubInEditor = async (newSettings: DubbingSettings) => {
     if (!appState.sessionCache || isReDubbing) return;
     setIsReDubbing(true);
-    const sessionCache = appState.sessionCache;
 
     try {
-      const textToSpeak = sessionCache.gemini36FlashOutput?.translatedText || sessionCache.gemini35Transcript?.rawText || appState.words.map(w => w.word).join(' ');
-      
-      const { geminiKeys, dgKeys } = await (async () => {
-        let keys: string[] = (import.meta.env?.VITE_GEMINI_API_KEY || '').split(/[\s,;]+/).filter(Boolean);
-        let dgs: string[] = (import.meta.env?.VITE_DEEPGRAM_API_KEY || '').split(/[\s,;]+/).filter(Boolean);
-        try {
-          const r = await fetch('/api/client-keys');
-          if (r.ok) {
-            const d = await r.json();
-            if (d.geminiKeys) keys.push(...d.geminiKeys);
-            if (d.dgKeys) dgs.push(...d.dgKeys);
-          }
-        } catch {}
-        return { geminiKeys: Array.from(new Set(keys)) as string[], dgKeys: Array.from(new Set(dgs)) as string[] };
-      })();
-
-      // 1. Generate new dubbed audio with selected voice
-      const rawDub = await generateExpressiveDubbedAudio(
-        textToSpeak,
-        newSettings.targetLanguage,
+      const targetDuration = appState.mediaDurationSeconds || (appState.words[appState.words.length - 1]?.end_time || 60);
+      const res = await executeReDub(
         newSettings,
-        geminiKeys,
+        appState.dubbingSettings,
+        appState.sessionCache,
+        targetDuration,
         (msg) => console.log(msg)
       );
 
-      // 2. Duration fitting
-      const targetDuration = appState.mediaDurationSeconds || (appState.words[appState.words.length - 1]?.end_time || 60);
-      const fittedBlob = await fitAudioToDuration(rawDub, targetDuration);
-      const dubbedUrl = URL.createObjectURL(fittedBlob);
-
-      // 3. Deepgram Nova 3 on Dubbed Audio
-      let newWords = appState.words;
-      if (dgKeys.length > 0) {
-        const dgDubUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&word_timestamps=true&language=${encodeURIComponent(newSettings.targetLanguage)}`;
-        for (const k of dgKeys) {
-          try {
-            const authHeader = k.toLowerCase().startsWith('token ') ? k : `Token ${k}`;
-            const res = await fetch(dgDubUrl, {
-              method: 'POST',
-              headers: { 'Authorization': authHeader, 'Content-Type': fittedBlob.type || 'audio/wav' },
-              body: fittedBlob
-            });
-            if (res.ok) {
-              const j = await res.json();
-              const wList = j?.results?.channels?.[0]?.alternatives?.[0]?.words || [];
-              if (wList.length > 0) {
-                const acousticTimings = wList.map((w: any) => ({
-                  word: w.punctuated_word || w.word || '',
-                  start: Math.round(w.start * 1000),
-                  end: Math.round(w.end * 1000)
-                }));
-                newWords = continuousPiecewiseAlignment(newWords, acousticTimings);
-                break;
-              }
-            }
-          } catch {}
-        }
-      }
-
       setAppState(prev => ({
         ...prev,
-        dubbedAudioUrl: dubbedUrl,
+        dubbedAudioUrl: res.dubbedAudioUrl,
         dubbingSettings: newSettings,
-        words: sanitizeCaptionWords(newWords)
+        words: res.words,
+        sessionCache: res.sessionCache
       }));
     } catch (e) {
       console.error('Re-dubbing failed:', e);

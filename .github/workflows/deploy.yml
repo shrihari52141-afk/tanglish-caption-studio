@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
           cache: npm
 
       - name: Install dependencies
@@ -33,6 +33,7 @@ jobs:
       - name: Build frontend (Vite)
         run: npx vite build
         env:
+          # Optional: expose public build-time vars if needed
           NODE_ENV: production
 
       - name: Deploy to Cloudflare Pages
@@ -40,5 +41,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "latest"
           command: pages deploy dist --project-name=tanglish-caption-studio

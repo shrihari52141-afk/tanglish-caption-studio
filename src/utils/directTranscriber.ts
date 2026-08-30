@@ -582,3 +582,141 @@ Return structured JSON with "translated_text" and "segments" (containing words a
     sessionCache
   };
 }
+
+/**
+ * Re-dub the current session inside the editor without restarting from scratch.
+ * Reuses intermediate cached results (Gemini 3.5 transcription & alignments).
+ */
+export async function executeReDub(
+  newSettings: DubbingSettings,
+  currentSettings: DubbingSettings | undefined,
+  sessionCache: PipelineIntermediateCache,
+  targetDuration: number,
+  onLog?: (msg: string) => void
+): Promise<{
+  words: CaptionWord[];
+  dubbedAudioUrl: string;
+  dubbedAudioBlob: Blob;
+  sessionCache: PipelineIntermediateCache;
+}> {
+  const { geminiKeys, dgKeys } = await getKeyPool();
+  const targetLang = newSettings.targetLanguage || 'english';
+  const isLanguageChanged = !currentSettings || currentSettings.targetLanguage !== targetLang;
+
+  let translatedText = sessionCache.gemini36FlashOutput?.translatedText || '';
+
+  // If target language changed or no translation exists, re-translate using Gemini 3.6 Flash
+  if (isLanguageChanged || !translatedText) {
+    onLog?.(`🌐 Re-translating project for new target language: ${targetLang.toUpperCase()}...`);
+    const baseWords = sessionCache.alignedMasterTranscript?.words || sessionCache.gemini35Transcript?.words || [];
+    const baseSummary = JSON.stringify(baseWords.map(w => ({ w: w.word, s: w.start_ms || Math.round(w.start_time * 1000), e: w.end_ms || Math.round(w.end_time * 1000) })));
+
+    const translationPrompt = `Translate and adapt this dialogue for dubbing into ${targetLang.toUpperCase()}:
+Input Words: ${baseSummary}
+- Capture emotional delivery, pauses, and colloquial punch.
+- Output JSON format: { "translated_text": "...", "segments": [{ "words": [{ "w": "word", "s": 0, "e": 300 }] }] }`;
+
+    for (const key of geminiKeys.slice(0, 3)) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: translationPrompt }] }],
+            generationConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json' }
+          }),
+          signal: AbortSignal.timeout(30000)
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const candText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          const parsed = safeJSONParse(candText);
+          if (parsed?.translated_text) {
+            translatedText = parsed.translated_text;
+            break;
+          }
+        }
+      } catch (e: any) {
+        onLog?.(`Notice: translation fallback (${e.message})`);
+      }
+    }
+
+    if (!translatedText) {
+      translatedText = sessionCache.gemini35Transcript?.rawText || baseWords.map(w => w.word).join(' ');
+    }
+  }
+
+  // Generate expressive dubbed speech with chosen voice
+  onLog?.(`🎙️ Generating dubbed audio with Voice (${newSettings.voiceId}) and Emotion (${newSettings.emotion})...`);
+  const rawDubbedAudio = await generateExpressiveDubbedAudio(
+    translatedText,
+    targetLang,
+    newSettings,
+    geminiKeys,
+    onLog
+  );
+
+  // Fit audio to original media duration
+  const fittedDubbedBlob = await fitAudioToDuration(rawDubbedAudio, targetDuration, onLog);
+  const dubbedAudioUrl = URL.createObjectURL(fittedDubbedBlob);
+
+  // Run Deepgram Nova 3 on the new dubbed audio for acoustic timestamps
+  onLog?.(`⚡ Running Deepgram Nova 3 on new dubbed audio for word sync...`);
+  let dubbedAcousticTimings: any[] = [];
+  if (dgKeys.length > 0) {
+    const dgDubUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&word_timestamps=true&language=${encodeURIComponent(targetLang)}`;
+    for (const key of dgKeys) {
+      try {
+        const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
+        const dgRes = await fetch(dgDubUrl, {
+          method: 'POST',
+          headers: { 'Authorization': authHeader, 'Content-Type': fittedDubbedBlob.type || 'audio/wav' },
+          body: fittedDubbedBlob,
+          signal: AbortSignal.timeout(30000)
+        });
+
+        if (dgRes.ok) {
+          const dubJson = await dgRes.json();
+          const dubWords = dubJson?.results?.channels?.[0]?.alternatives?.[0]?.words || [];
+          if (dubWords.length > 0) {
+            dubbedAcousticTimings = dubWords.map((w: any) => ({
+              word: w.punctuated_word || w.word || '',
+              start: Math.round(w.start * 1000),
+              end: Math.round(w.end * 1000)
+            }));
+            break;
+          }
+        }
+      } catch (e: any) {
+        onLog?.(`Deepgram notice: ${e.message}`);
+      }
+    }
+  }
+
+  let finalWords: CaptionWord[] = (sessionCache.gemini36FlashOutput?.words || sessionCache.alignedMasterTranscript?.words || []).map(w => ({ ...w }));
+  if (dubbedAcousticTimings.length > 0) {
+    finalWords = continuousPiecewiseAlignment(finalWords, dubbedAcousticTimings);
+  }
+
+  // Update session cache
+  sessionCache.dubbedAudioBlob = fittedDubbedBlob;
+  sessionCache.dubbedAudioUrl = dubbedAudioUrl;
+  sessionCache.deepgramDubbedTimestamps = { words: dubbedAcousticTimings };
+  if (isLanguageChanged) {
+    sessionCache.gemini36FlashOutput = {
+      words: finalWords,
+      translatedText,
+      detectedLanguage: targetLang
+    };
+  }
+
+  return {
+    words: sanitizeCaptionWords(finalWords),
+    dubbedAudioUrl,
+    dubbedAudioBlob: fittedDubbedBlob,
+    sessionCache
+  };
+}
+

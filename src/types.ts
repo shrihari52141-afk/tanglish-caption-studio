@@ -52,16 +52,16 @@ export interface ProcessingStep {
 export interface DubbingVoice {
   id: string;
   name: string;
-  gender: 'male' | 'female' | 'neutral';
+  gender: 'male' | 'female' | 'other' | 'neutral';
   language: string;
   accent?: string;
   description: string;
   tags: string[];
   emoji: string;
-  provider: 'gemini' | 'standard' | 'neural';
-  previewAudioUrl?: string;
+  provider: 'gemini' | 'elevenlabs' | 'edge' | 'custom';
   pitch?: number;
   rate?: number;
+  previewUrl?: string;
 }
 
 export interface DubbingSettings {
@@ -69,21 +69,22 @@ export interface DubbingSettings {
   targetLanguage: string;
   voiceId: string;
   emotion: 'natural' | 'excited' | 'emotional' | 'sad' | 'angry' | 'sarcastic' | 'surprised' | 'storyteller';
-  speechRate: number; // 0.5 - 2.0 (1.0 default)
-  speechPitch: number; // 0.5 - 2.0 (1.0 default)
-  naturalFillers: boolean; // include "umm", "uh", natural pauses
-  fitOriginalDuration: boolean; // optimize generated speech to fit original media duration
+  speechRate?: number;
+  speechPitch?: number;
+  naturalFillers?: boolean;
+  fitDuration?: boolean;
+  fitOriginalDuration?: boolean;
 }
 
 export interface MediaProbeInfo {
-  durationSeconds: number;
-  durationMs: number;
+  fileName: string;
+  fileSizeBytes: number;
   isAudioOnly: boolean;
   format: string;
-  channels?: number;
+  durationSeconds: number;
+  durationMs: number;
   sampleRate?: number;
-  fileSizeBytes: number;
-  fileName: string;
+  channels?: number;
 }
 
 export interface PipelineIntermediateCache {
@@ -98,7 +99,7 @@ export interface PipelineIntermediateCache {
   };
   deepgramOriginalTimestamps?: {
     words: any[];
-    detectedLanguage: string;
+    detectedLanguage?: string;
   };
   alignedMasterTranscript?: {
     words: CaptionWord[];
@@ -106,8 +107,8 @@ export interface PipelineIntermediateCache {
   };
   gemini36FlashOutput?: {
     words: CaptionWord[];
-    translatedText?: string;
-    detectedLanguage?: string;
+    translatedText: string;
+    detectedLanguage: string;
   };
   dubbedAudioBlob?: Blob;
   dubbedAudioUrl?: string;
@@ -130,13 +131,13 @@ export interface AppState {
   uploadProgress: number;
   logs: string[];
   styleSettings: SubtitleStyleSettings;
-  dubbingSettings: DubbingSettings;
   activeModel?: string;
   hasFailed?: boolean;
   processingSteps?: ProcessingStep[];
   processingStartTime?: number | null;
-  mediaDurationSeconds?: number;
   dubbedAudioUrl?: string | null;
+  dubbingSettings?: DubbingSettings;
+  mediaDurationSeconds?: number;
   sessionCache?: PipelineIntermediateCache | null;
   lastUploadParams?: {
     file: File;
