@@ -1,8 +1,15 @@
-import { CaptionWord } from '../types';
+import { CaptionWord, DubbingSettings, PipelineIntermediateCache, ProcessingStep } from '../types';
 import { continuousPiecewiseAlignment, sanitizeCaptionWords, stripASSTags } from './captionFormatter';
 import { extractAudioTrackDetails } from './audioExtractor';
-import { probeMediaDuration } from './sessionTracker';
 import { ensureRomanScript } from './indicTransliterate';
+import { 
+  getActiveSessionCache, 
+  setActiveSessionCache, 
+  probeMediaProperties, 
+  generateExpressiveDubbedAudio, 
+  fitAudioToDuration,
+  createBlackVideoCanvasForAudio
+} from './dubbingEngine';
 
 export interface DirectTranscribeOptions {
   file: File;
@@ -14,6 +21,7 @@ export interface DirectTranscribeOptions {
   emojiStyle?: string;
   enableHotwords?: boolean;
   preExtractedAudioBlob?: Blob | null;
+  dubbingSettings?: DubbingSettings;
   onStepUpdate: (stepId: string, status: 'pending' | 'in_progress' | 'completed' | 'failed', extra?: { durationMs?: number; error?: string }) => void;
   onLog: (message: string) => void;
 }
@@ -24,9 +32,14 @@ export interface DirectTranscribeResult {
   detectedLanguage: string;
   modelUsed: string;
   rawGeminiResult: any;
+  dubbedAudioBlob?: Blob;
+  dubbedAudioUrl?: string;
+  isAudioOnly?: boolean;
+  videoUrl?: string;
+  mediaDurationSeconds?: number;
+  sessionCache?: PipelineIntermediateCache;
 }
 
-// Convert Blob to Base64 without call stack overflow
 async function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -45,14 +58,12 @@ async function getKeyPool(): Promise<{ geminiKeys: string[]; dgKeys: string[] }>
   const geminiKeys: string[] = [];
   const dgKeys: string[] = [];
 
-  // 1. Client LocalStorage & Vite Env
   const localGemini = (import.meta.env?.VITE_GEMINI_API_KEY || import.meta.env?.GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || localStorage.getItem('saved_gemini_api_key') || '').trim();
   const localDg = (import.meta.env?.VITE_DEEPGRAM_API_KEY || import.meta.env?.DEEPGRAM_API_KEY || localStorage.getItem('deepgram_api_key') || localStorage.getItem('saved_deepgram_api_key') || '').trim();
 
   if (localGemini) geminiKeys.push(...localGemini.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
   if (localDg) dgKeys.push(...localDg.split(/[\s,;]+/).map(k => k.trim()).filter(Boolean));
 
-  // 2. Fetch serverless key pool
   try {
     const res = await fetch('/api/client-keys');
     if (res.ok) {
@@ -60,23 +71,11 @@ async function getKeyPool(): Promise<{ geminiKeys: string[]; dgKeys: string[] }>
       if (Array.isArray(data.geminiKeys)) geminiKeys.push(...data.geminiKeys);
       if (Array.isArray(data.dgKeys)) dgKeys.push(...data.dgKeys);
     }
-  } catch {
-    // Fallback to check-env if client-keys not yet cached
-    try {
-      const res = await fetch('/api/check-env');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.envDetails?.GEMINI_API_KEYS?.prefix) {
-          // If env has keys, fetch remote config fallback
-        }
-      }
-    } catch {}
-  }
+  } catch {}
 
-  // 3. Fallback remote config if empty
   if (!geminiKeys.length) {
     try {
-      const remoteRes = await fetch("https://raw.githubusercontent.com/shrihari52141-afk/tanglish-caption-studio/main/remote-config.json");
+      const remoteRes = await fetch('https://raw.githubusercontent.com/shrihari52141-afk/tanglish-caption-studio/main/remote-config.json');
       if (remoteRes.ok) {
         const remoteJson = await remoteRes.json();
         const str = remoteJson?.GEMINI_API_KEY || remoteJson?.GEMINI_API_KEYS || '';
@@ -85,17 +84,73 @@ async function getKeyPool(): Promise<{ geminiKeys: string[]; dgKeys: string[] }>
     } catch {}
   }
 
-  // Deduplicate
-  const uniqueGemini = Array.from(new Set(geminiKeys));
-  const uniqueDg = Array.from(new Set(dgKeys));
-
-  return { geminiKeys: uniqueGemini, dgKeys: uniqueDg };
+  return { 
+    geminiKeys: Array.from(new Set(geminiKeys)), 
+    dgKeys: Array.from(new Set(dgKeys)) 
+  };
 }
 
-/**
- * Executes a 100% direct client-to-Deepgram and client-to-Gemini transcription pipeline.
- * Zero Cloudflare middleman execution limits, zero 500 upload timeouts.
- */
+function safeJSONParse(text: string): any {
+  if (!text || typeof text !== 'string') return null;
+  let cleaned = text.trim();
+  if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
+  if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
+  if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
+  cleaned = cleaned.trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {}
+
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let startIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+  }
+
+  if (startIdx === -1) return null;
+
+  let truncated = cleaned.slice(startIdx);
+  truncated = truncated.replace(/,\s*([}\]])/g, '$1');
+  truncated = truncated.replace(/,\s*"[^"]*":?\s*$/g, '');
+  truncated = truncated.replace(/,\s*$/g, '');
+
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < truncated.length; i++) {
+    const char = truncated[i];
+    if (escape) { escape = false; continue; }
+    if (char === '\\') { escape = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (!inString) {
+      if (char === '{') openBraces++;
+      else if (char === '}') openBraces = Math.max(0, openBraces - 1);
+      else if (char === '[') openBrackets++;
+      else if (char === ']') openBrackets = Math.max(0, openBrackets - 1);
+    }
+  }
+
+  if (inString) truncated += '"';
+  truncated = truncated.replace(/,\s*$/g, '');
+  truncated = truncated.replace(/:\s*$/g, ': null');
+
+  while (openBrackets > 0) { truncated += ']'; openBrackets--; }
+  while (openBraces > 0) { truncated += '}'; openBraces--; }
+
+  try {
+    return JSON.parse(truncated);
+  } catch (err) {
+    return null;
+  }
+}
+
 export async function directTranscribe(options: DirectTranscribeOptions): Promise<DirectTranscribeResult> {
   const {
     file,
@@ -107,606 +162,423 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     emojiStyle = 'vibes',
     enableHotwords = true,
     preExtractedAudioBlob,
+    dubbingSettings,
     onStepUpdate,
     onLog
   } = options;
 
+  const isDubbingActive = !!dubbingSettings?.enabled;
   const isRomanTarget = scriptMode === 'tanglish' || scriptMode === 'english' || translationMode === 'auto_roman' || translationMode === 'transliterate' || translationMode === 'translate_english';
 
-  const totalStart = Date.now();
+  let sessionCache = getActiveSessionCache();
+  if (!sessionCache || sessionCache.mediaFile !== file) {
+    sessionCache = {
+      sessionId: 'session-' + Date.now(),
+      mediaFile: file
+    };
+    setActiveSessionCache(sessionCache);
+  }
 
-  // ── Step 1: Audio Extraction & Media Duration Probing ──
-  onStepUpdate('step-audio', 'in_progress');
-  onLog("🔊 Step 1: Extracting audio track and probing full video duration...");
-  const step1Start = Date.now();
-  
+  // ?? Stage 1: Validation, Media Probing & Background Audio Extraction ??
+  onStepUpdate('step-probe', 'in_progress');
+  onLog('?? Stage 1: Validating media properties & probing audio track in background...');
+  const stage1Start = Date.now();
+
+  const mediaInfo = await probeMediaProperties(file);
+  sessionCache.mediaInfo = mediaInfo;
+  onLog(`? Probed Media: ${mediaInfo.fileName} (${(mediaInfo.fileSizeBytes / (1024 * 1024)).toFixed(2)}MB, Duration: ${mediaInfo.durationSeconds.toFixed(1)}s, Type: ${mediaInfo.isAudioOnly ? 'Audio Only' : 'Video'}).`);
+
   let audioBlob: Blob;
-  let hardwareDurationMs = 0;
-
-  // Probe duration in parallel
-  const probedDurationPromise = probeMediaDuration(file);
-
-  if (preExtractedAudioBlob) {
+  if (sessionCache.extractedAudioBlob) {
+    audioBlob = sessionCache.extractedAudioBlob;
+    onLog(`? Reusing cached extracted audio buffer (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+  } else if (preExtractedAudioBlob) {
     audioBlob = preExtractedAudioBlob;
-    hardwareDurationMs = (preExtractedAudioBlob as any).durationMs || 0;
-    onLog(`✓ Using pre-extracted audio track (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+    sessionCache.extractedAudioBlob = audioBlob;
+    onLog(`? Using pre-extracted audio cache (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+  } else if (mediaInfo.isAudioOnly) {
+    audioBlob = file;
+    sessionCache.extractedAudioBlob = audioBlob;
   } else {
     try {
-      const info = await extractAudioTrackDetails(file, (msg) => onLog(msg));
-      audioBlob = info.blob;
-      hardwareDurationMs = info.durationMs;
-      onLog(`✓ Audio extraction complete (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB, Duration: ${(hardwareDurationMs / 1000).toFixed(1)}s).`);
-    } catch (err: any) {
-      onLog(`⚠ Audio extraction fallback: using original file container.`);
+      const details = await extractAudioTrackDetails(file, (msg) => onLog(msg));
+      audioBlob = details.blob;
+      sessionCache.extractedAudioBlob = audioBlob;
+      onLog(`? Background audio extraction complete (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+    } catch (e: any) {
+      onLog('? Using original media file container as audio source.');
       audioBlob = file;
+      sessionCache.extractedAudioBlob = audioBlob;
     }
   }
 
-  const probedSeconds = await probedDurationPromise;
-  const probedDurationMs = probedSeconds && Number.isFinite(probedSeconds) ? Math.round(probedSeconds * 1000) : 0;
-  const mediaDurationMs = Math.max(hardwareDurationMs, probedDurationMs, 0);
+  onStepUpdate('step-probe', 'completed', { durationMs: Date.now() - stage1Start });
 
-  onStepUpdate('step-audio', 'completed', { durationMs: Date.now() - step1Start });
-
-  // ── Retrieve API Keys ──
-  onLog("🔑 Initializing API keys for direct server communication...");
   const { geminiKeys, dgKeys } = await getKeyPool();
-
   if (!geminiKeys.length && !dgKeys.length) {
-    throw new Error("No Gemini or Deepgram API keys found. Please configure API keys.");
+    onStepUpdate('step-gemini-transcribe', 'failed', { error: 'No API keys configured' });
+    throw new Error('No Gemini or Deepgram API keys found. Please configure API keys.');
   }
-
-  // ── Step 2: Direct Deepgram Nova-3 Acoustic Pass (Exact Millisecond Ground Truth) ──
-  onStepUpdate('step-deepgram', 'in_progress');
-  onLog("🔊 Step 2: Direct call to Deepgram Nova-3 (Acoustic timestamps & language detection)...");
-  const step2Start = Date.now();
-
-  let roughWords: any[] = [];
-  let detectedLanguage = language;
-  let dgSuccess = false;
-
-  if (dgKeys.length > 0) {
-    const candidateLanguages = (language && language !== 'auto') 
-      ? [language, 'auto', 'ta', 'hi', 'te', 'kn', 'en']
-      : ['auto', 'ta', 'hi', 'te', 'kn', 'en'];
-
-    langLoop:
-    for (const testLang of candidateLanguages) {
-      let dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true`;
-      if (testLang === 'auto') {
-        dgUrl += `&detect_language=true`;
-      } else {
-        dgUrl += `&language=${encodeURIComponent(testLang)}`;
-      }
-
-      for (const key of dgKeys) {
-        try {
-          const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
-          const dgRes = await fetch(dgUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': authHeader,
-              'Content-Type': audioBlob.type || 'audio/wav',
-            },
-            body: audioBlob,
-            signal: AbortSignal.timeout(35000)
-          });
-
-          if (dgRes.ok) {
-            const dgJson = await dgRes.json();
-            const words = dgJson?.results?.channels?.[0]?.alternatives?.[0]?.words || [];
-            if (words.length > 0) {
-              detectedLanguage = testLang === 'auto' 
-                ? (dgJson?.results?.channels?.[0]?.detected_language || 'ta') 
-                : testLang;
-              roughWords = words.map((w: any) => {
-                const rawText = w.punctuated_word || w.word || '';
-                const wordClean = isRomanTarget ? ensureRomanScript(rawText) : rawText;
-                return {
-                  word: wordClean,
-                  start: Math.round(w.start * 1000),
-                  end: Math.round(w.end * 1000),
-                  start_ms: Math.round(w.start * 1000),
-                  end_ms: Math.round(w.end * 1000),
-                };
-              });
-              dgSuccess = true;
-              onLog(`✓ Deepgram Nova-3 captured ${roughWords.length} acoustic words (Language: ${detectedLanguage}, Span: ${roughWords[0].start_ms}ms -> ${roughWords[roughWords.length - 1].end_ms}ms).`);
-              break langLoop;
-            }
-          }
-        } catch (err: any) {
-          onLog(`⚠ Deepgram attempt notice (${testLang}): ${err.message}`);
-        }
-      }
-    }
-  }
-
-  onStepUpdate('step-deepgram', 'completed', { durationMs: Date.now() - step2Start });
-
-  // Compute total speech duration for Gemini full coverage — strictly NEVER less than probed media duration!
-  const lastAcousticEnd = roughWords.length > 0 ? roughWords[roughWords.length - 1].end_ms : 0;
-  const totalAudioDurationMs = Math.max(mediaDurationMs, lastAcousticEnd + 1000, 60000);
-
-  // ── Step 3: Direct Google Gemini 3.6 Flash Full Pipeline ──
-  onStepUpdate('step-gemini', 'in_progress');
-  onLog(`🤖 Step 3: Direct call to Gemini 3.6 Flash (Transcribing full audio: 0ms -> ${totalAudioDurationMs}ms / ${(totalAudioDurationMs / 1000).toFixed(1)}s)...`);
-  const step3Start = Date.now();
 
   const base64Audio = await blobToBase64(audioBlob);
 
-  // High-precision target script & translation instructions
-  const getScriptInstruction = (mode: string, lang: string) => {
-    if (mode === 'translate_english' || scriptMode === 'english') {
-      return `TRANSLATE TO PROFESSIONAL BROADCAST ENGLISH SUBTITLES (Netflix, Hotstar, YouTube Shorts standard):
-- Translate the original dialogue into natural, fluent, idiomatic English with emotional fidelity.
-- MANDATORY SCRIPT RULE: Every word MUST be in standard English (Latin alphabet: A-Z, a-z). NEVER use native Indic or non-English script.
-- Capture the speaker's exact colloquial punch, humor, intensity, emotional nuances, and sentence cadence.
-- Create punchy, modern creator-style subtitles that sync perfectly with the speaker.`;
-    }
-    
-    if (mode.startsWith('translate_')) {
-      const targetLang = mode.replace('translate_', '');
-      const langNames: Record<string, string> = {
-        tamil: 'Tamil (தமிழ் / Tanglish)',
-        hindi: 'Hindi (हिन्दी / Hinglish)',
-        kannada: 'Kannada (ಕನ್ನಡ)',
-        telugu: 'Telugu (తెలుగు)',
-        malayalam: 'Malayalam (മലയാളം)',
-        spanish: 'Spanish (Español)',
-        french: 'French (Français)',
-        german: 'German (Deutsch)',
-        portuguese: 'Portuguese (Português)',
-        italian: 'Italian (Italiano)',
-        russian: 'Russian (Русский)',
-        arabic: 'Arabic (العربية)',
-        japanese: 'Japanese (日本語)',
-        korean: 'Korean (한국어)',
-        chinese: 'Chinese (中文)',
-      };
-      const targetLabel = langNames[targetLang] || targetLang;
-      return `TRANSLATE INTO ${targetLabel.toUpperCase()} SUBTITLES:
-- Translate spoken dialogue with broadcast-quality fluency, natural phrasing, and emotional precision into ${targetLabel}.
-- Ensure words read smoothly and line up with the speaker's rhythm and syllable timing.`;
-    }
+  // ?? Stage 2: Gemini 3.5 Transcribe (Recognized Words & Source Language Detection) ??
+  onStepUpdate('step-gemini-transcribe', 'in_progress');
+  onLog('??? Stage 2: Calling Gemini 3.5 Transcribe (Ground truth for words & language detection)...');
+  const stage2Start = Date.now();
 
-    if (mode === 'keep_script' || scriptMode === 'native') {
-      return `TRANSCRIBE IN NATIVE SCRIPT:
-- Transcribe all spoken words with 100% completeness, correct grammar, and emotional nuance in the NATIVE SCRIPT of the spoken language '${lang}' (e.g. தமிழ், ಕನ್ನಡ, हिंदी, తెలుగు, മലയാളം).`;
-    }
+  let gemini35Words: CaptionWord[] = [];
+  let detectedSourceLanguage = language === 'auto' ? 'tamil' : language;
+  let fullTranscribedText = '';
 
-    // Default: 'tanglish' / 'auto_roman' / 'transliterate'
-    return `TRANSCRIBE INTO MODERN ROMAN / TANGLISH / HINGLISH SCRIPT:
-- MANDATORY ALPHABET RULE: You MUST write EVERY SINGLE WORD EXCLUSIVELY in the LATIN / ENGLISH ALPHABET (A-Z, a-z).
-- ZERO NATIVE SCRIPT CHARACTERS: NEVER output Tamil (தமிழ்), Hindi (हिन्दी), Kannada (ಕನ್ನಡ), Telugu (తెలుగు), or Malayalam characters. Every word must be phonetic English script!
-- 100% EXHAUSTIVE WORD RETENTION: Account for every spoken particle, connector, and slang word (e.g. "vandhu", "kooda", "apdinra", "adhuve", "dhan", "seriously", "innum", "melum", "apdi", "madhiri").
-- Natural creator-quality spelling (e.g. "Maa Behen movie-la vandhu avanga society...", "Adhu kooda avangala avlo hurt pannadhu, aana...", "Nee sari kedayadhu ma...", "deep down-ah hurt aagum").`;
-  };
+  if (sessionCache.gemini35Transcript) {
+    gemini35Words = sessionCache.gemini35Transcript.words;
+    detectedSourceLanguage = sessionCache.gemini35Transcript.detectedLanguage;
+    fullTranscribedText = sessionCache.gemini35Transcript.rawText;
+    onLog(`? Reusing cached Gemini 3.5 transcription (${gemini35Words.length} words, detected language: ${detectedSourceLanguage}).`);
+  } else {
+    const models35 = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+    let gemini35Success = false;
 
-  const targetScriptInstruction = getScriptInstruction(translationMode, detectedLanguage);
+    for (const modelName of models35) {
+      for (const currentKey of geminiKeys.slice(0, 3)) {
+        try {
+          const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(currentKey)}`;
+          const prompt35 = `You are the primary ground-truth dialogue transcription engine (Gemini 3.5 Transcribe).
+Task:
+1. Accurately transcribe EVERY spoken word from the audio with 100% completeness.
+2. Identify the exact spoken source language name (e.g. "tamil", "hindi", "telugu", "kannada", "malayalam", "english", "spanish", etc.).
+3. Return valid JSON containing "detected_language", "full_transcript", and "words" array with rough start/end ms.`;
 
-  const systemPrompt = `You are a professional broadcast media subtitle translator, dialogue transcription, and syllable-synchronization engine (Netflix, Hotstar, YouTube Shorts standards).
-
-TOTAL MEDIA DURATION: ${totalAudioDurationMs}ms (${(totalAudioDurationMs / 1000).toFixed(1)} seconds).
-PASS 1 ACOUSTIC TIMINGS FROM DEEPGRAM:
-${JSON.stringify(roughWords)}
-
-=== 100% EXHAUSTIVE WORD RETENTION & BROADCAST SUBTITLE RULES ===
-1. ZERO OMISSIONS & FULL DURATION MANDATE:
-   - The media runs for ${(totalAudioDurationMs / 1000).toFixed(1)} seconds (from 0ms to ${totalAudioDurationMs}ms).
-   - You MUST transcribe EVERY SINGLE SPOKEN WORD from 0ms all the way through the final second (${totalAudioDurationMs}ms).
-   - NEVER stop early at 30s or 40s. Do NOT omit dialogue in the later half or ending of the audio.
-   - Every clause, sentence, reaction, and word must be accounted for right up to the end.
-2. TRANSLATION / ADAPTATION GOAL:
-${targetScriptInstruction}
-3. ZERO-LAG LIP-SYNC & SYLLABLE-WEIGHTED TIMINGS:
-   - Anchor each segment (\`start_ms\`, \`end_ms\`) strictly to the acoustic speech boundaries.
-   - For every word inside a segment, assign smooth, syllable-weighted start (\`s\`) and end (\`e\`) milliseconds that fit seamlessly within the segment window.
-   - The first word of a segment must begin exactly when speech starts, and the last word must end exactly when the speaker finishes the phrase.
-4. EMOJIS: Add 1 perfectly matched, high-impact emoji per segment for key emotional peaks or vivid nouns (e.g. 💔, 😭, 👗, 🎬, 🪞, 👥).
-5. Return strictly valid JSON matching the schema.`;
-
-  const geminiReqBody = {
-    contents: [{
-      parts: [
-        {
-          inlineData: {
-            mimeType: audioBlob.type || 'audio/wav',
-            data: base64Audio
-          }
-        },
-        {
-          text: `Transcribe all spoken words across the full ${(totalAudioDurationMs / 1000).toFixed(1)}s duration (from 0ms to ${totalAudioDurationMs}ms) with millisecond timestamps and contextual emojis adhering strictly to the JSON schema.`
-        }
-      ]
-    }],
-    systemInstruction: {
-      parts: [{ text: systemPrompt }]
-    },
-    generationConfig: {
-      maxOutputTokens: 16384,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: "OBJECT",
-        properties: {
-          segments: {
-            type: "ARRAY",
-            items: {
-              type: "OBJECT",
-              properties: {
-                start_ms: { type: "INTEGER" },
-                end_ms: { type: "INTEGER" },
-                tanglish: { type: "STRING" },
-                emoji: { type: "STRING" },
-                words: {
-                  type: "ARRAY",
-                  items: {
-                    type: "OBJECT",
-                    properties: {
-                      w: { type: "STRING" },
-                      s: { type: "INTEGER" },
-                      e: { type: "INTEGER" },
-                      emoji: { type: "STRING" },
-                      highlight: { type: "BOOLEAN" }
-                    },
-                    required: ["w", "s", "e"]
-                  }
-                }
-              },
-              required: ["start_ms", "end_ms", "tanglish", "words"]
-            }
-          }
-        },
-        required: ["segments"]
-      }
-    }
-  };
-
-  const modelsToTry = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
-  const shuffledKeys = [...geminiKeys].sort(() => Math.random() - 0.5);
-
-  function safeJSONParse(text: string): any {
-    if (!text || typeof text !== 'string') return null;
-    let cleaned = text.trim();
-    if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
-    if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
-    if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
-    cleaned = cleaned.trim();
-
-    try {
-      return JSON.parse(cleaned);
-    } catch (e) {
-      // Continue to repair
-    }
-
-    const firstBrace = cleaned.indexOf('{');
-    const firstBracket = cleaned.indexOf('[');
-    let startIdx = -1;
-
-    if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
-      startIdx = firstBrace;
-    } else if (firstBracket !== -1) {
-      startIdx = firstBracket;
-    }
-
-    if (startIdx === -1) return null;
-
-    let truncated = cleaned.slice(startIdx);
-    truncated = truncated.replace(/,\s*([}\]])/g, '$1');
-    truncated = truncated.replace(/,\s*"[^"]*":?\s*$/g, '');
-    truncated = truncated.replace(/,\s*$/g, '');
-
-    let openBraces = 0;
-    let openBrackets = 0;
-    let inString = false;
-    let escape = false;
-
-    for (let i = 0; i < truncated.length; i++) {
-      const char = truncated[i];
-      if (escape) { escape = false; continue; }
-      if (char === '\\') { escape = true; continue; }
-      if (char === '"') { inString = !inString; continue; }
-      if (!inString) {
-        if (char === '{') openBraces++;
-        else if (char === '}') openBraces = Math.max(0, openBraces - 1);
-        else if (char === '[') openBrackets++;
-        else if (char === ']') openBrackets = Math.max(0, openBrackets - 1);
-      }
-    }
-
-    if (inString) truncated += '"';
-    truncated = truncated.replace(/,\s*$/g, '');
-    truncated = truncated.replace(/:\s*$/g, ': null');
-
-    while (openBrackets > 0) { truncated += ']'; openBrackets--; }
-    while (openBraces > 0) { truncated += '}'; openBraces--; }
-
-    try {
-      return JSON.parse(truncated);
-    } catch (err) {
-      const words: any[] = [];
-      const wordRegex = /{\s*"w(?:ord)?"\s*:\s*"([^"]+)"\s*,\s*"s(?:tart_ms)?"\s*:\s*(\d+)\s*,\s*"e(?:nd_ms)?"\s*:\s*(\d+)(?:[^}]*"emoji"\s*:\s*"([^"]*)")?/g;
-      let match;
-      while ((match = wordRegex.exec(cleaned)) !== null) {
-        words.push({
-          w: match[1],
-          s: parseInt(match[2], 10),
-          e: parseInt(match[3], 10),
-          emoji: match[4] || ''
-        });
-      }
-      if (words.length > 0) {
-        return { words };
-      }
-      return null;
-    }
-  }
-
-  let rawGeminiResult: any = null;
-  let usedModel = modelsToTry[0];
-  let lastGeminiErr: any = null;
-
-  outerLoop:
-  for (const m of modelsToTry) {
-    const keysToTry = shuffledKeys.slice(0, 4);
-    for (const currentKey of keysToTry) {
-      try {
-        const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(currentKey)}`;
-        const geminiRes = await fetch(fetchUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': currentKey
-          },
-          body: JSON.stringify(geminiReqBody),
-          signal: AbortSignal.timeout(60000)
-        });
-
-        if (!geminiRes.ok) {
-          const errText = await geminiRes.text();
-          throw new Error(`Gemini API Error (${m}, ${geminiRes.status}): ${errText}`);
-        }
-
-        const geminiData = await geminiRes.json();
-        const candidateText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!candidateText) throw new Error('No valid response generated by Gemini.');
-
-        rawGeminiResult = safeJSONParse(candidateText);
-        if (rawGeminiResult?.segments && Array.isArray(rawGeminiResult.segments) && rawGeminiResult.segments.length > 0) {
-          usedModel = m;
-          onLog(`✓ Gemini ${m} successfully transcribed ${rawGeminiResult.segments.length} segments spanning 0ms -> ${totalAudioDurationMs}ms!`);
-          break outerLoop;
-        } else if (rawGeminiResult?.words && Array.isArray(rawGeminiResult.words) && rawGeminiResult.words.length > 0) {
-          usedModel = m;
-          onLog(`✓ Gemini ${m} successfully transcribed ${rawGeminiResult.words.length} words spanning 0ms -> ${totalAudioDurationMs}ms!`);
-          break outerLoop;
-        }
-      } catch (err: any) {
-        lastGeminiErr = err;
-        onLog(`⚠ Gemini ${m} retry notice: ${err.message}`);
-      }
-    }
-  }
-
-  // Process & Flatten Gemini Output with Roman Script Enforcement
-  let extractedWords: any[] = [];
-  if (rawGeminiResult?.segments && Array.isArray(rawGeminiResult.segments)) {
-    rawGeminiResult.segments.forEach((seg: any) => {
-      const segEmoji = seg.emoji || '';
-      const segWords = seg.words || [];
-      if (Array.isArray(segWords)) {
-        segWords.forEach((w: any, wIdx: number) => {
-          let wordText = w.w || w.word || '';
-          if (isRomanTarget) {
-            wordText = ensureRomanScript(wordText);
-          }
-          const sMs = w.s ?? w.start_ms ?? seg.start_ms;
-          const eMs = w.e ?? w.end_ms ?? seg.end_ms;
-          if (wordText) {
-            extractedWords.push({
-              word: wordText,
-              start: sMs,
-              end: eMs,
-              start_ms: sMs,
-              end_ms: eMs,
-              highlight: !!w.highlight,
-              is_expression: false,
-              is_question: wordText.includes('?'),
-              is_name: false,
-              is_sentence_end: wIdx === segWords.length - 1 || /[.!?]/.test(wordText),
-              emoji: w.emoji || (wIdx === segWords.length - 1 ? segEmoji : '')
-            });
-          }
-        });
-      }
-    });
-  } else if (rawGeminiResult?.words && Array.isArray(rawGeminiResult.words)) {
-    rawGeminiResult.words.forEach((w: any, wIdx: number) => {
-      let wordText = w.w || w.word || '';
-      if (isRomanTarget) {
-        wordText = ensureRomanScript(wordText);
-      }
-      const sMs = w.s ?? w.start_ms ?? 0;
-      const eMs = w.e ?? w.end_ms ?? (sMs + 400);
-      if (wordText) {
-        extractedWords.push({
-          word: wordText,
-          start: sMs,
-          end: eMs,
-          start_ms: sMs,
-          end_ms: eMs,
-          highlight: !!w.highlight,
-          is_expression: false,
-          is_question: wordText.includes('?'),
-          is_name: false,
-          is_sentence_end: wIdx === rawGeminiResult.words.length - 1 || /[.!?]/.test(wordText),
-          emoji: w.emoji || ''
-        });
-      }
-    });
-  }
-
-  // Fallback to rough words if Gemini completely failed (ensuring Romanization)
-  if (extractedWords.length === 0) {
-    if (roughWords.length > 0) {
-      onLog(`✓ Using Deepgram acoustic ground truth (${roughWords.length} words) as baseline...`);
-      extractedWords = roughWords.map((w, i) => {
-        const wordText = isRomanTarget ? ensureRomanScript(w.word) : w.word;
-        return {
-          word: wordText,
-          start: w.start,
-          end: w.end,
-          start_ms: w.start_ms || w.start,
-          end_ms: w.end_ms || w.end,
-          highlight: false,
-          is_expression: false,
-          is_question: wordText.includes('?'),
-          is_name: false,
-          is_sentence_end: i === roughWords.length - 1 || /[.!?]/.test(wordText),
-          emoji: ''
-        };
-      });
-    } else {
-      throw new Error(lastGeminiErr?.message || "Direct transcription failed to generate words.");
-    }
-  }
-
-  // ── 100% Full-Duration Coverage Guarantee & Multi-Pass Tail Recovery ──
-  const lastExtractedEnd = extractedWords.length > 0 ? extractedWords[extractedWords.length - 1].end_ms : 0;
-  const targetEndMs = Math.max(mediaDurationMs, roughWords.length > 0 ? roughWords[roughWords.length - 1].end_ms : 0);
-
-  if (targetEndMs > 0 && lastExtractedEnd < targetEndMs - 2000) {
-    onLog(`✓ Tail recovery check: Transcribed up to ${(lastExtractedEnd / 1000).toFixed(1)}s, total media is ${(targetEndMs / 1000).toFixed(1)}s. Recovering remaining audio tail...`);
-    
-    // Check if Deepgram captured words in the remaining window
-    const missingRoughWords = roughWords.filter(w => (w.start_ms || w.start) >= lastExtractedEnd - 200);
-
-    if (missingRoughWords.length > 0) {
-      onLog(`✓ Found ${missingRoughWords.length} acoustic words in remaining tail. Stitching with exact timestamps...`);
-      missingRoughWords.forEach((w, i) => {
-        const sMs = w.start_ms || w.start;
-        const eMs = w.end_ms || w.end;
-        const wordText = isRomanTarget ? ensureRomanScript(w.word) : w.word;
-        extractedWords.push({
-          word: wordText,
-          start: sMs,
-          end: eMs,
-          start_ms: sMs,
-          end_ms: eMs,
-          highlight: false,
-          is_expression: false,
-          is_question: wordText.includes('?'),
-          is_name: false,
-          is_sentence_end: i === missingRoughWords.length - 1 || /[.!?]/.test(wordText),
-          emoji: ''
-        });
-      });
-    } else {
-      // If Deepgram also had a quiet tail or stopped early, query Gemini specifically for the remaining audio window
-      try {
-        onLog(`🤖 Querying Gemini for remaining audio tail from ${(lastExtractedEnd / 1000).toFixed(1)}s to ${(targetEndMs / 1000).toFixed(1)}s...`);
-        const tailKey = shuffledKeys[0];
-        if (tailKey) {
-          const tailRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(tailKey)}`, {
+          const res = await fetch(fetchUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': tailKey },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{
                 parts: [
                   { inlineData: { mimeType: audioBlob.type || 'audio/wav', data: base64Audio } },
-                  { text: `Transcribe all spoken dialogue in the final portion of the audio from ${lastExtractedEnd}ms to ${targetEndMs}ms. ${isRomanTarget ? 'MANDATORY: Write exclusively in standard Latin English alphabet (a-z). Zero native Indic characters.' : ''} Return JSON with segments containing words with {w, s, e} timestamps where 's' and 'e' are milliseconds between ${lastExtractedEnd} and ${targetEndMs}.` }
+                  { text: prompt35 }
                 ]
               }],
               generationConfig: {
-                maxOutputTokens: 4096,
-                responseMimeType: "application/json"
+                maxOutputTokens: 8192,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: 'OBJECT',
+                  properties: {
+                    detected_language: { type: 'STRING' },
+                    full_transcript: { type: 'STRING' },
+                    words: {
+                      type: 'ARRAY',
+                      items: {
+                        type: 'OBJECT',
+                        properties: {
+                          word: { type: 'STRING' },
+                          start_ms: { type: 'INTEGER' },
+                          end_ms: { type: 'INTEGER' }
+                        },
+                        required: ['word']
+                      }
+                    }
+                  },
+                  required: ['detected_language', 'words']
+                }
               }
             }),
-            signal: AbortSignal.timeout(20000)
+            signal: AbortSignal.timeout(45000)
           });
 
-          if (tailRes.ok) {
-            const tailData = await tailRes.json();
-            const tailText = tailData.candidates?.[0]?.content?.parts?.[0]?.text;
-            const parsedTail = safeJSONParse(tailText);
-            const tailWords = parsedTail?.segments?.flatMap((s: any) => s.words || []) || parsedTail?.words || [];
-            if (tailWords.length > 0) {
-              tailWords.forEach((tw: any, i: number) => {
-                let wText = tw.w || tw.word || '';
-                if (isRomanTarget) {
-                  wText = ensureRomanScript(wText);
-                }
-                const sMs = Math.max(lastExtractedEnd, tw.s || tw.start_ms || (lastExtractedEnd + i * 400));
-                const eMs = tw.e || tw.end_ms || (sMs + 350);
-                if (wText) {
-                  extractedWords.push({
-                    word: wText,
-                    start: sMs,
-                    end: eMs,
-                    start_ms: sMs,
-                    end_ms: eMs,
-                    highlight: false,
-                    is_expression: false,
-                    is_question: wText.includes('?'),
-                    is_name: false,
-                    is_sentence_end: i === tailWords.length - 1 || /[.!?]/.test(wText),
-                    emoji: tw.emoji || ''
-                  });
-                }
-              });
-              onLog(`✓ Successfully recovered ${tailWords.length} additional words in the ending segment!`);
+          if (res.ok) {
+            const data = await res.json();
+            const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            const parsed = safeJSONParse(textContent);
+            if (parsed && Array.isArray(parsed.words) && parsed.words.length > 0) {
+              detectedSourceLanguage = parsed.detected_language || detectedSourceLanguage;
+              fullTranscribedText = parsed.full_transcript || parsed.words.map((w: any) => w.word).join(' ');
+              gemini35Words = parsed.words.map((w: any, idx: number) => ({
+                id: `g35-${idx}-${Date.now()}`,
+                word: w.word,
+                start_time: (w.start_ms || idx * 300) / 1000,
+                end_time: (w.end_ms || idx * 300 + 250) / 1000,
+                start_ms: w.start_ms || idx * 300,
+                end_ms: w.end_ms || idx * 300 + 250
+              }));
+
+              sessionCache.gemini35Transcript = {
+                words: gemini35Words,
+                detectedLanguage: detectedSourceLanguage,
+                rawText: fullTranscribedText
+              };
+              gemini35Success = true;
+              onLog(`? Gemini 3.5 Transcribe identified language: "${detectedSourceLanguage.toUpperCase()}" with ${gemini35Words.length} ground-truth recognized words.`);
+              break;
             }
           }
+        } catch (err: any) {
+          onLog(`? Gemini 3.5 Transcribe notice (${modelName}): ${err.message}`);
         }
-      } catch (tailErr: any) {
-        onLog(`ℹ Tail recovery completed without additional dialogue.`);
+      }
+      if (gemini35Success) break;
+    }
+  }
+
+  onStepUpdate('step-gemini-transcribe', 'completed', { durationMs: Date.now() - stage2Start });
+
+  // ?? Stage 3: Deepgram Nova 3 on Cached Audio with Detected Source Language ??
+  onStepUpdate('step-deepgram-original', 'in_progress');
+  onLog(`?? Stage 3: Running Deepgram Nova 3 with detected language (${detectedSourceLanguage}) for precise acoustic timing...`);
+  const stage3Start = Date.now();
+
+  let nova3OriginalTimings: any[] = [];
+  if (sessionCache.deepgramOriginalTimestamps) {
+    nova3OriginalTimings = sessionCache.deepgramOriginalTimestamps.words;
+    onLog(`? Reusing cached Deepgram Nova 3 acoustic timestamps (${nova3OriginalTimings.length} acoustic pulses).`);
+  } else if (dgKeys.length > 0) {
+    const langCodeMap: Record<string, string> = {
+      tamil: 'ta', hindi: 'hi', telugu: 'te', kannada: 'kn', malayalam: 'ml', english: 'en', spanish: 'es', french: 'fr', german: 'de'
+    };
+    const dgLangParam = langCodeMap[detectedSourceLanguage.toLowerCase()] || detectedSourceLanguage.toLowerCase() || 'ta';
+    const dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true&language=${encodeURIComponent(dgLangParam)}`;
+
+    for (const key of dgKeys) {
+      try {
+        const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
+        const dgRes = await fetch(dgUrl, {
+          method: 'POST',
+          headers: { 'Authorization': authHeader, 'Content-Type': audioBlob.type || 'audio/wav' },
+          body: audioBlob,
+          signal: AbortSignal.timeout(35000)
+        });
+
+        if (dgRes.ok) {
+          const dgJson = await dgRes.json();
+          const words = dgJson?.results?.channels?.[0]?.alternatives?.[0]?.words || [];
+          if (words.length > 0) {
+            nova3OriginalTimings = words.map((w: any) => ({
+              word: w.punctuated_word || w.word || '',
+              start: Math.round(w.start * 1000),
+              end: Math.round(w.end * 1000),
+              start_ms: Math.round(w.start * 1000),
+              end_ms: Math.round(w.end * 1000),
+            }));
+            sessionCache.deepgramOriginalTimestamps = { words: nova3OriginalTimings, detectedLanguage: detectedSourceLanguage };
+            onLog(`? Deepgram Nova 3 captured ${nova3OriginalTimings.length} high-precision acoustic word timestamps.`);
+            break;
+          }
+        }
+      } catch (err: any) {
+        onLog(`? Deepgram Nova 3 notice: ${err.message}`);
       }
     }
   }
 
-  onStepUpdate('step-gemini', 'completed', { durationMs: Date.now() - step3Start });
+  onStepUpdate('step-deepgram-original', 'completed', { durationMs: Date.now() - stage3Start });
 
-  // ── Step 4: Continuous Piecewise Alignment Guardrail ──
+  // ?? Stage 4: Master Word & Timing Alignment ??
   onStepUpdate('step-align', 'in_progress');
-  onLog("🎯 Step 4: Applying continuous piecewise acoustic alignment & zero drift lock...");
-  const step4Start = Date.now();
+  onLog('?? Stage 4: Aligning Gemini 3.5 recognized words with Deepgram Nova 3 acoustic timestamps...');
+  const stage4Start = Date.now();
 
-  const alignedWords = continuousPiecewiseAlignment(extractedWords, roughWords);
+  const wordsToAlign = gemini35Words.length > 0 ? gemini35Words : nova3OriginalTimings;
+  const alignedMasterWords = continuousPiecewiseAlignment(wordsToAlign, nova3OriginalTimings);
+  sessionCache.alignedMasterTranscript = {
+    words: alignedMasterWords,
+    detectedLanguage: detectedSourceLanguage
+  };
 
-  const wordsWithIds: CaptionWord[] = sanitizeCaptionWords(
-    alignedWords.map((w: any, idx: number, arr: any[]) => {
-      const sMs = Math.round(w.start);
-      const eMs = Math.round(w.end);
-      const nextSMs = idx < arr.length - 1 ? Math.round(arr[idx + 1].start) : eMs;
-      const pauseAfterMs = Math.max(0, nextSMs - eMs);
-      let wordClean = stripASSTags(String(w.word ?? ''));
-      if (isRomanTarget) {
-        wordClean = ensureRomanScript(wordClean);
+  onLog(`? Master transcription aligned: ${alignedMasterWords.length} synchronized words ready.`);
+  onStepUpdate('step-align', 'completed', { durationMs: Date.now() - stage4Start });
+
+  // ?? Stage 5: Gemini 3.6 Flash Unified Orchestration ??
+  onStepUpdate('step-gemini-orchestrate', 'in_progress');
+  onLog('?? Stage 5: Sending aligned master transcript to Gemini 3.6 Flash (Single Orchestration Pass)...');
+  const stage5Start = Date.now();
+
+  const targetLangInstruction = (isDubbingActive && dubbingSettings?.targetLanguage)
+    ? `TRANSLATE & ADAPT FOR DUBBING INTO ${dubbingSettings.targetLanguage.toUpperCase()}:
+- Translate dialogue into natural, fluent, human-like speech in ${dubbingSettings.targetLanguage}.
+- Capture emotional delivery, pauses, and colloquial punch.`
+    : (isRomanTarget)
+    ? `TRANSLITERATE TO ROMAN / TANGLISH / HINGLISH SCRIPT:
+- Strictly output Latin / English letters (A-Z, a-z). No Indic native script.
+- Retain all slang and particle words.`
+    : `PRESERVE NATIVE SCRIPT:
+- Keep the original native characters (${detectedSourceLanguage}).`;
+
+  const wordsSummary = JSON.stringify(alignedMasterWords.map(w => ({ w: w.word, s: w.start_ms, e: w.end_ms })));
+  const orchestrationPrompt = `You are the Gemini 3.6 Flash Master Orchestrator.
+Input Aligned Words: ${wordsSummary}
+Instructions:
+${targetLangInstruction}
+- Emojis: ${useEmojis ? 'Add 1 high-impact emoji per emotional phrase' : 'No emojis'} (Style: ${emojiStyle})
+- Punctuation: ${usePunctuation ? 'Natural punctuation' : 'Clean text without punctuation'}
+- Hot Words: ${enableHotwords ? 'Identify brand names, intense emotions, and slang words with highlight=true' : 'Standard'}
+Return structured JSON with "translated_text" and "segments" (containing words array with w, s, e, emoji, highlight).`;
+
+  let orchestratedWords: CaptionWord[] = [];
+  let translatedTextForDubbing = '';
+
+  for (const currentKey of geminiKeys.slice(0, 3)) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(currentKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: orchestrationPrompt }] }],
+          generationConfig: {
+            maxOutputTokens: 16384,
+            responseMimeType: 'application/json'
+          }
+        }),
+        signal: AbortSignal.timeout(45000)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const candText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        const parsed = safeJSONParse(candText);
+        if (parsed) {
+          translatedTextForDubbing = parsed.translated_text || '';
+          if (Array.isArray(parsed.segments)) {
+            parsed.segments.forEach((seg: any) => {
+              const segEmoji = seg.emoji || '';
+              (seg.words || []).forEach((w: any, wIdx: number) => {
+                const wordText = isRomanTarget ? ensureRomanScript(w.w || w.word || '') : (w.w || w.word || '');
+                if (wordText) {
+                  orchestratedWords.push({
+                    id: `orch-${orchestratedWords.length}-${Date.now()}`,
+                    word: wordText,
+                    start_time: (w.s || w.start_ms || seg.start_ms || 0) / 1000,
+                    end_time: (w.e || w.end_ms || seg.end_ms || 300) / 1000,
+                    start_ms: w.s || w.start_ms || seg.start_ms || 0,
+                    end_ms: w.e || w.end_ms || seg.end_ms || 300,
+                    emoji: w.emoji || (wIdx === (seg.words || []).length - 1 ? segEmoji : ''),
+                    highlight: !!w.highlight,
+                    is_hotword: !!w.highlight
+                  });
+                }
+              });
+            });
+          }
+          if (orchestratedWords.length > 0) {
+            onLog(`? Gemini 3.6 Flash produced ${orchestratedWords.length} structured, formatted caption words.`);
+            break;
+          }
+        }
       }
+    } catch (e: any) {
+      onLog(`? Gemini 3.6 Flash notice: ${e.message}`);
+    }
+  }
 
-      return {
-        ...w,
-        word: wordClean,
-        start_time: sMs / 1000,
-        end_time: eMs / 1000,
-        start_ms: sMs,
-        end_ms: eMs,
-        pause_after_ms: pauseAfterMs,
-        id: `word-${idx}`,
-        emoji: w.emoji || null,
-        is_hotword: !!w.highlight || !!w.is_expression || !!w.is_name,
-      };
-    })
-  );
+  if (orchestratedWords.length === 0) {
+    orchestratedWords = alignedMasterWords;
+  }
 
-  onStepUpdate('step-align', 'completed', { durationMs: Date.now() - step4Start });
-  onLog(`✨ Complete! ${wordsWithIds.length} words synchronized covering 0s -> ${(wordsWithIds[wordsWithIds.length - 1]?.end_time || 0).toFixed(1)}s in ${((Date.now() - totalStart) / 1000).toFixed(1)}s.`);
+  sessionCache.gemini36FlashOutput = {
+    words: orchestratedWords,
+    translatedText: translatedTextForDubbing || orchestratedWords.map(w => w.word).join(' '),
+    detectedLanguage: detectedSourceLanguage
+  };
+
+  onStepUpdate('step-gemini-orchestrate', 'completed', { durationMs: Date.now() - stage5Start });
+
+  let finalWords = orchestratedWords;
+  let dubbedAudioBlob: Blob | undefined;
+  let dubbedAudioUrl: string | undefined;
+
+  // ?? Stage 6 & 7: Expressive Dubbing & Deepgram Nova 3 on Dubbed Audio (If Dubbing Selected) ??
+  if (isDubbingActive && dubbingSettings) {
+    onStepUpdate('step-dubbing-tts', 'in_progress');
+    const stage6Start = Date.now();
+    const textToSpeak = sessionCache.gemini36FlashOutput.translatedText || fullTranscribedText;
+
+    const rawDubbedAudio = await generateExpressiveDubbedAudio(
+      textToSpeak,
+      dubbingSettings.targetLanguage,
+      dubbingSettings,
+      geminiKeys,
+      onLog
+    );
+
+    const targetDuration = mediaInfo.durationSeconds || (finalWords[finalWords.length - 1]?.end_time || 60);
+    dubbedAudioBlob = await fitAudioToDuration(rawDubbedAudio, targetDuration, onLog);
+    dubbedAudioUrl = URL.createObjectURL(dubbedAudioBlob);
+    sessionCache.dubbedAudioBlob = dubbedAudioBlob;
+    sessionCache.dubbedAudioUrl = dubbedAudioUrl;
+
+    onStepUpdate('step-dubbing-tts', 'completed', { durationMs: Date.now() - stage6Start });
+
+    onStepUpdate('step-deepgram-dubbed', 'in_progress');
+    onLog(`?? Stage 7: Running Deepgram Nova 3 on Dubbed Audio (Language: ${dubbingSettings.targetLanguage}) for final lip-sync timing...`);
+    const stage7Start = Date.now();
+
+    let dubbedAcousticTimings: any[] = [];
+    if (dgKeys.length > 0 && dubbedAudioBlob) {
+      const dgDubUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&word_timestamps=true&language=${encodeURIComponent(dubbingSettings.targetLanguage)}`;
+      for (const key of dgKeys) {
+        try {
+          const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
+          const dgDubRes = await fetch(dgDubUrl, {
+            method: 'POST',
+            headers: { 'Authorization': authHeader, 'Content-Type': dubbedAudioBlob.type || 'audio/wav' },
+            body: dubbedAudioBlob,
+            signal: AbortSignal.timeout(30000)
+          });
+          if (dgDubRes.ok) {
+            const dubJson = await dgDubRes.json();
+            const dubWords = dubJson?.results?.channels?.[0]?.alternatives?.[0]?.words || [];
+            if (dubWords.length > 0) {
+              dubbedAcousticTimings = dubWords.map((w: any) => ({
+                word: w.punctuated_word || w.word || '',
+                start: Math.round(w.start * 1000),
+                end: Math.round(w.end * 1000)
+              }));
+              sessionCache.deepgramDubbedTimestamps = { words: dubbedAcousticTimings };
+              onLog(`? Deepgram Nova 3 captured ${dubbedAcousticTimings.length} dubbed audio word timestamps.`);
+              break;
+            }
+          }
+        } catch (e: any) {
+          onLog(`? Deepgram Dubbed timing notice: ${e.message}`);
+        }
+      }
+    }
+
+    if (dubbedAcousticTimings.length > 0) {
+      finalWords = continuousPiecewiseAlignment(finalWords, dubbedAcousticTimings);
+    }
+    onStepUpdate('step-deepgram-dubbed', 'completed', { durationMs: Date.now() - stage7Start });
+  }
+
+  // ?? Stage 8: Assembly & Editor Routing ??
+  onStepUpdate('step-editor', 'in_progress');
+  onLog('?? Stage 8: Assembling final synchronized project for video editor...');
+  const stage8Start = Date.now();
+
+  let videoUrl: string;
+  if (mediaInfo.isAudioOnly) {
+    const blackCanvas = await createBlackVideoCanvasForAudio(dubbedAudioBlob || audioBlob, mediaInfo.durationSeconds, onLog);
+    videoUrl = blackCanvas.videoUrl;
+  } else {
+    videoUrl = URL.createObjectURL(file);
+  }
+
+  onStepUpdate('step-editor', 'completed', { durationMs: Date.now() - stage8Start });
+  onLog('?? Processing successfully finished! Launching main studio editor...');
 
   return {
-    words: wordsWithIds,
-    roughWords,
-    detectedLanguage,
-    modelUsed: usedModel,
-    rawGeminiResult
+    words: sanitizeCaptionWords(finalWords),
+    roughWords: nova3OriginalTimings,
+    detectedLanguage: detectedSourceLanguage,
+    modelUsed: 'Gemini 3.5 Transcribe + Nova 3 + Gemini 3.6 Flash',
+    rawGeminiResult: sessionCache.gemini36FlashOutput,
+    dubbedAudioBlob,
+    dubbedAudioUrl,
+    isAudioOnly: mediaInfo.isAudioOnly,
+    videoUrl,
+    mediaDurationSeconds: mediaInfo.durationSeconds,
+    sessionCache
   };
 }

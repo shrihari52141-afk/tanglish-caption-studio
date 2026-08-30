@@ -1,0 +1,145 @@
+﻿import { DubbingVoice } from '../types';
+
+export const DUBBING_VOICES: DubbingVoice[] = [
+  {
+    id: 'gemini-puck',
+    name: 'Puck (Enthusiastic & Young)',
+    gender: 'male',
+    language: 'multilingual',
+    accent: 'Dynamic / Neutral',
+    description: 'Upbeat, energetic, and engaging voice ideal for reels, shorts, and YouTube creators.',
+    tags: ['Energetic', 'Creator', 'Reels', 'Youthful'],
+    emoji: '🎙️',
+    provider: 'gemini',
+    pitch: 1.0,
+    rate: 1.05
+  },
+  {
+    id: 'gemini-charon',
+    name: 'Charon (Deep & Cinematic)',
+    gender: 'male',
+    language: 'multilingual',
+    accent: 'Cinematic / Deep',
+    description: 'Authoritative, deep, and grounded voice perfect for documentaries, drama, and thrillers.',
+    tags: ['Deep', 'Documentary', 'Cinematic', 'Serious'],
+    emoji: '🎩',
+    provider: 'gemini',
+    pitch: 0.9,
+    rate: 0.95
+  },
+  {
+    id: 'gemini-kore',
+    name: 'Kore (Calm & Soothing)',
+    gender: 'female',
+    language: 'multilingual',
+    accent: 'Gentle / Warm',
+    description: 'Warm, empathetic, and natural tone ideal for lifestyle, wellness, and soft narration.',
+    tags: ['Calm', 'Warm', 'Natural', 'Empathetic'],
+    emoji: '🌸',
+    provider: 'gemini',
+    pitch: 1.05,
+    rate: 0.98
+  },
+  {
+    id: 'gemini-fenrir',
+    name: 'Fenrir (Powerful & Intense)',
+    gender: 'male',
+    language: 'multilingual',
+    accent: 'Bold / Dynamic',
+    description: 'Powerful, bold, and commanding delivery designed for sports, hype, and intense action.',
+    tags: ['Bold', 'Intense', 'Action', 'Powerful'],
+    emoji: '⚡',
+    provider: 'gemini',
+    pitch: 0.95,
+    rate: 1.1
+  },
+  {
+    id: 'gemini-aoede',
+    name: 'Aoede (Melodic & Expressive)',
+    gender: 'female',
+    language: 'multilingual',
+    accent: 'Expressive / Polished',
+    description: 'Melodic, expressive, and lively delivery for storytelling, entertainment, and comedy.',
+    tags: ['Melodic', 'Storyteller', 'Expressive', 'Clear'],
+    emoji: '🎶',
+    provider: 'gemini',
+    pitch: 1.1,
+    rate: 1.02
+  },
+  {
+    id: 'gemini-leda',
+    name: 'Leda (Friendly & Casual)',
+    gender: 'female',
+    language: 'multilingual',
+    accent: 'Conversational / Friendly',
+    description: 'Relatable, conversational, and crisp delivery that sounds like a real friendly human speaker.',
+    tags: ['Friendly', 'Conversational', 'Casual', 'Podcast'],
+    emoji: '🌟',
+    provider: 'gemini',
+    pitch: 1.0,
+    rate: 1.0
+  },
+  {
+    id: 'gemini-zephyr',
+    name: 'Zephyr (Bright & Cheerful)',
+    gender: 'female',
+    language: 'multilingual',
+    accent: 'Vibrant / Cheerful',
+    description: 'Bright, cheerful, and crisp tone for commercial ads, explainer videos, and social clips.',
+    tags: ['Bright', 'Cheerful', 'Commercial', 'Vibrant'],
+    emoji: '💫',
+    provider: 'gemini',
+    pitch: 1.12,
+    rate: 1.05
+  },
+  {
+    id: 'gemini-orus',
+    name: 'Orus (Confident & Professional)',
+    gender: 'male',
+    language: 'multilingual',
+    accent: 'Professional / Smooth',
+    description: 'Polished, articulate, and confident corporate voice for tech, news, and business tutorials.',
+    tags: ['Professional', 'Smooth', 'News', 'Corporate'],
+    emoji: '👔',
+    provider: 'gemini',
+    pitch: 0.95,
+    rate: 1.0
+  },
+  {
+    id: 'gemini-pegasus',
+    name: 'Pegasus (Storyteller & Rich)',
+    gender: 'male',
+    language: 'multilingual',
+    accent: 'Warm / Narrative',
+    description: 'Rich and captivating storyteller tone with dramatic pauses and emotional depth.',
+    tags: ['Narrator', 'Dramatic', 'Rich', 'Story'],
+    emoji: '🚀',
+    provider: 'gemini',
+    pitch: 0.92,
+    rate: 0.96
+  },
+  {
+    id: 'gemini-nova',
+    name: 'Nova (Dynamic & Modern)',
+    gender: 'female',
+    language: 'multilingual',
+    accent: 'Modern / Trendy',
+    description: 'Modern, punchy, and captivating voice suited for viral video voiceovers and trends.',
+    tags: ['Modern', 'Trendy', 'Viral', 'Punchy'],
+    emoji: '✨',
+    provider: 'gemini',
+    pitch: 1.08,
+    rate: 1.08
+  }
+];
+
+export const EMOTION_STYLES = [
+  { id: 'natural', name: 'Natural Human', emoji: '🎙️', desc: 'Realistic pauses, natural breathing, and human cadence' },
+  { id: 'excited', name: 'Excited & Hype', emoji: '🔥', desc: 'High energy, fast delivery, and enthusiastic emphasis' },
+  { id: 'emotional', name: 'Emotional Drama', emoji: '🥺', desc: 'Heartfelt, gentle pauses, and rich emotive expression' },
+  { id: 'sad', name: 'Sad & Melancholic', emoji: '😢', desc: 'Soft tone, solemn delivery, and poignant pacing' },
+  { id: 'angry', name: 'Intense & Fiery', emoji: '😡', desc: 'Forceful punch, sharp articulation, and intense delivery' },
+  { id: 'sarcastic', name: 'Sarcastic & Witty', emoji: '😏', desc: 'Playful cynicism, wry inflection, and comedic timing' },
+  { id: 'surprised', name: 'Surprised & Shocked', emoji: '😲', desc: 'Sudden pitch shifts, gasp-like pauses, and excitement' },
+  { id: 'storyteller', name: 'Story Narration', emoji: '📖', desc: 'Immersive pacing, dramatic tension, and clear resonance' },
+];

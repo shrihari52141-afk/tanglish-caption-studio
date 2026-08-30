@@ -3,6 +3,8 @@ export interface CaptionWord {
   word: string;
   start_time: number;
   end_time: number;
+  start_ms?: number;
+  end_ms?: number;
   pause_after_ms?: number;
   is_hotword?: boolean;
   is_question?: boolean;
@@ -11,6 +13,7 @@ export interface CaptionWord {
   is_sentence_end?: boolean;
   emotion_tone?: string;
   emoji?: string | null;
+  highlight?: boolean;
 }
 
 export type CaptionStyle = string;
@@ -46,10 +49,78 @@ export interface ProcessingStep {
   error?: string;
 }
 
+export interface DubbingVoice {
+  id: string;
+  name: string;
+  gender: 'male' | 'female' | 'neutral';
+  language: string;
+  accent?: string;
+  description: string;
+  tags: string[];
+  emoji: string;
+  provider: 'gemini' | 'standard' | 'neural';
+  previewAudioUrl?: string;
+  pitch?: number;
+  rate?: number;
+}
+
+export interface DubbingSettings {
+  enabled: boolean;
+  targetLanguage: string;
+  voiceId: string;
+  emotion: 'natural' | 'excited' | 'emotional' | 'sad' | 'angry' | 'sarcastic' | 'surprised' | 'storyteller';
+  speechRate: number; // 0.5 - 2.0 (1.0 default)
+  speechPitch: number; // 0.5 - 2.0 (1.0 default)
+  naturalFillers: boolean; // include "umm", "uh", natural pauses
+  fitOriginalDuration: boolean; // optimize generated speech to fit original media duration
+}
+
+export interface MediaProbeInfo {
+  durationSeconds: number;
+  durationMs: number;
+  isAudioOnly: boolean;
+  format: string;
+  channels?: number;
+  sampleRate?: number;
+  fileSizeBytes: number;
+  fileName: string;
+}
+
+export interface PipelineIntermediateCache {
+  sessionId: string;
+  mediaFile: File;
+  mediaInfo?: MediaProbeInfo;
+  extractedAudioBlob?: Blob;
+  gemini35Transcript?: {
+    words: CaptionWord[];
+    detectedLanguage: string;
+    rawText: string;
+  };
+  deepgramOriginalTimestamps?: {
+    words: any[];
+    detectedLanguage: string;
+  };
+  alignedMasterTranscript?: {
+    words: CaptionWord[];
+    detectedLanguage: string;
+  };
+  gemini36FlashOutput?: {
+    words: CaptionWord[];
+    translatedText?: string;
+    detectedLanguage?: string;
+  };
+  dubbedAudioBlob?: Blob;
+  dubbedAudioUrl?: string;
+  deepgramDubbedTimestamps?: {
+    words: any[];
+  };
+}
+
 export interface AppState {
   videoUrl: string | null;
   videoFile: File | null;
   audioFile: File | null;
+  isAudioOnly?: boolean;
   serverFilename?: string | null;
   words: CaptionWord[];
   activeStyle: CaptionStyle;
@@ -59,10 +130,14 @@ export interface AppState {
   uploadProgress: number;
   logs: string[];
   styleSettings: SubtitleStyleSettings;
+  dubbingSettings: DubbingSettings;
   activeModel?: string;
   hasFailed?: boolean;
   processingSteps?: ProcessingStep[];
   processingStartTime?: number | null;
+  mediaDurationSeconds?: number;
+  dubbedAudioUrl?: string | null;
+  sessionCache?: PipelineIntermediateCache | null;
   lastUploadParams?: {
     file: File;
     language: string;
@@ -72,5 +147,6 @@ export interface AppState {
     emojiStyle: any;
     enableHotwords?: boolean;
     preExtractedAudioBlob?: Blob | null;
+    dubbingSettings?: DubbingSettings;
   } | null;
 }

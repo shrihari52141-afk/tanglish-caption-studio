@@ -1,7 +1,30 @@
 import React, { useState, Component, ErrorInfo, ReactNode } from 'react';
-import { CaptionWord, SubtitleStyleSettings } from '../types';
+import { CaptionWord, SubtitleStyleSettings, DubbingSettings, DubbingVoice } from '../types';
 import { PRESETS, STYLE_CATEGORIES } from '../data/presets';
-import { Sparkles, Type, CaseSensitive, AlignCenter, AlignLeft, AlignRight, Sliders, Edit3, Check, Play, Hash, Smile, RotateCcw, ZoomIn } from 'lucide-react';
+import { DUBBING_VOICES, EMOTION_STYLES } from '../data/voices';
+import { 
+  Sparkles, 
+  Type, 
+  CaseSensitive, 
+  AlignCenter, 
+  AlignLeft, 
+  AlignRight, 
+  Sliders, 
+  Edit3, 
+  Check, 
+  Play, 
+  Square,
+  Hash, 
+  Smile, 
+  RotateCcw, 
+  ZoomIn, 
+  Volume2, 
+  Languages, 
+  Search, 
+  RefreshCw, 
+  Loader2,
+  Mic
+} from 'lucide-react';
 import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from '../utils/subtitleExporter';
 import { stripASSTags } from '../utils/captionFormatter';
 import { ensureRomanScript } from '../utils/indicTransliterate';
@@ -15,8 +38,12 @@ interface EditorPanelProps {
   onUpdateWordText: (id: string, text: string) => void;
   onSeek: (time: number) => void;
   onUpdateWords?: (words: CaptionWord[]) => void;
-  activeTab?: 'presets' | 'decorations' | 'transcript';
-  onActiveTabChange?: (tab: 'presets' | 'decorations' | 'transcript') => void;
+  dubbingSettings?: DubbingSettings;
+  onUpdateDubbingSettings?: (settings: Partial<DubbingSettings>) => void;
+  onReDub?: (settings: DubbingSettings) => void;
+  isReDubbing?: boolean;
+  activeTab?: 'presets' | 'decorations' | 'transcript' | 'dubbing';
+  onActiveTabChange?: (tab: 'presets' | 'decorations' | 'transcript' | 'dubbing') => void;
 }
 
 interface ErrorBoundaryProps {
@@ -71,10 +98,13 @@ function EditorPanelContent({
   onUpdateWordText,
   onSeek,
   onUpdateWords,
+  dubbingSettings,
+  onUpdateDubbingSettings,
+  onReDub,
+  isReDubbing = false,
   activeTab: controlledActiveTab,
   onActiveTabChange
 }: EditorPanelProps) {
-  // Defensive styleSettings defaults
   const safeSettings: SubtitleStyleSettings = {
     preset: 'glow',
     fontFamily: 'Inter',
@@ -97,10 +127,22 @@ function EditorPanelContent({
     ...(styleSettings || {})
   };
 
-  const [localActiveTab, setLocalActiveTab] = useState<'presets' | 'decorations' | 'transcript'>('presets');
+  const safeDubbing: DubbingSettings = {
+    enabled: false,
+    targetLanguage: 'english',
+    voiceId: 'gemini-puck',
+    emotion: 'natural',
+    speechRate: 1.0,
+    speechPitch: 1.0,
+    naturalFillers: true,
+    fitOriginalDuration: true,
+    ...(dubbingSettings || {})
+  };
+
+  const [localActiveTab, setLocalActiveTab] = useState<'presets' | 'decorations' | 'transcript' | 'dubbing'>('presets');
   
   const activeTab = controlledActiveTab !== undefined ? controlledActiveTab : localActiveTab;
-  const setActiveTab = (tab: 'presets' | 'decorations' | 'transcript') => {
+  const setActiveTab = (tab: 'presets' | 'decorations' | 'transcript' | 'dubbing') => {
     if (onActiveTabChange) {
       onActiveTabChange(tab);
     } else {
@@ -116,13 +158,15 @@ function EditorPanelContent({
   
   const [editingWordId, setEditingWordId] = useState<string | null>(null);
   const [editingWordText, setEditingWordText] = useState("");
-  const [editingWordEmoji, setEditingWordEmoji] = useState("");
   
-  const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
-
   // Bulk selection and editing states
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedWordIds, setSelectedWordIds] = useState<Set<string>>(new Set());
+
+  // Dubbing tab states
+  const [voiceSearch, setVoiceSearch] = useState('');
+  const [genderFilter, setGenderFilter] = useState<'all' | 'male' | 'female'>('all');
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
 
   const handleBulkDelete = () => {
     if (!onUpdateWords) return;
@@ -181,15 +225,6 @@ function EditorPanelContent({
     { id: 'Courier', name: 'COURIER MONO' },
   ];
 
-  const genres = [
-    { id: 'normal', name: 'Normal 😐', fontFamily: 'Inter' },
-    { id: 'romantic', name: 'Romantic 🌹', fontFamily: 'Playfair Display' },
-    { id: 'love', name: 'Love ❤️', fontFamily: 'Pacifico' },
-    { id: 'korean', name: 'Korean 🇰🇷', fontFamily: 'Black Han Sans' },
-    { id: 'action', name: 'Action ⚡', fontFamily: 'Impact' },
-    { id: 'cute', name: 'Cute 🧸', fontFamily: 'Fredoka' },
-  ];
-
   const premiumColors = [
     { hex: '#FFFFFF', name: 'White' },
     { hex: '#C600DC', name: 'Purple' },
@@ -202,16 +237,12 @@ function EditorPanelContent({
     { hex: '#F97316', name: 'Orange' },
   ];
 
-  const quickEmojis = ['🔥', '💪', '😂', '❤️', '😎', '👏', '💡', '😮', '😢', '🎉', '🚀', '✨', '🤩', '🙏', '💯'];
-
-  // Active word index based on playback time
   const activeIndex = (words || []).findIndex(w => currentTime >= (w.start_time || 0) && currentTime <= (w.end_time || 0));
 
-  // Group individual words into sentences for the Interactive Timestamps
   const sentences = React.useMemo(() => {
     if (!words || words.length === 0) return [];
-    const maxGap = 1.2; // seconds pause triggers new sentence
-    const maxWords = 5; // maximum words per sentence box
+    const maxGap = 1.2;
+    const maxWords = 5;
     
     const list: { id: string; text: string; start_time: number; end_time: number; words: CaptionWord[] }[] = [];
     let currentGroup: CaptionWord[] = [words[0]];
@@ -247,155 +278,116 @@ function EditorPanelContent({
     return list;
   }, [words]);
 
-  // Handle preset application
-  const handleApplyPreset = (presetSettings: any) => {
-    onUpdateStyleSettings({ 
-      ...presetSettings, 
-      fontSize: presetSettings.fontSize || safeSettings.fontSize || 1.0, 
-      rotation: 0 
-    });
-  };
-
-  // Editing standard word
-  const handleStartWordEdit = (w: CaptionWord, e: React.MouseEvent) => {
+  const handlePreviewVoice = (voice: DubbingVoice, e: React.MouseEvent) => {
     e.stopPropagation();
-    setEditingWordId(w.id);
-    setEditingWordText(stripASSTags(w.word));
-    setEditingWordEmoji(w.emoji || '');
-    setEditingSentenceId(null);
-  };
-
-  const handleSaveWordEdit = (id: string) => {
-    if (onUpdateWords) {
-      const updated = (words || []).map(w => {
-        if (w.id === id) {
-          return {
-            ...w,
-            word: stripASSTags(editingWordText),
-            emoji: editingWordEmoji || null,
-          };
-        }
-        return w;
-      });
-      onUpdateWords(updated);
-    } else {
-      onUpdateWordText(id, stripASSTags(editingWordText));
-    }
-    setEditingWordId(null);
-  };
-
-  // Editing full sentence
-  const handleStartSentenceEdit = (sId: string, text: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setEditingSentenceId(sId);
-    setEditingSentenceText(text);
-    setEditingWordId(null);
-  };
-
-  const handleSaveSentenceEdit = (sId: string, sentenceWords: CaptionWord[]) => {
-    const newWordsText = editingSentenceText.trim().split(/\s+/).filter(Boolean);
-    if (newWordsText.length === 0) {
-      setEditingSentenceId(null);
-      return;
-    }
-
-    if (!onUpdateWords) {
-      sentenceWords.forEach((sw, idx) => {
-        if (newWordsText[idx]) {
-          onUpdateWordText(sw.id, newWordsText[idx]);
-        }
-      });
-      setEditingSentenceId(null);
-      return;
-    }
-
-    const startTime = sentenceWords[0]?.start_time || 0;
-    const endTime = sentenceWords[sentenceWords.length - 1]?.end_time || (startTime + 1);
-    const totalDuration = Math.max(0.1, endTime - startTime);
-    const wordDuration = totalDuration / newWordsText.length;
-
-    const updatedSentenceWords = newWordsText.map((wText, idx) => {
-      const originalWord = sentenceWords[idx];
-      return {
-        id: originalWord?.id || `word-${sId}-${idx}-${Math.random().toString(36).substring(5)}`,
-        word: wText,
-        start_time: startTime + (idx * wordDuration),
-        end_time: startTime + ((idx + 1) * wordDuration),
-        start_ms: Math.round((startTime + (idx * wordDuration)) * 1000),
-        end_ms: Math.round((startTime + ((idx + 1) * wordDuration)) * 1000),
-        emoji: originalWord?.emoji || null,
-      };
-    });
-
-    const originalWordIds = new Set(sentenceWords.map(sw => sw.id));
-    const finalWordsList: CaptionWord[] = [];
-    let replaced = false;
-
-    for (let i = 0; i < (words || []).length; i++) {
-      if (originalWordIds.has(words[i].id)) {
-        if (!replaced) {
-          finalWordsList.push(...updatedSentenceWords);
-          replaced = true;
-        }
-      } else {
-        finalWordsList.push(words[i]);
+    if (previewingVoiceId === voice.id) {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
       }
+      setPreviewingVoiceId(null);
+      return;
     }
 
-    onUpdateWords(finalWordsList);
-    setEditingSentenceId(null);
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      const sampleText = `Hello! I am ${voice.name.split(' ')[0]}. Here is how I sound dubbing your project.`;
+      const utterance = new SpeechSynthesisUtterance(sampleText);
+      utterance.rate = voice.rate || 1.0;
+      utterance.pitch = voice.pitch || 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const matched = voices.find(v => (voice.gender === 'female' ? /female|woman|zira|samantha/i.test(v.name) : /male|man|david|alex/i.test(v.name)));
+      if (matched) utterance.voice = matched;
+
+      utterance.onend = () => setPreviewingVoiceId(null);
+      utterance.onerror = () => setPreviewingVoiceId(null);
+
+      setPreviewingVoiceId(voice.id);
+      window.speechSynthesis.speak(utterance);
+    } else {
+      setPreviewingVoiceId(voice.id);
+      setTimeout(() => setPreviewingVoiceId(null), 2500);
+    }
   };
 
-  // Filter presets based on category
-  const filteredPresets = PRESETS.filter(p => selectedCategory === 'all' || p.category === selectedCategory);
-
-  const safeHighlightHex = (safeSettings.highlightColor || '#FACC15').toLowerCase();
-  const safeTextHex = (safeSettings.textColor || '#FFFFFF').toLowerCase();
+  const filteredVoices = DUBBING_VOICES.filter(v => {
+    const matchesSearch = v.name.toLowerCase().includes(voiceSearch.toLowerCase()) || 
+                          v.tags.some(t => t.toLowerCase().includes(voiceSearch.toLowerCase())) ||
+                          v.description.toLowerCase().includes(voiceSearch.toLowerCase());
+    const matchesGender = genderFilter === 'all' || v.gender === genderFilter;
+    return matchesSearch && matchesGender;
+  });
 
   return (
-    <div className="w-full h-auto lg:h-full bg-[#161616] flex flex-col border-l border-[#333]">
-      {/* Category Tabs */}
-      <div className="flex border-b border-[#333] bg-[#0A0A0A] shrink-0 sticky top-0 z-10">
-        <button
-          onClick={() => setActiveTab('presets')}
-          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
-            activeTab === 'presets' ? 'border-fuchsia-600 text-fuchsia-500' : 'border-transparent text-[#888888] hover:text-white'
-          }`}
-        >
-          Presets
-        </button>
-        <button
-          onClick={() => setActiveTab('decorations')}
-          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
-            activeTab === 'decorations' ? 'border-fuchsia-600 text-fuchsia-500' : 'border-transparent text-[#888888] hover:text-white'
-          }`}
-        >
-          Decoration
-        </button>
-        <button
-          onClick={() => setActiveTab('transcript')}
-          className={`flex-1 py-4 text-center text-[12px] font-black uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
-            activeTab === 'transcript' ? 'border-fuchsia-600 text-fuchsia-500' : 'border-transparent text-[#888888] hover:text-white'
-          }`}
-        >
-          Transcript
-        </button>
+    <div className="w-full h-full bg-[#121216] border border-[#262633] rounded-3xl flex flex-col overflow-hidden shadow-2xl">
+      {/* Tab Navigation Header */}
+      <div className="p-3 bg-[#16161c] border-b border-[#22222a] flex items-center justify-between gap-1 shrink-0">
+        <div className="grid grid-cols-4 gap-1 w-full">
+          <button
+            onClick={() => setActiveTab('presets')}
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black uppercase transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'presets'
+                ? 'bg-fuchsia-600 text-white shadow-lg shadow-fuchsia-600/30'
+                : 'text-gray-400 hover:text-white hover:bg-[#202028]'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Presets</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('decorations')}
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black uppercase transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'decorations'
+                ? 'bg-fuchsia-600 text-white shadow-lg shadow-fuchsia-600/30'
+                : 'text-gray-400 hover:text-white hover:bg-[#202028]'
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Style</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('transcript')}
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black uppercase transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'transcript'
+                ? 'bg-fuchsia-600 text-white shadow-lg shadow-fuchsia-600/30'
+                : 'text-gray-400 hover:text-white hover:bg-[#202028]'
+            }`}
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Words</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('dubbing')}
+            className={`py-2 px-1 text-center rounded-xl text-xs font-black uppercase transition-all cursor-pointer flex items-center justify-center gap-1 ${
+              activeTab === 'dubbing'
+                ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-lg shadow-fuchsia-600/30'
+                : 'text-gray-400 hover:text-white hover:bg-[#202028]'
+            }`}
+          >
+            <Volume2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">AI Dubbing</span>
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 p-4 md:p-6 overflow-visible lg:overflow-y-auto custom-scrollbar flex flex-col gap-6">
-        {/* PRESETS TAB */}
+      {/* Main Tab Content */}
+      <div className="flex-1 overflow-y-auto p-4 sm:p-5 custom-scrollbar space-y-5">
+        
+        {/* TAB 1: PRESETS */}
         {activeTab === 'presets' && (
-          <div className="flex flex-col gap-5 animate-fade-in">
-            {/* Horizontal Scrollable Subcategories */}
-            <div className="flex gap-1.5 overflow-x-auto pb-2 custom-scrollbar shrink-0 select-none -mx-1 px-1">
+          <div className="space-y-4">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-2 custom-scrollbar">
               {STYLE_CATEGORIES.map(cat => (
                 <button
                   key={cat.id}
                   onClick={() => setSelectedCategory(cat.id)}
-                  className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider shrink-0 transition-colors cursor-pointer ${
+                  className={`text-[11px] font-bold px-3 py-1.5 rounded-xl uppercase transition-colors shrink-0 cursor-pointer ${
                     selectedCategory === cat.id
-                      ? 'bg-fuchsia-600 text-white shadow-md shadow-fuchsia-600/20'
-                      : 'bg-[#222] text-[#aaa] hover:text-white hover:bg-[#2a2a2a]'
+                      ? 'bg-fuchsia-600 text-white shadow-sm'
+                      : 'bg-[#1a1a22] text-gray-400 hover:text-white'
                   }`}
                 >
                   {cat.name}
@@ -403,817 +395,330 @@ function EditorPanelContent({
               ))}
             </div>
 
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3.5 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-fuchsia-500" /> Caption Presets ({filteredPresets.length})
-                </span>
-                <span className="text-[9px] text-fuchsia-400 font-bold bg-fuchsia-500/10 px-2 py-0.5 rounded-full uppercase">
-                  Animations Active
-                </span>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-3">
-                {filteredPresets.map((p) => {
-                  const isActive = safeSettings.preset === p.id || safeSettings.preset === p.settings.preset;
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => handleApplyPreset(p.settings)}
-                      className={`relative p-3.5 rounded-xl border-2 text-left transition-all overflow-hidden flex flex-col justify-between cursor-pointer ${
-                        isActive 
-                          ? 'border-fuchsia-600 bg-fuchsia-600/10 shadow-lg shadow-fuchsia-600/10' 
-                          : 'border-transparent bg-[#222] hover:bg-[#2c2c2c]'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <span className="text-lg">{p.emoji}</span>
-                          <div className="text-[11px] font-black uppercase tracking-tight text-white truncate max-w-[80%]">
-                            {p.name}
-                          </div>
-                        </div>
-                        
-                        {/* Animated live preview playing the preset animation */}
-                        <div className="mt-1 bg-[#0A0A0A] rounded-lg border border-[#2c2c2c] overflow-hidden h-[44px]">
-                          <PresetPreview settings={p.settings} />
-                        </div>
-                      </div>
-
-                      {isActive && (
-                        <div className="absolute top-0 right-0 w-3.5 h-3.5 bg-fuchsia-600 rounded-bl-lg"></div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="bg-[#222]/40 rounded-xl p-4 border border-[#333] mt-2">
-              <div className="text-[12px] font-extrabold uppercase text-white mb-2">💡 Quick tip</div>
-              <p className="text-[11px] text-[#888888] leading-relaxed">
-                Click any preset to instantly apply fonts, colors, and keyframe animations! Tweak colors, size, or formatting under <strong className="text-white">Decoration</strong>.
-              </p>
+            <div className="grid grid-cols-2 gap-3">
+              {PRESETS.filter(p => selectedCategory === 'all' || p.category === selectedCategory).map(preset => {
+                const isSel = safeSettings.preset === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => onUpdateStyleSettings({ preset: preset.settings.preset, highlightColor: preset.settings.highlightColor, textColor: preset.settings.textColor, fontFamily: preset.settings.fontFamily, showBackground: preset.settings.showBackground, capitalization: preset.settings.capitalization, showBacklight: preset.settings.showBacklight, showSpotlight: preset.settings.showSpotlight, rotation: preset.settings.rotation, maxWordsPerScreen: preset.settings.maxWordsPerScreen })}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col gap-2 relative overflow-hidden ${
+                      isSel 
+                        ? 'border-fuchsia-500 bg-fuchsia-600/20 shadow-lg ring-2 ring-fuchsia-500/50' 
+                        : 'border-[#262635] bg-[#161620] hover:bg-[#1f1f2c]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase text-white truncate">{preset.name}</span>
+                      {isSel && <Check className="w-3.5 h-3.5 text-fuchsia-400 shrink-0" />}
+                    </div>
+                    <div className="h-10 rounded-xl bg-black/40 flex items-center justify-center border border-white/5">
+                      <PresetPreview settings={preset.settings} />
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* DECORATIONS TAB */}
+        {/* TAB 2: DECORATIONS & STYLING */}
         {activeTab === 'decorations' && (
-          <div className="flex flex-col gap-6 animate-fade-in">
-            {/* Font Size & Scale Control */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <ZoomIn className="w-4 h-4 text-fuchsia-500" /> Font Size & Scale
-                </span>
-                <span className="text-[11px] bg-fuchsia-600/20 text-fuchsia-400 font-mono font-bold px-2 py-0.5 rounded">
-                  {Math.round((safeSettings.fontSize || 1.0) * 100)}%
-                </span>
-              </div>
-              <div className="bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] flex items-center gap-3">
-                <button
-                  onClick={() => onUpdateStyleSettings({ fontSize: Math.max(0.4, Number(((safeSettings.fontSize || 1.0) - 0.1).toFixed(1))) })}
-                  className="w-8 h-8 rounded-lg bg-[#2c2c2c] hover:bg-[#3d3d3d] text-white font-bold text-sm flex items-center justify-center cursor-pointer border border-[#444]"
-                >
-                  -
-                </button>
-                <input
-                  type="range"
-                  min="0.4"
-                  max="2.2"
-                  step="0.05"
-                  value={safeSettings.fontSize || 1.0}
-                  onChange={(e) => onUpdateStyleSettings({ fontSize: parseFloat(e.target.value) })}
-                  className="flex-1 accent-fuchsia-500 cursor-pointer"
-                />
-                <button
-                  onClick={() => onUpdateStyleSettings({ fontSize: Math.min(2.5, Number(((safeSettings.fontSize || 1.0) + 0.1).toFixed(1))) })}
-                  className="w-8 h-8 rounded-lg bg-[#2c2c2c] hover:bg-[#3d3d3d] text-white font-bold text-sm flex items-center justify-center cursor-pointer border border-[#444]"
-                >
-                  +
-                </button>
-                <button
-                  onClick={() => onUpdateStyleSettings({ fontSize: 1.0, positionX: 0, positionY: 0, rotation: 0 })}
-                  className="p-2 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600/30 text-gray-300 hover:text-white text-[10px] font-bold uppercase flex items-center gap-1 cursor-pointer border border-[#444]"
-                  title="Reset size and position"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" /> Reset
-                </button>
-              </div>
-            </div>
-
-            {/* Font Family & Genres */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center gap-1.5">
-                <Type className="w-4 h-4 text-fuchsia-500" /> Font & Genre Style
-              </div>
-
-              {/* Genre Selector */}
-              <div className="mb-4 bg-[#0E0E0E] p-3 rounded-xl border border-[#222]">
-                <div className="text-[10px] font-black uppercase tracking-wider text-[#777] mb-2">Style Genres</div>
-                <div className="grid grid-cols-3 gap-2">
-                  {genres.map((g) => {
-                    const isActive = safeSettings.fontFamily === g.fontFamily;
-                    return (
-                      <button
-                        key={g.id}
-                        onClick={() => onUpdateStyleSettings({ fontFamily: g.fontFamily })}
-                        className={`py-2 px-1 rounded-lg border text-[11px] font-extrabold transition-all duration-200 cursor-pointer text-center ${
-                          isActive
-                            ? 'border-fuchsia-600 bg-fuchsia-600/15 text-fuchsia-400 shadow-sm'
-                            : 'border-[#333] bg-[#1a1a1a] text-[#888] hover:bg-[#222] hover:text-white'
-                        }`}
-                      >
-                        {g.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Individual Fonts */}
-              <div className="text-[10px] font-black uppercase tracking-wider text-[#777] mb-2">All Fonts</div>
-              <div className="flex flex-wrap gap-1.5">
-                {fonts.map((f) => {
-                  const isActive = safeSettings.fontFamily === f.id;
-                  return (
-                    <button
-                      key={f.id}
-                      onClick={() => onUpdateStyleSettings({ fontFamily: f.id })}
-                      className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-black uppercase tracking-wide transition-colors cursor-pointer ${
-                        isActive 
-                          ? 'border-fuchsia-600 bg-fuchsia-600/15 text-fuchsia-500' 
-                          : 'border-[#333] bg-[#222] text-white hover:bg-[#333]'
-                      }`}
-                    >
-                      {f.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Capitalization */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center gap-1.5">
-                <CaseSensitive className="w-4 h-4 text-fuchsia-500" /> Capitalization
-              </div>
-              <div className="grid grid-cols-4 gap-2">
-                {(['none', 'all', 'lower', 'sentence'] as const).map((cap) => {
-                  const isActive = safeSettings.capitalization === cap;
-                  return (
-                    <button
-                      key={cap}
-                      onClick={() => onUpdateStyleSettings({ capitalization: cap })}
-                      className={`py-2 px-1 rounded-lg border text-[10px] font-black uppercase text-center transition-colors cursor-pointer ${
-                        isActive 
-                          ? 'border-fuchsia-600 bg-fuchsia-600/15 text-fuchsia-500' 
-                          : 'border-[#333] bg-[#222] text-white hover:bg-[#333]'
-                      }`}
-                    >
-                      {cap === 'none' ? 'Original' : cap}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Alignments */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center gap-1.5">
-                <AlignCenter className="w-4 h-4 text-fuchsia-500" /> Alignments
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'left', icon: AlignLeft, label: 'Left' },
-                  { id: 'center', icon: AlignCenter, label: 'Center' },
-                  { id: 'right', icon: AlignRight, label: 'Right' },
-                ].map((align) => {
-                  const isActive = safeSettings.alignment === align.id;
-                  const Icon = align.icon;
-                  return (
-                    <button
-                      key={align.id}
-                      onClick={() => onUpdateStyleSettings({ alignment: align.id as any })}
-                      className={`py-2 px-3 rounded-lg border text-[11px] font-black uppercase flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
-                        isActive 
-                          ? 'border-fuchsia-600 bg-fuchsia-600/15 text-fuchsia-500' 
-                          : 'border-[#333] bg-[#222] text-white hover:bg-[#333]'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {align.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Words per Screen */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center justify-between">
-                <span className="flex items-center gap-1.5 font-sans font-extrabold">
-                  <Hash className="w-4 h-4 text-fuchsia-500" /> Words on Screen
-                </span>
-                <span className="text-[10px] bg-fuchsia-600/20 text-fuchsia-400 px-2 py-0.5 rounded-full font-bold">
-                  Active: {safeSettings.maxWordsPerScreen === 0 ? 'Auto with AI' : `${safeSettings.maxWordsPerScreen} ${safeSettings.maxWordsPerScreen === 1 ? 'word' : 'words'}`}
-                </span>
-              </div>
-              
-              <div className="grid grid-cols-6 gap-1.5 mb-2.5">
-                {[0, 1, 2, 3, 4, 5].map((num) => {
-                  const isActive = safeSettings.maxWordsPerScreen === num;
-                  return (
-                    <button
-                      key={num}
-                      onClick={() => onUpdateStyleSettings({ maxWordsPerScreen: num })}
-                      className={`py-2 px-1 rounded-lg border text-[11px] font-black transition-all cursor-pointer ${
-                        isActive
-                          ? 'border-fuchsia-600 bg-fuchsia-600/20 text-fuchsia-500 shadow-lg font-extrabold'
-                          : 'border-[#333] bg-[#222] text-white hover:bg-[#333]'
-                      }`}
-                    >
-                      {num === 0 ? 'AI Auto' : num}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* AI Suggest Button */}
-              <button
-                onClick={() => {
-                  setIsAnalyzingAI(true);
-                  setTimeout(() => {
-                    onUpdateStyleSettings({
-                      maxWordsPerScreen: 3,
-                      preset: 'bounce',
-                      fontFamily: 'Fredoka',
-                      showBackground: false,
-                      showSpotlight: false,
-                      showBacklight: false,
-                      highlightColor: '#F472B6',
-                      capitalization: 'sentence',
-                      rotation: 0,
-                    });
-                    setIsAnalyzingAI(false);
-                  }, 800);
-                }}
-                disabled={isAnalyzingAI}
-                className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700 text-white font-extrabold text-[11px] uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
-              >
-                {isAnalyzingAI ? (
-                  <>
-                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    AI CADENCE ANALYSIS...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 animate-pulse" />
-                    Set Optimal Words via AI
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* AI Emojis & Punctuation Controls */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center gap-1.5">
-                <Smile className="w-4 h-4 text-fuchsia-500" /> AI Emojis & Punctuation
-              </div>
-              <div className="flex flex-col gap-3.5 bg-[#1f1f1f] p-4 rounded-xl border border-[#333] mb-4">
-                {/* Enable Emojis Switch */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12px] font-black text-white uppercase flex items-center gap-1.5">
-                      Show Emojis
-                    </div>
-                    <div className="text-[10px] text-[#888888]">Toggle whether to render visual reaction emojis</div>
-                  </div>
-                  <button
-                    onClick={() => onUpdateStyleSettings({ showEmojis: safeSettings.showEmojis !== false ? false : true })}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      safeSettings.showEmojis !== false ? 'bg-fuchsia-600' : 'bg-[#333]'
-                    }`}
-                  >
-                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      safeSettings.showEmojis !== false ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Show Punctuation Switch */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12px] font-black text-white uppercase">Show Punctuation</div>
-                    <div className="text-[10px] text-[#888888]">Toggle commas, periods, and question marks</div>
-                  </div>
-                  <button
-                    onClick={() => onUpdateStyleSettings({ showPunctuation: safeSettings.showPunctuation !== false ? false : true })}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      safeSettings.showPunctuation !== false ? 'bg-fuchsia-600' : 'bg-[#333]'
-                    }`}
-                  >
-                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      safeSettings.showPunctuation !== false ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Emoji Styles / Options Selector */}
-                {safeSettings.showEmojis !== false && (
-                  <div className="pt-3 border-t border-[#333] space-y-2.5 animate-fade-in">
-                    <div className="text-[11px] font-black text-white uppercase tracking-wider">Emoji Theme Preset</div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {[
-                        { id: 'auto', name: 'Smart Auto 🤖', desc: 'Fits video style' },
-                        { id: 'vibes', name: 'Hype Vibes 🔥', desc: 'Reaction emojis' },
-                        { id: 'emotions', name: 'Feelings 🤩', desc: 'Expressions & faces' },
-                        { id: 'objects', name: 'Objects 🎬', desc: 'Real life items' },
-                        { id: 'energetic', name: 'Beast 🦾', desc: 'Fierce action' },
-                        { id: 'minimal', name: 'Minimal 👾', desc: 'Retro pixel' },
-                        { id: 'custom', name: 'Magical 💖', desc: 'Cute dream' },
-                      ].map((stylePreset) => {
-                        const isSel = (safeSettings.emojiStyle || 'auto') === stylePreset.id;
-                        return (
-                          <button
-                            key={stylePreset.id}
-                            onClick={() => onUpdateStyleSettings({ emojiStyle: stylePreset.id as any })}
-                            className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col gap-0.5 ${
-                              isSel 
-                                ? 'border-fuchsia-600 bg-fuchsia-600/10' 
-                                : 'border-[#333] bg-[#0A0A0A] hover:bg-[#151515]'
-                            }`}
-                          >
-                            <span className="text-[11px] font-bold text-white leading-none">{stylePreset.name}</span>
-                            <span className="text-[8px] text-[#888888] leading-tight mt-0.5">{stylePreset.desc}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Text Formatting toggles */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-3 flex items-center gap-1.5">
-                <Sliders className="w-4 h-4 text-fuchsia-500" /> Formatting Effects
-              </div>
-              <div className="flex flex-col gap-3.5 bg-[#1f1f1f] p-4 rounded-xl border border-[#333]">
-                {/* Background Box */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12px] font-black text-white uppercase">Background Box</div>
-                    <div className="text-[10px] text-[#888888]">Solid capsule background on active words</div>
-                  </div>
-                  <button
-                    onClick={() => onUpdateStyleSettings({ showBackground: !safeSettings.showBackground })}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      safeSettings.showBackground ? 'bg-fuchsia-600' : 'bg-[#333]'
-                    }`}
-                  >
-                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      safeSettings.showBackground ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Spotlight Active */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12px] font-black text-white uppercase">Spotlight Accent</div>
-                    <div className="text-[10px] text-[#888888]">Dims inactive words to focus viewer</div>
-                  </div>
-                  <button
-                    onClick={() => onUpdateStyleSettings({ showSpotlight: !safeSettings.showSpotlight })}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      safeSettings.showSpotlight ? 'bg-fuchsia-600' : 'bg-[#333]'
-                    }`}
-                  >
-                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      safeSettings.showSpotlight ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Backlight Glow */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12px] font-black text-white uppercase">Backlight Glow</div>
-                    <div className="text-[10px] text-[#888888]">Neon bloom / glow behind highlights</div>
-                  </div>
-                  <button
-                    onClick={() => onUpdateStyleSettings({ showBacklight: !safeSettings.showBacklight })}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      safeSettings.showBacklight ? 'bg-fuchsia-600' : 'bg-[#333]'
-                    }`}
-                  >
-                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      safeSettings.showBacklight ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Text Shadow */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12px] font-black text-white uppercase">Text Shadow / Outline</div>
-                    <div className="text-[10px] text-[#888888]">Traditional drop-shadow and stroke outline</div>
-                  </div>
-                  <button
-                    onClick={() => onUpdateStyleSettings({ showShadow: !safeSettings.showShadow })}
-                    className={`w-11 h-6 rounded-full p-1 transition-colors duration-200 focus:outline-none cursor-pointer ${
-                      safeSettings.showShadow ? 'bg-fuchsia-600' : 'bg-[#333]'
-                    }`}
-                  >
-                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
-                      safeSettings.showShadow ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Custom Color Palette */}
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-2">
-                Active Word Highlight Color
-              </div>
-              <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] items-center">
-                {premiumColors.map((c) => (
+          <div className="space-y-5">
+            {/* Color Palette */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400">
+                Word Highlight Color
+              </label>
+              <div className="flex items-center gap-2 flex-wrap">
+                {premiumColors.map(c => (
                   <button
                     key={c.hex}
                     onClick={() => onUpdateStyleSettings({ highlightColor: c.hex })}
-                    style={{ backgroundColor: c.hex }}
-                    title={c.name}
-                    className={`w-8 h-8 rounded-full border-2 transition-transform active:scale-95 cursor-pointer ${
-                      safeHighlightHex === c.hex.toLowerCase()
-                        ? 'border-white scale-110 shadow-lg shadow-white/10'
-                        : 'border-transparent'
+                    className={`w-7 h-7 rounded-full border-2 transition-transform cursor-pointer flex items-center justify-center ${
+                      safeSettings.highlightColor.toLowerCase() === c.hex.toLowerCase()
+                        ? 'scale-115 border-white ring-2 ring-fuchsia-500 shadow-md'
+                        : 'border-transparent hover:scale-105'
                     }`}
+                    style={{ backgroundColor: c.hex }}
                   />
                 ))}
-                {/* Custom Color Selector */}
-                <div className="relative w-8 h-8 rounded-full border-2 border-dashed border-[#555] hover:border-[#888] flex items-center justify-center transition-transform active:scale-95 cursor-pointer bg-transparent" title="Custom Color Picker">
-                  <input
-                    type="color"
-                    value={safeSettings.highlightColor || '#FACC15'}
-                    onChange={(e) => onUpdateStyleSettings({ highlightColor: e.target.value })}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <span className="text-[14px] text-[#aaa] font-bold">+</span>
-                </div>
               </div>
             </div>
 
-            <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-2">
-                Standard Text Color
-              </div>
-              <div className="flex flex-wrap gap-2.5 bg-[#1f1f1f] p-3.5 rounded-xl border border-[#333] items-center">
-                {premiumColors.map((c) => (
-                  <button
-                    key={c.hex}
-                    onClick={() => onUpdateStyleSettings({ textColor: c.hex })}
-                    style={{ backgroundColor: c.hex }}
-                    title={c.name}
-                    className={`w-8 h-8 rounded-full border-2 transition-transform active:scale-95 cursor-pointer ${
-                      safeTextHex === c.hex.toLowerCase()
-                        ? 'border-white scale-110 shadow-lg shadow-white/10'
-                        : 'border-transparent'
-                    }`}
-                  />
+            {/* Typography */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400">
+                Typography / Font
+              </label>
+              <select
+                value={safeSettings.fontFamily}
+                onChange={(e) => onUpdateStyleSettings({ fontFamily: e.target.value })}
+                className="w-full bg-[#0a0a0e] border border-[#2c2c3a] rounded-xl text-white text-xs font-bold px-3 py-2.5 focus:outline-none focus:border-fuchsia-500 cursor-pointer"
+              >
+                {fonts.map(f => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
                 ))}
-                {/* Custom Color Selector */}
-                <div className="relative w-8 h-8 rounded-full border-2 border-dashed border-[#555] hover:border-[#888] flex items-center justify-center transition-transform active:scale-95 cursor-pointer bg-transparent" title="Custom Color Picker">
-                  <input
-                    type="color"
-                    value={safeSettings.textColor || '#FFFFFF'}
-                    onChange={(e) => onUpdateStyleSettings({ textColor: e.target.value })}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <span className="text-[14px] text-[#aaa] font-bold">+</span>
-                </div>
+              </select>
+            </div>
+
+            {/* Font Size Scaling */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-black uppercase text-fuchsia-400">Font Size Scaling</span>
+                <span className="font-mono text-white font-bold">{Math.round(safeSettings.fontSize * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.6"
+                max="1.8"
+                step="0.05"
+                value={safeSettings.fontSize}
+                onChange={(e) => onUpdateStyleSettings({ fontSize: parseFloat(e.target.value) })}
+                className="w-full accent-fuchsia-500 cursor-pointer"
+              />
+            </div>
+
+            {/* Max Words Per Screen */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-black uppercase text-fuchsia-400">Words Per Caption Screen</span>
+                <span className="font-mono text-white font-bold">{safeSettings.maxWordsPerScreen} Words</span>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {[1, 2, 3, 5].map(cnt => (
+                  <button
+                    key={cnt}
+                    onClick={() => onUpdateStyleSettings({ maxWordsPerScreen: cnt })}
+                    className={`py-2 rounded-xl text-xs font-bold uppercase transition-all cursor-pointer ${
+                      safeSettings.maxWordsPerScreen === cnt
+                        ? 'bg-fuchsia-600 text-white font-black'
+                        : 'bg-[#181822] text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {cnt} {cnt === 1 ? 'Word' : 'Words'}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* TRANSCRIPT TAB */}
+        {/* TAB 3: WORDS & TRANSCRIPT */}
         {activeTab === 'transcript' && (
-          <div className="flex flex-col gap-4 animate-fade-in flex-1 min-h-0">
-            <div className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#888888] mb-1 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-fuchsia-500" /> Interactive Timestamps
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black uppercase text-gray-400">
+                Synchronized Words ({words.length})
               </span>
-              <span className="text-[10px] text-fuchsia-400 font-bold bg-fuchsia-500/10 px-2 py-0.5 rounded-full uppercase">
-                Sentence Mode Active
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleBulkRomanize}
+                  className="text-[10px] font-bold uppercase bg-[#1e1e28] hover:bg-fuchsia-600/30 text-fuchsia-300 px-2.5 py-1 rounded-lg border border-[#2e2e3e] transition-colors cursor-pointer"
+                >
+                  Romanize Script
+                </button>
+              </div>
             </div>
 
-            {/* Bulk Selection and Action Header */}
-            {(words || []).length > 0 && (
-              <div className="flex flex-col gap-2.5">
-                <div className="flex items-center justify-between bg-[#1e1e1e] p-3 rounded-xl border border-[#333]">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="bulk-mode-toggle"
-                      checked={isBulkMode}
-                      onChange={(e) => {
-                        setIsBulkMode(e.target.checked);
-                        setSelectedWordIds(new Set());
-                      }}
-                      className="w-4 h-4 rounded border-[#444] text-fuchsia-600 focus:ring-fuchsia-500 bg-[#0A0A0A] accent-fuchsia-500 cursor-pointer"
-                    />
-                    <label htmlFor="bulk-mode-toggle" className="text-[11px] font-black uppercase text-white cursor-pointer select-none flex items-center gap-1.5">
-                      Bulk Edit Mode
-                    </label>
+            <div className="space-y-2 max-h-96 overflow-y-auto custom-scrollbar pr-1">
+              {sentences.map((sent, sIdx) => (
+                <div 
+                  key={sent.id}
+                  className="p-3 bg-[#161620] border border-[#262633] rounded-2xl space-y-2"
+                >
+                  <div className="flex items-center justify-between text-[10px] font-mono text-gray-500">
+                    <span>{sent.start_time.toFixed(1)}s - {sent.end_time.toFixed(1)}s</span>
+                    <button
+                      onClick={() => onSeek(sent.start_time)}
+                      className="text-fuchsia-400 hover:text-fuchsia-300 flex items-center gap-1 font-bold cursor-pointer"
+                    >
+                      <Play className="w-2.5 h-2.5 fill-current" /> Seek
+                    </button>
                   </div>
-                  {isBulkMode && (
-                    <span className="text-[10px] text-fuchsia-400 font-black bg-fuchsia-500/10 px-2.5 py-1 rounded-full uppercase">
-                      {selectedWordIds.size} selected
-                    </span>
-                  )}
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {sent.words.map(w => {
+                      const isActive = currentTime >= w.start_time && currentTime <= w.end_time;
+                      return (
+                        <span
+                          key={w.id}
+                          onClick={() => {
+                            setEditingWordId(w.id);
+                            setEditingWordText(w.word);
+                          }}
+                          className={`text-xs px-2 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                            isActive
+                              ? 'bg-fuchsia-600 text-white shadow-md scale-105'
+                              : 'bg-[#0f0f15] text-gray-300 hover:bg-[#20202c] border border-white/5'
+                          }`}
+                        >
+                          {w.word}
+                        </span>
+                      );
+                    })}
+                  </div>
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-                {isBulkMode && (
-                  <div className="bg-[#1a1a1a] p-3.5 rounded-xl border border-fuchsia-500/30 flex flex-col gap-2.5 animate-fade-in">
-                    <div className="text-[10px] font-black uppercase tracking-wide text-gray-400">Bulk Actions:</div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={handleBulkDelete}
-                        disabled={selectedWordIds.size === 0}
-                        className="py-2.5 px-3 bg-red-600 hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer border-none"
-                      >
-                        🗑️ Delete Selected
-                      </button>
-                      <button
-                        onClick={() => handleBulkCapitalize('upper')}
-                        disabled={selectedWordIds.size === 0}
-                        className="py-2.5 px-3 bg-[#2c2c2c] hover:bg-[#3d3d3d] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer border-none"
-                      >
-                        🔠 UPPERCASE
-                      </button>
-                      <button
-                        onClick={() => handleBulkCapitalize('lower')}
-                        disabled={selectedWordIds.size === 0}
-                        className="py-2.5 px-3 bg-[#2c2c2c] hover:bg-[#3d3d3d] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer border-none"
-                      >
-                        🔡 lowercase
-                      </button>
-                      <button
-                        onClick={() => handleBulkCapitalize('capitalize')}
-                        disabled={selectedWordIds.size === 0}
-                        className="py-2.5 px-3 bg-[#2c2c2c] hover:bg-[#3d3d3d] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer border-none"
-                      >
-                        ✍️ Title Case
-                      </button>
-                      <button
-                        onClick={handleBulkRomanize}
-                        disabled={selectedWordIds.size === 0}
-                        className="col-span-2 py-2.5 px-3 bg-fuchsia-600/30 hover:bg-fuchsia-600 text-fuchsia-200 hover:text-white border border-fuchsia-500/50 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-black uppercase rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                      >
-                        🔤 Convert to Roman Script (A-Z)
-                      </button>
-                    </div>
-                    <div className="flex gap-2 justify-between border-t border-[#2a2a2a] pt-2 mt-0.5">
-                      <button
-                        onClick={handleSelectAll}
-                        className="text-[10px] font-bold uppercase text-fuchsia-400 hover:text-fuchsia-300 cursor-pointer bg-transparent border-none"
-                      >
-                        Select All ({(words || []).length})
-                      </button>
-                      <button
-                        onClick={handleClearSelection}
-                        className="text-[10px] font-bold uppercase text-gray-400 hover:text-white cursor-pointer bg-transparent border-none"
-                      >
-                        Deselect All
-                      </button>
-                    </div>
-                  </div>
-                )}
+        {/* TAB 4: AI DUBBING & RE-DUB STUDIO */}
+        {activeTab === 'dubbing' && (
+          <div className="space-y-5">
+            <div className="bg-gradient-to-r from-purple-950/40 to-fuchsia-950/40 p-4 rounded-2xl border border-fuchsia-500/40 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-fuchsia-400" />
+                  <span className="text-xs font-black uppercase text-white">Re-Dubbing Studio</span>
+                </div>
+                <span className="text-[10px] font-mono text-fuchsia-300 bg-fuchsia-500/20 px-2 py-0.5 rounded-full">
+                  Instant Cache Reuse
+                </span>
               </div>
-            )}
-            
-            <div className="flex-1 overflow-visible lg:overflow-y-auto max-h-none lg:max-h-[500px] space-y-3 bg-[#0A0A0A] p-4 border border-[#333] custom-scrollbar rounded-xl">
-              {(words || []).length === 0 ? (
-                <p className="text-sm text-[#888888] text-center py-12">Upload a video to populate transcript</p>
-              ) : (
-                sentences.map((s) => {
-                  const isSentenceActive = s.words.some((sw) => {
-                    const idx = (words || []).indexOf(sw);
-                    return idx === activeIndex;
-                  });
+              <p className="text-[11px] text-gray-300 leading-relaxed">
+                Change voice or language without re-transcribing from scratch. The pipeline reuses cached results and fits dubbed audio to video duration.
+              </p>
+            </div>
 
-                  const isCurrentlyEditing = editingSentenceId === s.id;
+            {/* Target Language Dropdown */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400">
+                Target Dubbing Language
+              </label>
+              <select
+                value={safeDubbing.targetLanguage}
+                onChange={(e) => onUpdateDubbingSettings?.({ targetLanguage: e.target.value })}
+                className="w-full bg-[#0a0a0e] border border-[#2c2c3a] rounded-xl text-white text-xs font-bold px-3 py-2.5 focus:outline-none focus:border-fuchsia-500 cursor-pointer"
+              >
+                <option value="english">English (Global)</option>
+                <option value="tamil">Tamil (தமிழ்)</option>
+                <option value="hindi">Hindi (हिन्दी)</option>
+                <option value="telugu">Telugu (తెలుగు)</option>
+                <option value="kannada">Kannada (ಕನ್ನಡ)</option>
+                <option value="malayalam">Malayalam (മലയാളം)</option>
+                <option value="spanish">Spanish (Español)</option>
+                <option value="french">French (Français)</option>
+                <option value="german">German (Deutsch)</option>
+                <option value="japanese">Japanese (日本語)</option>
+                <option value="korean">Korean (한국어)</option>
+              </select>
+            </div>
 
-                  return (
-                    <div 
-                      key={s.id} 
-                      onClick={() => onSeek(s.start_time)}
-                      className={`group p-3.5 rounded-xl flex flex-col gap-2.5 transition-colors cursor-pointer border-l-4 ${
-                        isSentenceActive 
-                          ? 'bg-fuchsia-600/90 text-white border-fuchsia-800' 
-                          : 'bg-[#1f1f1f] text-white/90 border-[#2a2a2a] hover:bg-[#252525]'
+            {/* Emotion Style */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400">
+                Expressive Emotion & Performance
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {EMOTION_STYLES.map(emo => (
+                  <button
+                    key={emo.id}
+                    onClick={() => onUpdateDubbingSettings?.({ emotion: emo.id as any })}
+                    className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${
+                      safeDubbing.emotion === emo.id
+                        ? 'border-fuchsia-500 bg-fuchsia-600/25 text-white font-bold'
+                        : 'border-[#262635] bg-[#14141d] text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    <span className="text-xs">{emo.emoji} {emo.name.split(' ')[0]}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Voice Catalog Selector */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-black uppercase tracking-wider text-fuchsia-400">
+                  Select AI Voice
+                </label>
+                <div className="flex items-center gap-1">
+                  {(['all', 'male', 'female'] as const).map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setGenderFilter(g)}
+                      className={`text-[9px] uppercase font-bold px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+                        genderFilter === g ? 'bg-fuchsia-600 text-white' : 'bg-[#181822] text-gray-400 hover:text-white'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2.5">
-                        <div className="flex items-center gap-2">
-                          <button 
-                            title="Play sentence"
-                            className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors shrink-0 ${
-                              isSentenceActive ? 'bg-white text-fuchsia-600' : 'bg-[#333] text-white hover:bg-fuchsia-600'
-                            }`}
-                          >
-                            <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
-                          </button>
-                          <span className={`text-[9px] font-mono ${isSentenceActive ? 'text-fuchsia-200' : 'text-[#888888]'}`}>
-                            {s.start_time.toFixed(2)}s - {s.end_time.toFixed(2)}s
-                          </span>
-                        </div>
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                        {!isCurrentlyEditing && (
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={(e) => handleStartSentenceEdit(s.id, s.text, e)}
-                              className="p-1.5 rounded-lg bg-[#333] hover:bg-fuchsia-500 text-white transition-all shrink-0 flex items-center gap-1 text-[9px] font-bold uppercase"
-                              title="Edit entire sentence"
-                              style={{ minHeight: '32px' }}
-                            >
-                              <Edit3 className="w-3 h-3" /> Edit Sentence
-                            </button>
-                          </div>
-                        )}
+              {/* Search Bar */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-gray-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={voiceSearch}
+                  onChange={(e) => setVoiceSearch(e.target.value)}
+                  placeholder="Search voice name or tone..."
+                  className="w-full bg-[#0a0a0e] border border-[#2c2c3a] rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-fuchsia-500"
+                />
+              </div>
+
+              {/* Voice Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar p-1">
+                {filteredVoices.map(voice => {
+                  const isSelected = safeDubbing.voiceId === voice.id;
+                  const isPlayingSample = previewingVoiceId === voice.id;
+
+                  return (
+                    <div
+                      key={voice.id}
+                      onClick={() => onUpdateDubbingSettings?.({ voiceId: voice.id })}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between gap-2 ${
+                        isSelected
+                          ? 'border-fuchsia-500 bg-fuchsia-600/25 ring-1 ring-fuchsia-500/50'
+                          : 'border-[#22222e] bg-[#0d0d12] hover:bg-[#161620]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-lg">{voice.emoji}</span>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">{voice.name.split(' ')[0]}</div>
+                          <div className="text-[9px] text-gray-400 truncate">{voice.tags.join(' • ')}</div>
+                        </div>
                       </div>
 
-                      {isCurrentlyEditing ? (
-                        <div className="flex flex-col gap-2" onClick={e => e.stopPropagation()}>
-                          <textarea 
-                            value={editingSentenceText}
-                            onChange={e => setEditingSentenceText(e.target.value)}
-                            className="w-full bg-black border border-fuchsia-500 rounded-lg p-2 text-xs text-white font-extrabold focus:outline-none resize-none h-16"
-                            autoFocus
-                            onKeyDown={e => {
-                              if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSaveSentenceEdit(s.id, s.words);
-                              }
-                            }}
-                          />
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              onClick={() => setEditingSentenceId(null)}
-                              className="px-2 py-1 rounded bg-[#333] text-[10px] font-bold text-[#aaa] uppercase"
-                            >
-                              Cancel
-                            </button>
-                            <button 
-                              onClick={() => handleSaveSentenceEdit(s.id, s.words)}
-                              className="px-2.5 py-1 rounded bg-fuchsia-600 text-[10px] font-black text-white uppercase flex items-center gap-1"
-                            >
-                              <Check className="w-3 h-3" /> Save
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {s.words.map((w) => {
-                            const isWordActive = (words || []).indexOf(w) === activeIndex;
-                            const isWordEditing = editingWordId === w.id;
-                            const isSelected = selectedWordIds.has(w.id);
-
-                            if (isWordEditing) {
-                              return (
-                                <div key={w.id} className="flex flex-col gap-1.5 bg-black border border-fuchsia-500 rounded-lg p-2 z-20" onClick={e => e.stopPropagation()}>
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="text"
-                                      value={editingWordText}
-                                      onChange={e => setEditingWordText(e.target.value)}
-                                      className="bg-[#111] border border-[#444] rounded px-2 py-1 text-[13px] font-bold text-white w-28 focus:outline-none focus:border-fuchsia-500"
-                                      autoFocus
-                                      onKeyDown={e => {
-                                        if (e.key === 'Enter') handleSaveWordEdit(w.id);
-                                      }}
-                                    />
-                                    <button 
-                                      onClick={() => handleSaveWordEdit(w.id)} 
-                                      className="p-1.5 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded cursor-pointer"
-                                      title="Save word"
-                                    >
-                                      <Check className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
-                                  {/* Quick Emoji Attachment Toolbar */}
-                                  <div className="flex items-center gap-1 overflow-x-auto max-w-[200px] py-0.5 custom-scrollbar">
-                                    {quickEmojis.map(em => (
-                                      <button
-                                        key={em}
-                                        onClick={() => setEditingWordEmoji(editingWordEmoji === em ? '' : em)}
-                                        className={`text-[14px] p-1 rounded hover:bg-[#333] transition-transform ${editingWordEmoji === em ? 'bg-fuchsia-600/40 ring-1 ring-fuchsia-400 scale-110' : ''}`}
-                                      >
-                                        {em}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              );
-                            }
-
-                            if (isBulkMode) {
-                              return (
-                                <span 
-                                  key={w.id}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const next = new Set(selectedWordIds);
-                                    if (next.has(w.id)) {
-                                      next.delete(w.id);
-                                    } else {
-                                      next.add(w.id);
-                                    }
-                                    setSelectedWordIds(next);
-                                  }}
-                                  className={`px-2 py-1 rounded text-[13px] font-black tracking-wide border transition-all hover:scale-105 active:scale-95 cursor-pointer flex items-center gap-1 ${
-                                    isSelected
-                                      ? 'bg-fuchsia-600 text-white border-fuchsia-400 shadow-md ring-2 ring-fuchsia-500/30'
-                                      : 'bg-[#2a2a2a] text-[#ddd] border-[#3a3a3a] hover:border-fuchsia-500/50 hover:text-white'
-                                  }`}
-                                >
-                                  {isSelected && <span className="text-[10px] text-fuchsia-200">✓</span>}
-                                  <span>{stripASSTags(w.word)}</span>
-                                  {w.emoji && <span className="text-[13px] ml-0.5 select-none">{w.emoji}</span>}
-                                </span>
-                              );
-                            }
-
-                            return (
-                              <span 
-                                key={w.id}
-                                onClick={(e) => handleStartWordEdit(w, e)}
-                                className={`px-2 py-1 rounded text-[13px] font-black tracking-wide border transition-all hover:scale-105 active:scale-95 cursor-pointer flex items-center gap-1 ${
-                                  isWordActive 
-                                    ? 'bg-yellow-300 text-black border-yellow-400 font-extrabold shadow-sm' 
-                                    : 'bg-[#2a2a2a] text-zinc-100 border-[#3a3a3a] hover:border-fuchsia-500/50'
-                                }`}
-                              >
-                                <span>{stripASSTags(w.word)}</span>
-                                {w.emoji && <span className="text-[13px] ml-0.5 select-none">{w.emoji}</span>}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => handlePreviewVoice(voice, e)}
+                        className="w-6 h-6 rounded-full bg-[#181824] hover:bg-fuchsia-600 text-gray-300 hover:text-white flex items-center justify-center shrink-0 cursor-pointer"
+                      >
+                        {isPlayingSample ? <Square className="w-2.5 h-2.5 fill-current" /> : <Play className="w-2.5 h-2.5 fill-current ml-0.5" />}
+                      </button>
                     </div>
                   );
-                })
-              )}
+                })}
+              </div>
             </div>
 
-            {(words || []).length > 0 && (
-              <div className="bg-[#1f1f1f] border border-[#333] rounded-xl p-4 shrink-0 flex flex-col gap-3">
-                <div className="text-[11px] font-extrabold uppercase text-[#888888] tracking-wider flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-fuchsia-500 animate-pulse" /> Offline Subtitle Export (100% Free)
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => {
-                      const content = exportToSRT(words, safeSettings.maxWordsPerScreen || 3);
-                      triggerDownload(content, 'subtitles.srt', 'text/plain');
-                    }}
-                    className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
-                  >
-                    Get SRT
-                  </button>
-                  <button
-                    onClick={() => {
-                      const content = exportToVTT(words, safeSettings.maxWordsPerScreen || 3);
-                      triggerDownload(content, 'subtitles.vtt', 'text/vtt');
-                    }}
-                    className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
-                  >
-                    Get VTT
-                  </button>
-                  <button
-                    onClick={() => {
-                      const content = exportToASS(words, safeSettings.maxWordsPerScreen || 3);
-                      triggerDownload(content, 'subtitles.ass', 'text/plain');
-                    }}
-                    className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
-                  >
-                    Get ASS
-                  </button>
-                </div>
-                <p className="text-[10px] text-[#666] font-semibold text-center uppercase tracking-wide">
-                  instant offline download • no upload needed
-                </p>
-              </div>
-            )}
+            {/* Re-Dub Action Button */}
+            <button
+              onClick={() => onReDub?.(safeDubbing)}
+              disabled={isReDubbing}
+              className="w-full py-3 px-4 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700 text-white rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-fuchsia-600/25 transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isReDubbing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Re-Dubbing in Progress...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  ✨ Re-Dub Video with Selected Voice
+                </>
+              )}
+            </button>
           </div>
         )}
+
       </div>
     </div>
   );
