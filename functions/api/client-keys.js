@@ -30,8 +30,10 @@ export async function onRequest(context) {
   return new Response(JSON.stringify({
     geminiKeys,
     dgKeys,
-    primaryModel: 'gemini-3.6-flash',
-    fallbackModels: ['gemini-3.5-flash', 'gemini-3.5-flash-lite']
+    primaryModel: 'gemini-3.5-transcribe',
+    fallbackModels: [],
+    orchestratorModel: 'gemini-3.8-flash',
+    orchestratorFallback: 'gemini-3.5-flash-lite' 
   }), {
     headers: {
       'Content-Type': 'application/json',
