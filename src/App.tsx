@@ -10,7 +10,7 @@ import { generateExpressiveDubbedAudio, fitAudioToDuration, cancelAndClearSessio
 import { continuousPiecewiseAlignment, sanitizeCaptionWords } from './utils/captionFormatter';
 import { useVideoExport } from './hooks/useVideoExport';
 import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from './utils/subtitleExporter';
-import { drawExportCaptions } from './utils/exportCaptionDraw';
+import { drawSubtitlesOnCanvas } from './utils/drawSubtitlesOnCanvas';
 
 function ExportModal({
   words,
@@ -42,7 +42,7 @@ function ExportModal({
     await startExport({
       video,
       drawFn: (ctx, t) =>
-        drawExportCaptions(
+        drawSubtitlesOnCanvas(
           ctx,
           video.videoWidth || 1280,
           video.videoHeight || 720,

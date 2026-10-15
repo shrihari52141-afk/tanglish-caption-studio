@@ -561,6 +561,46 @@ function EditorPanelContent({
                 </div>
               ))}
             </div>
+
+            {(words || []).length > 0 && (
+              <div className="bg-[#1f1f1f] border border-[#333] rounded-xl p-4 shrink-0 flex flex-col gap-3">
+                <div className="text-[11px] font-extrabold uppercase text-[#888888] tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-fuchsia-500 animate-pulse" /> Offline Subtitle Export (100% Free)
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => {
+                      const content = exportToSRT(words, safeSettings.maxWordsPerScreen || 3);
+                      triggerDownload(content, 'subtitles.srt', 'text/plain');
+                    }}
+                    className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
+                  >
+                    Get SRT
+                  </button>
+                  <button
+                    onClick={() => {
+                      const content = exportToVTT(words, safeSettings.maxWordsPerScreen || 3);
+                      triggerDownload(content, 'subtitles.vtt', 'text/vtt');
+                    }}
+                    className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
+                  >
+                    Get VTT
+                  </button>
+                  <button
+                    onClick={() => {
+                      const content = exportToASS(words, safeSettings.maxWordsPerScreen || 3);
+                      triggerDownload(content, 'subtitles.ass', 'text/plain');
+                    }}
+                    className="py-2.5 px-3 rounded-lg bg-[#2c2c2c] hover:bg-fuchsia-600 text-white font-black text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-[#333] hover:border-transparent cursor-pointer flex items-center justify-center"
+                  >
+                    Get ASS
+                  </button>
+                </div>
+                <p className="text-[10px] text-[#666] font-semibold text-center uppercase tracking-wide">
+                  instant offline download • no upload needed
+                </p>
+              </div>
+            )}
           </div>
         )}
 
