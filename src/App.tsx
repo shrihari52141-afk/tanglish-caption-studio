@@ -8,6 +8,180 @@ import { Layers, Sparkles, Plus, Save, FileVideo, FolderOpen, RefreshCw, Cloud, 
 import { directTranscribe, executeReDub } from './utils/directTranscriber';
 import { generateExpressiveDubbedAudio, fitAudioToDuration, cancelAndClearSession } from './utils/dubbingEngine';
 import { continuousPiecewiseAlignment, sanitizeCaptionWords } from './utils/captionFormatter';
+import { useVideoExport } from './hooks/useVideoExport';
+import { exportToSRT, exportToVTT, exportToASS, triggerDownload } from './utils/subtitleExporter';
+import { drawExportCaptions } from './utils/exportCaptionDraw';
+
+function ExportModal({
+  words,
+  styleSettings,
+  videoRef,
+  isAudioOnly,
+  onClose,
+}: {
+  words: CaptionWord[];
+  styleSettings: SubtitleStyleSettings;
+  videoRef: React.MutableRefObject<HTMLVideoElement | null>;
+  isAudioOnly: boolean;
+  onClose: () => void;
+}) {
+  const { startExport, cancelExport, isExporting, progress, logs } = useVideoExport();
+  const [error, setError] = useState<string | null>(null);
+  const [doneFile, setDoneFile] = useState<string | null>(null);
+
+  const handleExportVideo = async () => {
+    const video = videoRef.current;
+    if (!video) {
+      setError('Video element is not ready yet — please wait a moment and try again.');
+      return;
+    }
+    setError(null);
+    setDoneFile(null);
+    const wordsSnap = words;
+    const styleSnap = styleSettings;
+    await startExport({
+      video,
+      drawFn: (ctx, t) =>
+        drawExportCaptions(
+          ctx,
+          video.videoWidth || 1280,
+          video.videoHeight || 720,
+          t,
+          wordsSnap,
+          styleSnap
+        ),
+      onComplete: (blob, mime) => {
+        const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+        const filename = `tanglish-captioned-${Date.now()}.${ext}`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 8000);
+        setDoneFile(filename);
+      },
+      onError: (e) => setError(`Export failed: ${e instanceof Error ? e.message : String(e)}`),
+    });
+  };
+
+  const downloadSubtitle = (kind: 'srt' | 'vtt' | 'ass') => {
+    if (!words.length) {
+      setError('No captions to export yet.');
+      return;
+    }
+    const maxW = styleSettings.maxWordsPerScreen || 3;
+    const base = `tanglish-captions-${Date.now()}`;
+    try {
+      if (kind === 'srt') triggerDownload(exportToSRT(words, maxW), `${base}.srt`, 'text/plain;charset=utf-8');
+      else if (kind === 'vtt') triggerDownload(exportToVTT(words, maxW), `${base}.vtt`, 'text/vtt;charset=utf-8');
+      else triggerDownload(exportToASS(words, maxW), `${base}.ass`, 'text/plain;charset=utf-8');
+      setDoneFile(`${base}.${kind}`);
+      setError(null);
+    } catch (e) {
+      setError(`Subtitle export failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const handleClose = () => {
+    if (isExporting) cancelExport();
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={handleClose}>
+      <div
+        className="w-full max-w-md bg-[#181822] border border-[#2c2c3e] rounded-2xl shadow-2xl shadow-black/60 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2c2c3e]">
+          <h2 className="text-sm font-black uppercase tracking-wide text-white">Export Studio</h2>
+          <button
+            onClick={handleClose}
+            className="text-gray-400 hover:text-white transition-colors cursor-pointer"
+            aria-label="Close export"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-6 max-h-[70vh] overflow-y-auto">
+          {/* Video export */}
+          <section>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-fuchsia-300 mb-2">Video with burned-in captions</h3>
+            {isAudioOnly && (
+              <p className="text-[11px] text-gray-400 mb-2">Audio project exports as a video with captions on a black background.</p>
+            )}
+            <button
+              onClick={handleExportVideo}
+              disabled={isExporting}
+              className="w-full bg-gradient-to-tr from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-2"
+            >
+              {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {isExporting ? 'Rendering…' : 'Export Video'}
+            </button>
+
+            {isExporting && (
+              <div className="mt-3">
+                <div className="h-2 rounded-full bg-[#0A0A0E] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-purple-500 to-fuchsia-500 transition-all duration-300"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between mt-1.5">
+                  <span className="text-[11px] text-gray-400 font-mono">{progress}%</span>
+                  <button
+                    onClick={cancelExport}
+                    className="text-[11px] font-bold text-red-400 hover:text-red-300 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {logs.length > 0 && (
+                  <div className="mt-2 max-h-24 overflow-y-auto rounded-lg bg-[#0A0A0E] border border-[#2c2c3e] p-2">
+                    {logs.slice(-6).map((l, i) => (
+                      <p key={i} className="text-[10px] text-gray-400 font-mono leading-relaxed">{l}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Subtitle export */}
+          <section>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-fuchsia-300 mb-2">Subtitles</h3>
+            <div className="grid grid-cols-3 gap-2">
+              {(['srt', 'vtt', 'ass'] as const).map((kind) => (
+                <button
+                  key={kind}
+                  onClick={() => downloadSubtitle(kind)}
+                  disabled={isExporting || words.length === 0}
+                  className="bg-[#242432] hover:bg-[#2e2e42] disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 text-xs font-bold px-3 py-2.5 rounded-xl border border-[#2c2c3e] transition-colors cursor-pointer uppercase"
+                >
+                  .{kind}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-500 mt-2">{words.length} words → {Math.ceil(words.length / (styleSettings.maxWordsPerScreen || 3))} subtitle cues</p>
+          </section>
+
+          {error && (
+            <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</p>
+          )}
+          {doneFile && !error && (
+            <p className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-2">
+              Saved: {doneFile}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>({
@@ -63,6 +237,8 @@ export default function App() {
   const [seekTime, setSeekTime] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'presets' | 'decorations' | 'transcript' | 'dubbing'>('presets');
   const [isReDubbing, setIsReDubbing] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
 
   const handleStepUpdate = (
     stepId: string, 
@@ -258,6 +434,13 @@ export default function App() {
         {appState.videoUrl && (
           <div className="flex items-center gap-3">
             <button
+              onClick={() => setShowExportModal(true)}
+              className="bg-gradient-to-tr from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export
+            </button>
+            <button
               onClick={handleCancel}
               className="bg-[#181822] hover:bg-[#242432] text-gray-300 hover:text-white text-xs font-bold px-3.5 py-2 rounded-xl border border-[#2c2c3e] transition-colors cursor-pointer"
             >
@@ -294,6 +477,7 @@ export default function App() {
                 seekTime={seekTime}
                 onSeekComplete={() => setSeekTime(null)}
                 onRemoveVideo={handleCancel}
+                externalVideoRef={videoElementRef}
               />
             </div>
 
@@ -323,6 +507,17 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Export Studio Modal */}
+      {showExportModal && appState.videoUrl && (
+        <ExportModal
+          words={appState.words}
+          styleSettings={appState.styleSettings}
+          videoRef={videoElementRef}
+          isAudioOnly={appState.isAudioOnly}
+          onClose={() => setShowExportModal(false)}
+        />
+      )}
 
       {/* Transparent Pipeline Progress Modal */}
       <ProcessingModal
