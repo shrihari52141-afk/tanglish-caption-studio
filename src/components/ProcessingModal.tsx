@@ -38,7 +38,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({
   logs,
   startTime,
   hasFailed,
-  activeModel = 'Gemini 3.5 + Nova 3 + Gemini 3.6 Flash',
+  activeModel = 'Gemini 3.5 Transcribe + Nova 3 + Gemini 3.8 Flash',
   onRetry,
   onCancel
 }) => {
@@ -93,11 +93,13 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({
   const progressPercent = Math.min(100, Math.max(5, Math.round(calculatedProgress)));
 
   let estimatedRemainingText = 'Estimating...';
-  if (completedCount > 0 && elapsedTotalMs > 1000) {
-    const avgMsPerStep = elapsedTotalMs / (completedCount + (inProgressIndex !== -1 ? 0.5 : 0));
-    const remainingSteps = Math.max(0, steps.length - completedCount - (inProgressIndex !== -1 ? 0.5 : 0));
-    const estRemainingMs = Math.round(avgMsPerStep * remainingSteps);
-    estimatedRemainingText = formatTime(estRemainingMs);
+  const doneSteps = steps.filter(s => s.status === 'completed' && s.durationMs != null);
+  const notDoneCount = steps.filter(s => s.status !== 'completed').length;
+  if (doneSteps.length > 0 && notDoneCount > 0 && elapsedTotalMs > 1000) {
+    const avgMsPerStep = doneSteps.reduce((a, s) => a + (s.durationMs || 0), 0) / doneSteps.length;
+    if (avgMsPerStep > 0) {
+      estimatedRemainingText = formatTime(Math.round(avgMsPerStep * notDoneCount));
+    }
   }
 
   const handleCopyLogs = () => {

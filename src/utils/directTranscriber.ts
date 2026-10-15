@@ -181,21 +181,21 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
 
   // ?? Stage 1: Validation, Media Probing & Background Audio Extraction ??
   onStepUpdate('step-probe', 'in_progress');
-  onLog('?? Stage 1: Validating media properties & probing audio track in background...');
+  onLog('🔍 Stage 1: Validating media properties & probing audio track in background...');
   const stage1Start = Date.now();
 
   const mediaInfo = await probeMediaProperties(file);
   sessionCache.mediaInfo = mediaInfo;
-  onLog(`? Probed Media: ${mediaInfo.fileName} (${(mediaInfo.fileSizeBytes / (1024 * 1024)).toFixed(2)}MB, Duration: ${mediaInfo.durationSeconds.toFixed(1)}s, Type: ${mediaInfo.isAudioOnly ? 'Audio Only' : 'Video'}).`);
+  onLog(`✅ Probed Media: ${mediaInfo.fileName} (${(mediaInfo.fileSizeBytes / (1024 * 1024)).toFixed(2)}MB, Duration: ${mediaInfo.durationSeconds.toFixed(1)}s, Type: ${mediaInfo.isAudioOnly ? 'Audio Only' : 'Video'}).`);
 
   let audioBlob: Blob;
   if (sessionCache.extractedAudioBlob) {
     audioBlob = sessionCache.extractedAudioBlob;
-    onLog(`? Reusing cached extracted audio buffer (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+    onLog(`✅ Reusing cached extracted audio buffer (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
   } else if (preExtractedAudioBlob) {
     audioBlob = preExtractedAudioBlob;
     sessionCache.extractedAudioBlob = audioBlob;
-    onLog(`? Using pre-extracted audio cache (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+    onLog(`✅ Using pre-extracted audio cache (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
   } else if (mediaInfo.isAudioOnly) {
     audioBlob = file;
     sessionCache.extractedAudioBlob = audioBlob;
@@ -204,9 +204,9 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
       const details = await extractAudioTrackDetails(file, (msg) => onLog(msg));
       audioBlob = details.blob;
       sessionCache.extractedAudioBlob = audioBlob;
-      onLog(`? Background audio extraction complete (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
+      onLog(`✅ Background audio extraction complete (${(audioBlob.size / (1024 * 1024)).toFixed(2)}MB).`);
     } catch (e: any) {
-      onLog('? Using original media file container as audio source.');
+      onLog('✅ Using original media file container as audio source.');
       audioBlob = file;
       sessionCache.extractedAudioBlob = audioBlob;
     }
@@ -224,7 +224,7 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
 
   // ?? Stage 2: Gemini 3.5 Transcribe (Recognized Words & Source Language Detection) ??
   onStepUpdate('step-gemini-transcribe', 'in_progress');
-  onLog('??? Stage 2: Calling Gemini 3.5 Transcribe (Ground truth for words & language detection)...');
+  onLog('🎙️ Stage 2: Calling Gemini 3.5 Transcribe (Ground truth for words & language detection)...');
   const stage2Start = Date.now();
 
   let gemini35Words: CaptionWord[] = [];
@@ -235,9 +235,9 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     gemini35Words = sessionCache.gemini35Transcript.words;
     detectedSourceLanguage = sessionCache.gemini35Transcript.detectedLanguage;
     fullTranscribedText = sessionCache.gemini35Transcript.rawText;
-    onLog(`? Reusing cached Gemini 3.5 transcription (${gemini35Words.length} words, detected language: ${detectedSourceLanguage}).`);
+    onLog(`✅ Reusing cached Gemini 3.5 transcription (${gemini35Words.length} words, detected language: ${detectedSourceLanguage}).`);
   } else {
-    const models35 = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+    const models35 = ['gemini-3.5-transcribe', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
     let gemini35Success = false;
 
     for (const modelName of models35) {
@@ -310,12 +310,13 @@ Task:
                 rawText: fullTranscribedText
               };
               gemini35Success = true;
-              onLog(`? Gemini 3.5 Transcribe identified language: "${detectedSourceLanguage.toUpperCase()}" with ${gemini35Words.length} ground-truth recognized words.`);
+              onLog(`✅ Transcription active model: ${modelName}`);
+              onLog(`✅ Gemini 3.5 Transcribe identified language: "${detectedSourceLanguage.toUpperCase()}" with ${gemini35Words.length} ground-truth recognized words.`);
               break;
             }
           }
         } catch (err: any) {
-          onLog(`? Gemini 3.5 Transcribe notice (${modelName}): ${err.message}`);
+          onLog(`⚠️ Gemini 3.5 Transcribe notice (${modelName}): ${err.message}`);
         }
       }
       if (gemini35Success) break;
@@ -326,13 +327,13 @@ Task:
 
   // ?? Stage 3: Deepgram Nova 3 on Cached Audio with Detected Source Language ??
   onStepUpdate('step-deepgram-original', 'in_progress');
-  onLog(`?? Stage 3: Running Deepgram Nova 3 with detected language (${detectedSourceLanguage}) for precise acoustic timing...`);
+  onLog(`🔊 Stage 3: Running Deepgram Nova 3 with detected language (${detectedSourceLanguage}) for precise acoustic timing...`);
   const stage3Start = Date.now();
 
   let nova3OriginalTimings: any[] = [];
   if (sessionCache.deepgramOriginalTimestamps) {
     nova3OriginalTimings = sessionCache.deepgramOriginalTimestamps.words;
-    onLog(`? Reusing cached Deepgram Nova 3 acoustic timestamps (${nova3OriginalTimings.length} acoustic pulses).`);
+    onLog(`✅ Reusing cached Deepgram Nova 3 acoustic timestamps (${nova3OriginalTimings.length} acoustic pulses).`);
   } else if (dgKeys.length > 0) {
     const langCodeMap: Record<string, string> = {
       tamil: 'ta', hindi: 'hi', telugu: 'te', kannada: 'kn', malayalam: 'ml', english: 'en', spanish: 'es', french: 'fr', german: 'de'
@@ -362,12 +363,12 @@ Task:
               end_ms: Math.round(w.end * 1000),
             }));
             sessionCache.deepgramOriginalTimestamps = { words: nova3OriginalTimings, detectedLanguage: detectedSourceLanguage };
-            onLog(`? Deepgram Nova 3 captured ${nova3OriginalTimings.length} high-precision acoustic word timestamps.`);
+            onLog(`✅ Deepgram Nova 3 captured ${nova3OriginalTimings.length} high-precision acoustic word timestamps.`);
             break;
           }
         }
       } catch (err: any) {
-        onLog(`? Deepgram Nova 3 notice: ${err.message}`);
+        onLog(`⚠️ Deepgram Nova 3 notice: ${err.message}`);
       }
     }
   }
@@ -376,7 +377,7 @@ Task:
 
   // ?? Stage 4: Master Word & Timing Alignment ??
   onStepUpdate('step-align', 'in_progress');
-  onLog('?? Stage 4: Aligning Gemini 3.5 recognized words with Deepgram Nova 3 acoustic timestamps...');
+  onLog('🔗 Stage 4: Aligning Gemini 3.5 recognized words with Deepgram Nova 3 acoustic timestamps...');
   const stage4Start = Date.now();
 
   const wordsToAlign = gemini35Words.length > 0 ? gemini35Words : nova3OriginalTimings;
@@ -386,12 +387,12 @@ Task:
     detectedLanguage: detectedSourceLanguage
   };
 
-  onLog(`? Master transcription aligned: ${alignedMasterWords.length} synchronized words ready.`);
+  onLog(`✅ Master transcription aligned: ${alignedMasterWords.length} synchronized words ready.`);
   onStepUpdate('step-align', 'completed', { durationMs: Date.now() - stage4Start });
 
-  // ?? Stage 5: Gemini 3.6 Flash Unified Orchestration ??
+  // Stage 5: Gemini Flash Unified Orchestration (3.8 Flash / 3.5 Flash-Lite, 3.6 Flash fallback)
   onStepUpdate('step-gemini-orchestrate', 'in_progress');
-  onLog('?? Stage 5: Sending aligned master transcript to Gemini 3.6 Flash (Single Orchestration Pass)...');
+  onLog('⚡ Stage 5: Sending aligned master transcript to Gemini Flash Orchestrator (single pass)...');
   const stage5Start = Date.now();
 
   const targetLangInstruction = (isDubbingActive && dubbingSettings?.targetLanguage)
@@ -406,21 +407,27 @@ Task:
 - Keep the original native characters (${detectedSourceLanguage}).`;
 
   const wordsSummary = JSON.stringify(alignedMasterWords.map(w => ({ w: w.word, s: w.start_ms, e: w.end_ms })));
-  const orchestrationPrompt = `You are the Gemini 3.6 Flash Master Orchestrator.
+  const orchestrationPrompt = `You are the Gemini Flash Master Orchestrator.
 Input Aligned Words: ${wordsSummary}
 Instructions:
 ${targetLangInstruction}
 - Emojis: ${useEmojis ? 'Add 1 high-impact emoji per emotional phrase' : 'No emojis'} (Style: ${emojiStyle})
 - Punctuation: ${usePunctuation ? 'Natural punctuation' : 'Clean text without punctuation'}
 - Hot Words: ${enableHotwords ? 'Identify brand names, intense emotions, and slang words with highlight=true' : 'Standard'}
+- CRITICAL: preserve the exact s/e timestamps from the input words — do not invent, shift, or rescale timings.
+- CRITICAL: Keep English words in their original English spelling — do not phonetically respell them (e.g. keep 'hurt' not 'hart').
 Return structured JSON with "translated_text" and "segments" (containing words array with w, s, e, emoji, highlight).`;
 
   let orchestratedWords: CaptionWord[] = [];
   let translatedTextForDubbing = '';
 
-  for (const currentKey of geminiKeys.slice(0, 3)) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(currentKey)}`;
+  const orchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+
+  for (const orchModel of orchestratorModels) {
+    if (orchestratedWords.length > 0) break;
+    for (const currentKey of geminiKeys.slice(0, 3)) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${orchModel}:generateContent?key=${encodeURIComponent(currentKey)}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -462,18 +469,41 @@ Return structured JSON with "translated_text" and "segments" (containing words a
             });
           }
           if (orchestratedWords.length > 0) {
-            onLog(`? Gemini 3.6 Flash produced ${orchestratedWords.length} structured, formatted caption words.`);
+            onLog(`✅ Orchestrator active model: ${orchModel}`);
+            onLog(`✅ Gemini Flash Orchestrator produced ${orchestratedWords.length} structured, formatted caption words.`);
             break;
           }
         }
       }
     } catch (e: any) {
-      onLog(`? Gemini 3.6 Flash notice: ${e.message}`);
+      onLog(`⚠️ Orchestrator notice (${orchModel}): ${e.message}`);
+    }
     }
   }
 
   if (orchestratedWords.length === 0) {
-    orchestratedWords = alignedMasterWords;
+    onLog('⚠️ Orchestrator returned no words — falling back to aligned master transcript.');
+    orchestratedWords = isRomanTarget
+      ? alignedMasterWords.map(w => ({ ...w, word: ensureRomanScript(w.word || '') }))
+      : alignedMasterWords;
+  }
+
+  // Re-anchor orchestrator timings to the aligned master transcript so every
+  // caption word stays locked to the actual speech timing (Deepgram acoustics).
+  if (orchestratedWords.length > 0 && alignedMasterWords.length > 0) {
+    if (orchestratedWords.length === alignedMasterWords.length) {
+      orchestratedWords = orchestratedWords.map((w, i) => ({
+        ...w,
+        start_ms: alignedMasterWords[i].start_ms,
+        end_ms: alignedMasterWords[i].end_ms,
+        start_time: alignedMasterWords[i].start_time,
+        end_time: alignedMasterWords[i].end_time,
+      }));
+      onLog(`🔗 Re-anchored ${orchestratedWords.length} orchestrated words 1:1 to aligned master timings.`);
+    } else {
+      orchestratedWords = continuousPiecewiseAlignment(orchestratedWords as any, alignedMasterWords as any) as CaptionWord[];
+      onLog(`🔗 Re-anchored ${orchestratedWords.length} orchestrated words to aligned master timings (piecewise, count mismatch ${alignedMasterWords.length}).`);
+    }
   }
 
   sessionCache.gemini36FlashOutput = {
@@ -511,7 +541,7 @@ Return structured JSON with "translated_text" and "segments" (containing words a
     onStepUpdate('step-dubbing-tts', 'completed', { durationMs: Date.now() - stage6Start });
 
     onStepUpdate('step-deepgram-dubbed', 'in_progress');
-    onLog(`?? Stage 7: Running Deepgram Nova 3 on Dubbed Audio (Language: ${dubbingSettings.targetLanguage}) for final lip-sync timing...`);
+    onLog(`🔊 Stage 7: Running Deepgram Nova 3 on Dubbed Audio (Language: ${dubbingSettings.targetLanguage}) for final lip-sync timing...`);
     const stage7Start = Date.now();
 
     let dubbedAcousticTimings: any[] = [];
@@ -536,12 +566,12 @@ Return structured JSON with "translated_text" and "segments" (containing words a
                 end: Math.round(w.end * 1000)
               }));
               sessionCache.deepgramDubbedTimestamps = { words: dubbedAcousticTimings };
-              onLog(`? Deepgram Nova 3 captured ${dubbedAcousticTimings.length} dubbed audio word timestamps.`);
+              onLog(`✅ Deepgram Nova 3 captured ${dubbedAcousticTimings.length} dubbed audio word timestamps.`);
               break;
             }
           }
         } catch (e: any) {
-          onLog(`? Deepgram Dubbed timing notice: ${e.message}`);
+          onLog(`⚠️ Deepgram Dubbed timing notice: ${e.message}`);
         }
       }
     }
@@ -554,7 +584,7 @@ Return structured JSON with "translated_text" and "segments" (containing words a
 
   // ?? Stage 8: Assembly & Editor Routing ??
   onStepUpdate('step-editor', 'in_progress');
-  onLog('?? Stage 8: Assembling final synchronized project for video editor...');
+  onLog('🎬 Stage 8: Assembling final synchronized project for video editor...');
   const stage8Start = Date.now();
 
   let videoUrl: string;
@@ -566,13 +596,13 @@ Return structured JSON with "translated_text" and "segments" (containing words a
   }
 
   onStepUpdate('step-editor', 'completed', { durationMs: Date.now() - stage8Start });
-  onLog('?? Processing successfully finished! Launching main studio editor...');
+  onLog('🎉 Processing successfully finished! Launching main studio editor...');
 
   return {
     words: sanitizeCaptionWords(finalWords),
     roughWords: nova3OriginalTimings,
     detectedLanguage: detectedSourceLanguage,
-    modelUsed: 'Gemini 3.5 Transcribe + Nova 3 + Gemini 3.6 Flash',
+    modelUsed: 'Gemini 3.5 Transcribe + Nova 3 + Gemini 3.8 Flash',
     rawGeminiResult: sessionCache.gemini36FlashOutput,
     dubbedAudioBlob,
     dubbedAudioUrl,
@@ -605,7 +635,7 @@ export async function executeReDub(
 
   let translatedText = sessionCache.gemini36FlashOutput?.translatedText || '';
 
-  // If target language changed or no translation exists, re-translate using Gemini 3.6 Flash
+  // If target language changed or no translation exists, re-translate using Gemini Flash (3.8 / 3.5 Lite)
   if (isLanguageChanged || !translatedText) {
     onLog?.(`🌐 Re-translating project for new target language: ${targetLang.toUpperCase()}...`);
     const baseWords = sessionCache.alignedMasterTranscript?.words || sessionCache.gemini35Transcript?.words || [];
@@ -616,9 +646,12 @@ Input Words: ${baseSummary}
 - Capture emotional delivery, pauses, and colloquial punch.
 - Output JSON format: { "translated_text": "...", "segments": [{ "words": [{ "w": "word", "s": 0, "e": 300 }] }] }`;
 
-    for (const key of geminiKeys.slice(0, 3)) {
+    const redubOrchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+    for (const orchModel of redubOrchestratorModels) {
+      if (translatedText) break;
+      for (const key of geminiKeys.slice(0, 3)) {
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${orchModel}:generateContent?key=${encodeURIComponent(key)}`;
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -635,11 +668,13 @@ Input Words: ${baseSummary}
           const parsed = safeJSONParse(candText);
           if (parsed?.translated_text) {
             translatedText = parsed.translated_text;
+            onLog?.(`✅ Re-dub orchestrator active model: ${orchModel}`);
             break;
           }
         }
       } catch (e: any) {
-        onLog?.(`Notice: translation fallback (${e.message})`);
+        onLog?.(`Notice: translation fallback (${orchModel}: ${e.message})`);
+      }
       }
     }
 

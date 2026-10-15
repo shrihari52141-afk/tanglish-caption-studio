@@ -52,7 +52,7 @@ export default function App() {
       naturalFillers: true,
       fitOriginalDuration: true,
     },
-    activeModel: 'Gemini 3.5 + Nova 3 + Gemini 3.6 Flash',
+    activeModel: 'Gemini 3.5 Transcribe + Nova 3 + Gemini 3.8 Flash',
     hasFailed: false,
     processingSteps: [],
     processingStartTime: null,
@@ -116,7 +116,7 @@ export default function App() {
       { id: 'step-gemini-transcribe', name: 'Gemini 3.5 Transcribe', description: 'Ground truth recognized words & source language detection', status: 'pending' },
       { id: 'step-deepgram-original', name: 'Deepgram Nova 3 Timings', description: 'High-precision acoustic timestamps on source audio', status: 'pending' },
       { id: 'step-align', name: 'Master Alignment', description: 'Piecewise alignment of words with acoustic boundaries', status: 'pending' },
-      { id: 'step-gemini-orchestrate', name: 'Gemini 3.6 Flash Orchestrator', description: 'Captions, Roman/native script, punctuation & emojis', status: 'pending' },
+      { id: 'step-gemini-orchestrate', name: 'Gemini Flash Orchestrator', description: 'Merge Deepgram timings + Gemini 3.5 captions (3.8 Flash / 3.5 Flash-Lite)', status: 'pending' },
       ...(isDubbing ? [
         { id: 'step-dubbing-tts', name: 'Expressive Dubbing & Duration Fit', description: 'Generating expressive speech & fitting media duration', status: 'pending' as const },
         { id: 'step-deepgram-dubbed', name: 'Deepgram Nova 3 on Dubbed Audio', description: 'Exact acoustic synchronization on target dubbed speech', status: 'pending' as const },
@@ -251,7 +251,7 @@ export default function App() {
             <h1 className="text-base font-black tracking-tight uppercase bg-clip-text text-transparent bg-gradient-to-r from-white via-fuchsia-200 to-fuchsia-400">
               Tanglish Caption & Dubbing Studio
             </h1>
-            <p className="text-[10px] text-gray-500 font-mono">Gemini 3.5 + Nova 3 + Gemini 3.6 Flash</p>
+            <p className="text-[10px] text-gray-500 font-mono">Gemini 3.5 Transcribe + Nova 3 + Gemini 3.8 Flash</p>
           </div>
         </div>
 
