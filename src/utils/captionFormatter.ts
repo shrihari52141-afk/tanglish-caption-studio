@@ -385,7 +385,7 @@ export function continuousPiecewiseAlignment<T extends {
 
     // Rule 3: Enforce minimum display floor based on character length
     const charCount = (w.word || '').trim().length;
-    const minDuration = Math.max(40, Math.min(350, charCount * 24));
+    const minDuration = Math.max(120, Math.min(400, charCount * 28));
     if (end - start < minDuration) {
       end = start + minDuration;
     }

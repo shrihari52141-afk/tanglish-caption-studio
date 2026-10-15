@@ -532,14 +532,14 @@ export default function VideoPlayer({
               
               // Apply customized styling based on settings
               let itemStyle: React.CSSProperties = {
-                fontFamily: styleSettings.fontFamily === 'Impact' ? 'Impact, sans-serif' :
-                            styleSettings.fontFamily === 'Courier' ? '"Courier New", Courier, monospace' :
-                            styleSettings.fontFamily === 'Fredoka' ? '"Fredoka", "Inter", sans-serif' :
-                            styleSettings.fontFamily === 'Space Grotesk' ? '"Space Grotesk", sans-serif' :
-                            styleSettings.fontFamily === 'Playfair Display' ? '"Playfair Display", Georgia, serif' :
-                            styleSettings.fontFamily === 'Pacifico' ? '"Pacifico", cursive' :
-                            styleSettings.fontFamily === 'Black Han Sans' ? '"Black Han Sans", sans-serif' :
-                            '"Helvetica Neue", Arial, sans-serif'
+                fontFamily: styleSettings.fontFamily === 'Impact' ? 'Impact, "Noto Sans Tamil", sans-serif' :
+                            styleSettings.fontFamily === 'Courier' ? '"Courier New", Courier, "Noto Sans Tamil", monospace' :
+                            styleSettings.fontFamily === 'Fredoka' ? '"Fredoka", "Inter", "Noto Sans Tamil", sans-serif' :
+                            styleSettings.fontFamily === 'Space Grotesk' ? '"Space Grotesk", "Noto Sans Tamil", sans-serif' :
+                            styleSettings.fontFamily === 'Playfair Display' ? '"Playfair Display", "Noto Sans Tamil", Georgia, serif' :
+                            styleSettings.fontFamily === 'Pacifico' ? '"Pacifico", "Noto Sans Tamil", cursive' :
+                            styleSettings.fontFamily === 'Black Han Sans' ? '"Black Han Sans", "Noto Sans Tamil", sans-serif' :
+                            '"Helvetica Neue", Arial, "Noto Sans Tamil", sans-serif'
               };
 
               let itemClassName = "text-center transition-all ";
