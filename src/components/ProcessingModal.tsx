@@ -92,14 +92,30 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({
   }
   const progressPercent = Math.min(100, Math.max(5, Math.round(calculatedProgress)));
 
+  // Per-stage typical durations (ms), measured from real pipeline runs.
+  // Used for the ETA so it counts down sensibly even while a long stage
+  // (e.g. transcription) is running and few steps have completed yet.
+  const TYPICAL_MS: Record<string, number> = {
+    'step-probe': 3000,
+    'step-gemini-transcribe': 110000,
+    'step-deepgram-original': 6000,
+    'step-align': 2000,
+    'step-gemini-orchestrate': 35000,
+    'step-dubbing-tts': 90000,
+    'step-deepgram-dubbed': 8000,
+    'step-editor': 8000,
+  };
+
   let estimatedRemainingText = 'Estimating...';
-  const doneSteps = steps.filter(s => s.status === 'completed' && s.durationMs != null);
-  const notDoneCount = steps.filter(s => s.status !== 'completed').length;
-  if (doneSteps.length > 0 && notDoneCount > 0 && elapsedTotalMs > 1000) {
-    const avgMsPerStep = doneSteps.reduce((a, s) => a + (s.durationMs || 0), 0) / doneSteps.length;
-    if (avgMsPerStep > 0) {
-      estimatedRemainingText = formatTime(Math.round(avgMsPerStep * notDoneCount));
-    }
+  const pendingSteps = steps.filter(s => s.status !== 'completed');
+  if (pendingSteps.length > 0 && steps.length > 0 && elapsedTotalMs > 1000) {
+    const estRemainingMs = pendingSteps.reduce(
+      (sum, s) => sum + (TYPICAL_MS[s.id] ?? 15000),
+      0
+    );
+    estimatedRemainingText = formatTime(Math.round(estRemainingMs));
+  } else if (pendingSteps.length === 0 && steps.length > 0) {
+    estimatedRemainingText = formatTime(0);
   }
 
   const handleCopyLogs = () => {

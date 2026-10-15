@@ -53,6 +53,16 @@ async function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/** Fisher-Yates shuffle — randomizes key order per pipeline run (random rotation). */
+function shuffleKeys<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 // Fetch active key pool from Cloudflare or env
 async function getKeyPool(): Promise<{ geminiKeys: string[]; dgKeys: string[] }> {
   const geminiKeys: string[] = [];
@@ -84,9 +94,11 @@ async function getKeyPool(): Promise<{ geminiKeys: string[]; dgKeys: string[] }>
     } catch {}
   }
 
-  return { 
-    geminiKeys: Array.from(new Set(geminiKeys)), 
-    dgKeys: Array.from(new Set(dgKeys)) 
+  // Dedupe, then randomize order on every call so each pipeline run
+  // rotates through the keys in a different order (random rotation).
+  return {
+    geminiKeys: shuffleKeys(Array.from(new Set(geminiKeys))),
+    dgKeys: shuffleKeys(Array.from(new Set(dgKeys)))
   };
 }
 
@@ -241,7 +253,9 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     let gemini35Success = false;
 
     for (const modelName of models35) {
-      for (const currentKey of geminiKeys.slice(0, 3)) {
+      for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
+        const currentKey = geminiKeys[keyIdx];
+        onLog(`🔑 Gemini key ${keyIdx + 1}/${geminiKeys.length} → ${modelName}`);
         try {
           const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(currentKey)}`;
           const prompt35 = `You are the primary ground-truth dialogue transcription engine (Gemini 3.5 Transcribe).
@@ -341,7 +355,9 @@ Task:
     const dgLangParam = langCodeMap[detectedSourceLanguage.toLowerCase()] || detectedSourceLanguage.toLowerCase() || 'ta';
     const dgUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&utterances=true&word_timestamps=true&filler_words=true&language=${encodeURIComponent(dgLangParam)}`;
 
-    for (const key of dgKeys) {
+    for (let dgIdx = 0; dgIdx < dgKeys.length; dgIdx++) {
+      const key = dgKeys[dgIdx];
+      onLog(`🔑 Deepgram key ${dgIdx + 1}/${dgKeys.length} → nova-3 (original audio)`);
       try {
         const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
         const dgRes = await fetch(dgUrl, {
@@ -425,7 +441,9 @@ Return structured JSON with "translated_text" and "segments" (containing words a
 
   for (const orchModel of orchestratorModels) {
     if (orchestratedWords.length > 0) break;
-    for (const currentKey of geminiKeys.slice(0, 3)) {
+    for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
+      const currentKey = geminiKeys[keyIdx];
+      onLog(`🔑 Gemini key ${keyIdx + 1}/${geminiKeys.length} → ${orchModel} (orchestrator)`);
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${orchModel}:generateContent?key=${encodeURIComponent(currentKey)}`;
       const res = await fetch(url, {
@@ -547,7 +565,9 @@ Return structured JSON with "translated_text" and "segments" (containing words a
     let dubbedAcousticTimings: any[] = [];
     if (dgKeys.length > 0 && dubbedAudioBlob) {
       const dgDubUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&word_timestamps=true&language=${encodeURIComponent(dubbingSettings.targetLanguage)}`;
-      for (const key of dgKeys) {
+      for (let dgIdx = 0; dgIdx < dgKeys.length; dgIdx++) {
+        const key = dgKeys[dgIdx];
+        onLog(`🔑 Deepgram key ${dgIdx + 1}/${dgKeys.length} → nova-3 (dubbed audio)`);
         try {
           const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
           const dgDubRes = await fetch(dgDubUrl, {
@@ -649,7 +669,9 @@ Input Words: ${baseSummary}
     const redubOrchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
     for (const orchModel of redubOrchestratorModels) {
       if (translatedText) break;
-      for (const key of geminiKeys.slice(0, 3)) {
+      for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
+        const key = geminiKeys[keyIdx];
+        onLog?.(`🔑 Gemini key ${keyIdx + 1}/${geminiKeys.length} → ${orchModel} (re-dub)`);
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${orchModel}:generateContent?key=${encodeURIComponent(key)}`;
         const res = await fetch(url, {
@@ -702,7 +724,9 @@ Input Words: ${baseSummary}
   let dubbedAcousticTimings: any[] = [];
   if (dgKeys.length > 0) {
     const dgDubUrl = `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&word_timestamps=true&language=${encodeURIComponent(targetLang)}`;
-    for (const key of dgKeys) {
+    for (let dgIdx = 0; dgIdx < dgKeys.length; dgIdx++) {
+      const key = dgKeys[dgIdx];
+      onLog?.(`🔑 Deepgram key ${dgIdx + 1}/${dgKeys.length} → nova-3 (re-dub audio)`);
       try {
         const authHeader = key.toLowerCase().startsWith('token ') ? key : `Token ${key}`;
         const dgRes = await fetch(dgDubUrl, {

@@ -16,6 +16,8 @@ interface VideoPlayerProps {
   onCaptionClick?: () => void;
   onDisplaySizeChange?: (size: { width: number; height: number }) => void;
   onRemoveVideo?: () => void;
+  /** Optional ref mirror — lets the export flow access the <video> element */
+  externalVideoRef?: React.MutableRefObject<HTMLVideoElement | null>;
 }
 
 export default function VideoPlayer({ 
@@ -30,7 +32,8 @@ export default function VideoPlayer({
   onSeekComplete,
   onCaptionClick,
   onDisplaySizeChange,
-  onRemoveVideo
+  onRemoveVideo,
+  externalVideoRef
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -448,7 +451,10 @@ export default function VideoPlayer({
               </button>
             )}
           <video
-            ref={videoRef}
+            ref={(el) => {
+              videoRef.current = el;
+              if (externalVideoRef) externalVideoRef.current = el;
+            }}
             src={videoUrl}
             onLoadedMetadata={handleLoadedMetadata}
             className="w-full h-full object-contain cursor-pointer"
