@@ -63,6 +63,115 @@ function shuffleKeys<T>(arr: T[]): T[] {
   return a;
 }
 
+// --- Lightning API layer: hedged racing + instant key rotation ---
+// Multiple keys are raced in parallel; the first success wins and losers are
+// aborted immediately. 429/503 rotates instantly (no waiting for timeouts).
+
+/** Keys that recently hit 429/503 are skipped briefly so attempts aren't wasted. */
+const keyCooldownUntil = new Map<string, number>();
+function isKeyCooledDown(key: string): boolean {
+  return (keyCooldownUntil.get(key) || 0) > Date.now();
+}
+function cooldownKey(key: string, ms = 90000): void {
+  keyCooldownUntil.set(key, Date.now() + ms);
+}
+
+type RaceOutcome<T> = {
+  ok: boolean;
+  value?: T;
+  key?: string;
+  reason?: 'bad_request' | 'exhausted';
+};
+
+/**
+ * Race one Gemini model across multiple API keys in parallel (hedged requests).
+ * First success wins; in-flight losers are aborted. 429/503 cools the key down
+ * and rotation to the next batch is instant. 400 is fatal for the model.
+ */
+async function raceGeminiModel<T>(opts: {
+  keys: string[];
+  model: string;
+  body: unknown;
+  timeoutMs: number;
+  parallelism?: number;
+  parse: (res: Response) => Promise<T | null>;
+  onLog: (msg: string) => void;
+  label: string;
+}): Promise<RaceOutcome<T>> {
+  const { keys, model, body, timeoutMs, parse, onLog, label } = opts;
+  const parallelism = Math.max(1, Math.min(opts.parallelism ?? 3, keys.length));
+  const bodyText = JSON.stringify(body);
+  const liveKeys = keys.filter(k => !isKeyCooledDown(k));
+  const pool = liveKeys.length > 0 ? liveKeys : keys;
+  if (pool.length !== keys.length) {
+    onLog(`⏳ ${keys.length - pool.length} key(s) cooling down — racing with ${pool.length} fresh keys`);
+  }
+
+  for (let i = 0; i < pool.length; i += parallelism) {
+    const batch = pool.slice(i, i + parallelism);
+    const batchNo = Math.floor(i / parallelism) + 1;
+    onLog(`⚡ Racing ${label} on ${model} — ${batch.length} key(s), wave ${batchNo}`);
+    const ctrls = batch.map(() => new AbortController());
+
+    const outcome: RaceOutcome<T> = await new Promise((resolve) => {
+      let settledCount = 0;
+      let finished = false;
+      let sawBadRequest = false;
+
+      batch.forEach((key, bi) => {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+        const timer = setTimeout(() => ctrls[bi].abort(), timeoutMs);
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: bodyText,
+          signal: ctrls[bi].signal,
+        }).then(async (res) => {
+          if (finished) return;
+          if (res.ok) {
+            const value = await parse(res).catch(() => null);
+            if (value != null) {
+              finished = true;
+              ctrls.forEach((c, ci) => { if (ci !== bi) c.abort(); });
+              clearTimeout(timer);
+              resolve({ ok: true, value, key });
+              return;
+            }
+          } else if (res.status === 429 || res.status === 503) {
+            cooldownKey(key);
+            onLog(`⚡ Key overheated (${res.status}) on ${model} — instantly rotated`);
+          } else if (res.status === 401 || res.status === 403) {
+            cooldownKey(key, 10 * 60 * 1000);
+            onLog(`🔑 Key rejected (${res.status}) on ${model} — skipped for this run`);
+          } else if (res.status === 400) {
+            sawBadRequest = true;
+            onLog(`⚠️ ${model} rejected the request (400) — no point trying more keys`);
+          } else {
+            onLog(`⚠️ ${model} attempt failed (HTTP ${res.status}) — rotating`);
+          }
+        }).catch(() => {
+          // network error / timeout / abort — counts as a failed attempt below
+        }).finally(() => {
+          if (finished) return;
+          clearTimeout(timer);
+          settledCount++;
+          if (settledCount >= batch.length) {
+            finished = true;
+            resolve(sawBadRequest
+              ? { ok: false, reason: 'bad_request' }
+              : { ok: false, reason: 'exhausted' });
+          }
+        });
+      });
+    });
+
+    if (outcome.ok) return outcome;
+    if (outcome.reason === 'bad_request') return outcome;
+    // All attempts in this wave failed retryably → next wave starts instantly.
+  }
+  return { ok: false, reason: 'exhausted' };
+}
+
 // Fetch active key pool from Cloudflare or env
 async function getKeyPool(): Promise<{ geminiKeys: string[]; dgKeys: string[] }> {
   const geminiKeys: string[] = [];
@@ -252,88 +361,95 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     const models35 = ['gemini-3.5-transcribe', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
     let gemini35Success = false;
 
-    for (const modelName of models35) {
-      for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
-        const currentKey = geminiKeys[keyIdx];
-        onLog(`🔑 Gemini key ${keyIdx + 1}/${geminiKeys.length} → ${modelName}`);
-        try {
-          const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(currentKey)}`;
-          const prompt35 = `You are the primary ground-truth dialogue transcription engine (Gemini 3.5 Transcribe).
+    // Transcription of longer audio legitimately takes minutes — scale the
+    // timeout with audio length so healthy requests are never killed early.
+    const audioSecs = mediaInfo.durationSeconds || 60;
+    const transcribeTimeoutMs = Math.min(600000, Math.max(180000, Math.round(audioSecs * 4000)));
+    onLog(`⏱️ Transcription budget: ${Math.round(transcribeTimeoutMs / 1000)}s for ${Math.round(audioSecs)}s of audio`);
+
+    const prompt35 = `You are the primary ground-truth dialogue transcription engine (Gemini 3.5 Transcribe).
 Task:
 1. Accurately transcribe EVERY spoken word from the audio with 100% completeness.
 2. Identify the exact spoken source language name (e.g. "tamil", "hindi", "telugu", "kannada", "malayalam", "english", "spanish", etc.).
 3. Return valid JSON containing "detected_language", "full_transcript", and "words" array with rough start/end ms.`;
 
-          const res = await fetch(fetchUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { inlineData: { mimeType: audioBlob.type || 'audio/wav', data: base64Audio } },
-                  { text: prompt35 }
-                ]
-              }],
-              generationConfig: {
-                maxOutputTokens: 8192,
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: 'OBJECT',
-                  properties: {
-                    detected_language: { type: 'STRING' },
-                    full_transcript: { type: 'STRING' },
-                    words: {
-                      type: 'ARRAY',
-                      items: {
-                        type: 'OBJECT',
-                        properties: {
-                          word: { type: 'STRING' },
-                          start_ms: { type: 'INTEGER' },
-                          end_ms: { type: 'INTEGER' }
-                        },
-                        required: ['word']
-                      }
-                    }
-                  },
-                  required: ['detected_language', 'words']
-                }
+    const body35 = {
+      contents: [{
+        parts: [
+          { inlineData: { mimeType: audioBlob.type || 'audio/wav', data: base64Audio } },
+          { text: prompt35 }
+        ]
+      }],
+      generationConfig: {
+        maxOutputTokens: 8192,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            detected_language: { type: 'STRING' },
+            full_transcript: { type: 'STRING' },
+            words: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  word: { type: 'STRING' },
+                  start_ms: { type: 'INTEGER' },
+                  end_ms: { type: 'INTEGER' }
+                },
+                required: ['word']
               }
-            }),
-            signal: AbortSignal.timeout(45000)
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            const parsed = safeJSONParse(textContent);
-            if (parsed && Array.isArray(parsed.words) && parsed.words.length > 0) {
-              detectedSourceLanguage = parsed.detected_language || detectedSourceLanguage;
-              fullTranscribedText = parsed.full_transcript || parsed.words.map((w: any) => w.word).join(' ');
-              gemini35Words = parsed.words.map((w: any, idx: number) => ({
-                id: `g35-${idx}-${Date.now()}`,
-                word: w.word,
-                start_time: (w.start_ms || idx * 300) / 1000,
-                end_time: (w.end_ms || idx * 300 + 250) / 1000,
-                start_ms: w.start_ms || idx * 300,
-                end_ms: w.end_ms || idx * 300 + 250
-              }));
-
-              sessionCache.gemini35Transcript = {
-                words: gemini35Words,
-                detectedLanguage: detectedSourceLanguage,
-                rawText: fullTranscribedText
-              };
-              gemini35Success = true;
-              onLog(`✅ Transcription active model: ${modelName}`);
-              onLog(`✅ Gemini 3.5 Transcribe identified language: "${detectedSourceLanguage.toUpperCase()}" with ${gemini35Words.length} ground-truth recognized words.`);
-              break;
             }
-          }
-        } catch (err: any) {
-          onLog(`⚠️ Gemini 3.5 Transcribe notice (${modelName}): ${err.message}`);
+          },
+          required: ['detected_language', 'words']
         }
       }
-      if (gemini35Success) break;
+    };
+
+    for (const modelName of models35) {
+      const raced = await raceGeminiModel({
+        keys: geminiKeys,
+        model: modelName,
+        body: body35,
+        timeoutMs: transcribeTimeoutMs,
+        parallelism: 3,
+        label: 'transcription',
+        onLog,
+        parse: async (res) => {
+          const data = await res.json();
+          const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          const parsed = safeJSONParse(textContent);
+          if (parsed && Array.isArray(parsed.words) && parsed.words.length > 0) return parsed;
+          return null;
+        },
+      });
+
+      if (raced.ok) {
+        const parsed: any = raced.value;
+        detectedSourceLanguage = parsed.detected_language || detectedSourceLanguage;
+        fullTranscribedText = parsed.full_transcript || parsed.words.map((w: any) => w.word).join(' ');
+        gemini35Words = parsed.words.map((w: any, idx: number) => ({
+          id: `g35-${idx}-${Date.now()}`,
+          word: w.word,
+          start_time: (w.start_ms || idx * 300) / 1000,
+          end_time: (w.end_ms || idx * 300 + 250) / 1000,
+          start_ms: w.start_ms || idx * 300,
+          end_ms: w.end_ms || idx * 300 + 250
+        }));
+
+        sessionCache.gemini35Transcript = {
+          words: gemini35Words,
+          detectedLanguage: detectedSourceLanguage,
+          rawText: fullTranscribedText
+        };
+        gemini35Success = true;
+        onLog(`✅ Transcription active model: ${modelName}`);
+        onLog(`✅ Gemini 3.5 Transcribe identified language: "${detectedSourceLanguage.toUpperCase()}" with ${gemini35Words.length} ground-truth recognized words.`);
+        break;
+      }
+      onLog(raced.reason === 'bad_request'
+        ? `⏭️ ${modelName}: bad request — trying next model`
+        : `⏭️ ${modelName}: all keys exhausted — trying next model`);
     }
   }
 
@@ -382,6 +498,8 @@ Task:
             onLog(`✅ Deepgram Nova 3 captured ${nova3OriginalTimings.length} high-precision acoustic word timestamps.`);
             break;
           }
+        } else if (!dgRes.ok) {
+          onLog(`⚡ Deepgram key ${dgIdx + 1} → HTTP ${dgRes.status} — instantly rotated`);
         }
       } catch (err: any) {
         onLog(`⚠️ Deepgram Nova 3 notice: ${err.message}`);
@@ -439,63 +557,67 @@ Return structured JSON with "translated_text" and "segments" (containing words a
 
   const orchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
 
+  const orchBody = {
+    contents: [{ parts: [{ text: orchestrationPrompt }] }],
+    generationConfig: {
+      maxOutputTokens: 16384,
+      responseMimeType: 'application/json'
+    }
+  };
+
   for (const orchModel of orchestratorModels) {
     if (orchestratedWords.length > 0) break;
-    for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
-      const currentKey = geminiKeys[keyIdx];
-      onLog(`🔑 Gemini key ${keyIdx + 1}/${geminiKeys.length} → ${orchModel} (orchestrator)`);
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${orchModel}:generateContent?key=${encodeURIComponent(currentKey)}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: orchestrationPrompt }] }],
-          generationConfig: {
-            maxOutputTokens: 16384,
-            responseMimeType: 'application/json'
-          }
-        }),
-        signal: AbortSignal.timeout(45000)
-      });
-
-      if (res.ok) {
+    const raced = await raceGeminiModel({
+      keys: geminiKeys,
+      model: orchModel,
+      body: orchBody,
+      timeoutMs: 90000,
+      parallelism: 3,
+      label: 'orchestrator',
+      onLog,
+      parse: async (res) => {
         const data = await res.json();
         const candText = data.candidates?.[0]?.content?.parts?.[0]?.text;
         const parsed = safeJSONParse(candText);
-        if (parsed) {
-          translatedTextForDubbing = parsed.translated_text || '';
-          if (Array.isArray(parsed.segments)) {
-            parsed.segments.forEach((seg: any) => {
-              const segEmoji = seg.emoji || '';
-              (seg.words || []).forEach((w: any, wIdx: number) => {
-                const wordText = isRomanTarget ? ensureRomanScript(w.w || w.word || '') : (w.w || w.word || '');
-                if (wordText) {
-                  orchestratedWords.push({
-                    id: `orch-${orchestratedWords.length}-${Date.now()}`,
-                    word: wordText,
-                    start_time: (w.s || w.start_ms || seg.start_ms || 0) / 1000,
-                    end_time: (w.e || w.end_ms || seg.end_ms || 300) / 1000,
-                    start_ms: w.s || w.start_ms || seg.start_ms || 0,
-                    end_ms: w.e || w.end_ms || seg.end_ms || 300,
-                    emoji: w.emoji || (wIdx === (seg.words || []).length - 1 ? segEmoji : ''),
-                    highlight: !!w.highlight,
-                    is_hotword: !!w.highlight
-                  });
-                }
+        if (parsed && (parsed.translated_text || Array.isArray(parsed.segments))) return parsed;
+        return null;
+      },
+    });
+
+    if (raced.ok) {
+      const parsed: any = raced.value;
+      translatedTextForDubbing = parsed.translated_text || '';
+      if (Array.isArray(parsed.segments)) {
+        parsed.segments.forEach((seg: any) => {
+          const segEmoji = seg.emoji || '';
+          (seg.words || []).forEach((w: any, wIdx: number) => {
+            const wordText = isRomanTarget ? ensureRomanScript(w.w || w.word || '') : (w.w || w.word || '');
+            if (wordText) {
+              orchestratedWords.push({
+                id: `orch-${orchestratedWords.length}-${Date.now()}`,
+                word: wordText,
+                start_time: (w.s || w.start_ms || seg.start_ms || 0) / 1000,
+                end_time: (w.e || w.end_ms || seg.end_ms || 300) / 1000,
+                start_ms: w.s || w.start_ms || seg.start_ms || 0,
+                end_ms: w.e || w.end_ms || seg.end_ms || 300,
+                emoji: w.emoji || (wIdx === (seg.words || []).length - 1 ? segEmoji : ''),
+                highlight: !!w.highlight,
+                is_hotword: !!w.highlight
               });
-            });
-          }
-          if (orchestratedWords.length > 0) {
-            onLog(`✅ Orchestrator active model: ${orchModel}`);
-            onLog(`✅ Gemini Flash Orchestrator produced ${orchestratedWords.length} structured, formatted caption words.`);
-            break;
-          }
-        }
+            }
+          });
+        });
       }
-    } catch (e: any) {
-      onLog(`⚠️ Orchestrator notice (${orchModel}): ${e.message}`);
-    }
+      if (orchestratedWords.length > 0) {
+        onLog(`✅ Orchestrator active model: ${orchModel}`);
+        onLog(`✅ Gemini Flash Orchestrator produced ${orchestratedWords.length} structured, formatted caption words.`);
+        break;
+      }
+      onLog(`⚠️ ${orchModel} returned no usable segments — rotating`);
+    } else {
+      onLog(raced.reason === 'bad_request'
+        ? `⏭️ ${orchModel}: bad request — trying next model`
+        : `⏭️ ${orchModel}: all keys exhausted — trying next model`);
     }
   }
 
@@ -589,6 +711,8 @@ Return structured JSON with "translated_text" and "segments" (containing words a
               onLog(`✅ Deepgram Nova 3 captured ${dubbedAcousticTimings.length} dubbed audio word timestamps.`);
               break;
             }
+          } else {
+            onLog(`⚡ Deepgram key ${dgIdx + 1} → HTTP ${dgDubRes.status} — instantly rotated`);
           }
         } catch (e: any) {
           onLog(`⚠️ Deepgram Dubbed timing notice: ${e.message}`);
@@ -667,37 +791,36 @@ Input Words: ${baseSummary}
 - Output JSON format: { "translated_text": "...", "segments": [{ "words": [{ "w": "word", "s": 0, "e": 300 }] }] }`;
 
     const redubOrchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+    const redubBody = {
+      contents: [{ parts: [{ text: translationPrompt }] }],
+      generationConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json' }
+    };
     for (const orchModel of redubOrchestratorModels) {
       if (translatedText) break;
-      for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
-        const key = geminiKeys[keyIdx];
-        onLog?.(`🔑 Gemini key ${keyIdx + 1}/${geminiKeys.length} → ${orchModel} (re-dub)`);
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${orchModel}:generateContent?key=${encodeURIComponent(key)}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: translationPrompt }] }],
-            generationConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json' }
-          }),
-          signal: AbortSignal.timeout(30000)
-        });
-
-        if (res.ok) {
+      const raced = await raceGeminiModel({
+        keys: geminiKeys,
+        model: orchModel,
+        body: redubBody,
+        timeoutMs: 90000,
+        parallelism: 3,
+        label: 're-dub translation',
+        onLog: (m) => onLog?.(m),
+        parse: async (res) => {
           const data = await res.json();
           const candText = data.candidates?.[0]?.content?.parts?.[0]?.text;
           const parsed = safeJSONParse(candText);
-          if (parsed?.translated_text) {
-            translatedText = parsed.translated_text;
-            onLog?.(`✅ Re-dub orchestrator active model: ${orchModel}`);
-            break;
-          }
-        }
-      } catch (e: any) {
-        onLog?.(`Notice: translation fallback (${orchModel}: ${e.message})`);
+          if (parsed?.translated_text) return parsed.translated_text;
+          return null;
+        },
+      });
+      if (raced.ok) {
+        translatedText = raced.value as string;
+        onLog?.(`✅ Re-dub orchestrator active model: ${orchModel}`);
+        break;
       }
-      }
+      onLog?.(raced.reason === 'bad_request'
+        ? `⏭️ ${orchModel} (re-dub): bad request — trying next model`
+        : `⏭️ ${orchModel} (re-dub): all keys exhausted — trying next model`);
     }
 
     if (!translatedText) {
@@ -747,6 +870,8 @@ Input Words: ${baseSummary}
             }));
             break;
           }
+        } else {
+          onLog?.(`⚡ Deepgram key ${dgIdx + 1} → HTTP ${dgRes.status} — instantly rotated`);
         }
       } catch (e: any) {
         onLog?.(`Deepgram notice: ${e.message}`);
