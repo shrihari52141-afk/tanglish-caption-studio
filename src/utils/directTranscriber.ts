@@ -358,7 +358,7 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
     fullTranscribedText = sessionCache.gemini35Transcript.rawText;
     onLog(`✅ Reusing cached Gemini 3.5 transcription (${gemini35Words.length} words, detected language: ${detectedSourceLanguage}).`);
   } else {
-    const models35 = ['gemini-3.5-transcribe', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+    const models35 = ['gemini-3.5-transcribe'];
     let gemini35Success = false;
 
     // Transcription of longer audio legitimately takes minutes — scale the
@@ -371,7 +371,8 @@ export async function directTranscribe(options: DirectTranscribeOptions): Promis
 Task:
 1. Accurately transcribe EVERY spoken word from the audio with 100% completeness.
 2. Identify the exact spoken source language name (e.g. "tamil", "hindi", "telugu", "kannada", "malayalam", "english", "spanish", etc.).
-3. Return valid JSON containing "detected_language", "full_transcript", and "words" array with rough start/end ms.`;
+3. Return ONLY valid raw JSON (no markdown fences, no commentary) containing "detected_language", "full_transcript", and "words" array with rough start/end ms.
+Example: {"detected_language": "tamil", "full_transcript": "...", "words": [{"word": "...", "start_ms": 0, "end_ms": 300}]}`;
 
     const body35 = {
       contents: [{
@@ -381,28 +382,7 @@ Task:
         ]
       }],
       generationConfig: {
-        maxOutputTokens: 8192,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'OBJECT',
-          properties: {
-            detected_language: { type: 'STRING' },
-            full_transcript: { type: 'STRING' },
-            words: {
-              type: 'ARRAY',
-              items: {
-                type: 'OBJECT',
-                properties: {
-                  word: { type: 'STRING' },
-                  start_ms: { type: 'INTEGER' },
-                  end_ms: { type: 'INTEGER' }
-                },
-                required: ['word']
-              }
-            }
-          },
-          required: ['detected_language', 'words']
-        }
+        maxOutputTokens: 8192
       }
     };
 
@@ -412,7 +392,7 @@ Task:
         model: modelName,
         body: body35,
         timeoutMs: transcribeTimeoutMs,
-        parallelism: 3,
+        parallelism: 1,
         label: 'transcription',
         onLog,
         parse: async (res) => {
@@ -555,7 +535,7 @@ Return structured JSON with "translated_text" and "segments" (containing words a
   let orchestratedWords: CaptionWord[] = [];
   let translatedTextForDubbing = '';
 
-  const orchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+  const orchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
   const orchBody = {
     contents: [{ parts: [{ text: orchestrationPrompt }] }],
@@ -572,7 +552,7 @@ Return structured JSON with "translated_text" and "segments" (containing words a
       model: orchModel,
       body: orchBody,
       timeoutMs: 90000,
-      parallelism: 3,
+      parallelism: 1,
       label: 'orchestrator',
       onLog,
       parse: async (res) => {
@@ -790,7 +770,7 @@ Input Words: ${baseSummary}
 - Capture emotional delivery, pauses, and colloquial punch.
 - Output JSON format: { "translated_text": "...", "segments": [{ "words": [{ "w": "word", "s": 0, "e": 300 }] }] }`;
 
-    const redubOrchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'];
+    const redubOrchestratorModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
     const redubBody = {
       contents: [{ parts: [{ text: translationPrompt }] }],
       generationConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json' }
@@ -802,7 +782,7 @@ Input Words: ${baseSummary}
         model: orchModel,
         body: redubBody,
         timeoutMs: 90000,
-        parallelism: 3,
+        parallelism: 1,
         label: 're-dub translation',
         onLog: (m) => onLog?.(m),
         parse: async (res) => {
